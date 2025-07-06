@@ -1,0 +1,707 @@
+---
+title: "Reactive vs Preemptive Vaccination Strategies"
+author: "Jong-Hoon Kim"
+date: "2025-06-26"
+format: html
+editor_options: 
+  chunk_output_type: console
+---
+
+# Setup
+
+```{r setup}
+#| warning: false
+#| message: false
+
+# Load required packages
+source("R/utils.R")  # utility functions
+library(data.table)
+library(tidyverse)
+library(magrittr)
+library(ggridges)
+library(readxl)
+library(janitor)
+library(scales)
+library(viridis)
+library(sf)
+library(metR)
+library(googlesheets4)
+library(MASS)
+library(patchwork)
+library(ggpattern)
+library(gridExtra)
+library(corrr)
+library(RColorBrewer)
+library(countrycode)
+library(conflicted)
+# Resolve package conflicts in favor of dplyr
+conflict_prefer("filter", "dplyr")
+conflict_prefer("select", "dplyr")
+
+# Output control flags
+save_plot <- FALSE
+save_table <- FALSE
+
+# Configure figure size settings
+figure_size <- data.frame(
+  journal = "Lancet",
+  single = 85,   # Width for single-column figures (mm)
+  double = 178   # Width for double-column figures (mm)
+)
+fgw1 <- figure_size[figure_size$journal == "Lancet",]$single
+fgw2 <- figure_size[figure_size$journal == "Lancet",]$double
+
+# Color palette for consistent visualization
+set1 <- brewer.pal(9, "Set1")  # color sets
+my_discrete_colors <- c("#E41A1C", "#377EB8", "#4DAF4A", "#984EA3", "#FF7F00")
+
+# Define standard probability values for quantiles
+probs <- c(0.025, 0.25, 0.5, 0.75, 0.975)  # 2.5%, 25%, 50%, 75%, 97.5% quantiles
+
+# Reference vaccination week
+# VW <- 9  # representative vaccination week from GTFCC data
+# 
+# # Sequence of vaccination weeks to evaluate
+# VW_seq <- seq(1, 15, 2)
+# 
+# # Representative vaccination coverage rate
+# VC <- 0.75  # 75% coverage
+# 
+# # Three representative vaccination coverage rates
+# VC3 <- c(0.6, 0.75, 0.9)  # 60%, 75%, 90%
+# 
+# # Thresholds for case-triggered vaccination to analyze
+# cts_sel <- c(1, seq(10, 100, 10))  # case triggers selected
+# 
+# # Latest date for which OCV campaign data is available
+# YEAR <- as.Date("2020-12-28")
+# 
+# # Load geographic data for mapping
+# shp <- st_read("data/shapefiles/total_shp_0427.shp", quiet = TRUE)
+# africa <- st_read("data/shapefiles/afr_g2014_2013_0.shp", quiet = TRUE)
+
+# only a subset of sample runid's is used for plotting for convenience
+set.seed(42)
+sample_runids <- sample(1:200, size=30)
+```
+
+### Plots
+
+#### Data preparation
+
+```{r}
+# Global parameters ----------------------------------------------------
+text_size <- 5          # Default text size for annotations
+line_height <- 0.95     # Line spacing for text annotation
+pattern_dens <- 0.1     # Density of pattern filling
+pattern_spacing <- 0.1  # Spacing between patterns
+step_linewidth <- 0.7   # Width of step lines
+arrow_vertical_len <- 14 # Vertical length of arrows
+
+# Axis labels
+ylabel <- "Weekly suspected cholera cases"
+xlabel <- "Weeks since outbreak onset"
+
+# Key timeline parameters
+week_pre <- -6    # Pre-emptive vaccination 6 weeks prior to the outbreak  
+week_or <- 3      # Outbreak response at week 3  
+week_vax <- 6.5   # Vaccination started
+week_vax_eff <- 8.5 # Vaccine takes effect
+pcr_preemptive <- 0.95
+pcr_reactive <- 0.45
+# Rectangle dimensions configuration ------------------------------------
+# This section makes it easy to adjust all rectangles at once
+
+# Base rectangle dimensions
+rect_width <- 0.8
+rect_height <- 6
+
+# Spacing between rectangles
+gap_horizontal <- 1.9   # Horizontal gap between rectangle groups
+gap_vertical <- 12      # Vertical gap between top and bottom rectangles
+
+# Font sizes for elements
+eq_symbol_size <- 8     # Size for equation symbols (<, +)
+paren_size <- 9         # Size for parentheses
+plus_size <- 5          # Size for plus symbols
+
+# Vertical offset for second equation from first
+eq2_vertical_offset <- 24
+
+# Helper functions ----------------------------------------------------
+create_filled_square <- function(x1, y1, x2, y2, fill_color, 
+                                 color='black', alpha=0.5) {
+  geom_rect(xmin=x1, xmax=x2, ymin=y1, ymax=y2,
+            color=color, fill=fill_color, alpha=alpha, inherit.aes = FALSE)
+}
+
+create_striped_square <- function(x1, y1, x2, y2, fill_color, color='black',
+                                  dens=0.1, angle=30) {
+  geom_rect_pattern(
+    xmin=x1, xmax=x2, ymin=y1, ymax=y2,
+    pattern = 'stripe',
+    fill = NA,
+    colour = color,
+    pattern_density = dens,
+    pattern_spacing = 0.025,
+    pattern_fill = fill_color,
+    pattern_colour = NA,
+    pattern_angle = angle,
+    inherit.aes = FALSE)
+}
+
+create_divider <- function(x1, x2, y, extension=0.2, linewidth=0.7) {
+  annotate("segment", 
+           x = x1 - extension, 
+           y = y, 
+           xend = x2 + extension, 
+           yend = y, 
+           linewidth = linewidth)
+}
+
+theme_upper_panel <- function() {
+  theme_classic() +
+    theme(
+      axis.text.x = element_blank(),
+      axis.ticks.x = element_blank(),
+      axis.title.x = element_blank(),
+      axis.title.y = element_text(size = 16),
+      axis.text.y = element_text(size = 14),
+      plot.caption = element_text(size = 14),
+      legend.position = "none"
+    )
+}
+
+# Data preparation ----------------------------------------------------
+# Create synthetic example of an outbreak trajectory with and without vaccination
+d <- data.frame(
+  date = seq(as.Date("2010-06-15"), by = "week", length.out = 24),
+  week = 0:23,
+  # No vaccination scenario
+  s_ch = c(2, 2, 3, 4, 10, 12, 29, 100, 120, 150, 140, 
+           75, 68, 47, 24, 5, 12, 5, 3, 2, 4, 1, 0, 0)
+)
+
+# Add vaccination scenario (40% of cases after vaccine takes effect)
+d$s_ch_vacc_preemptive <- round((1-pcr_preemptive)*(d$s_ch))
+d$s_ch_vacc_reactive <- c(d$s_ch[1:9], round((1-pcr_reactive) * d$s_ch[10:nrow(d)]))
+d$s_ch_cumul <- cumsum(d$s_ch)
+
+# Rename columns for clarity
+names(d) <- c("date", "week", "No vacc", "Vacc_Preemptive", "Vacc_Reactive", "No vacc cumulative")
+
+# Reshape data for plotting
+dlong <- pivot_longer(d, cols = c("No vacc", "Vacc_Preemptive", "Vacc_Reactive"))
+
+# Define time weeks for additional scenarios
+weeks <- 0:25
+
+# Generate additional outbreak scenarios
+# Smallest outbreak (ended before vaccination)
+smallest_no_vax <- 
+  rpois(length(weeks), lambda=30 * exp(-0.1 * (weeks - 2)^2))
+smallest_no_vax[(week_vax-1):length(smallest_no_vax)] <- 0
+
+# Smaller outbreak (ended at vaccine takes effect)
+smaller_no_vax <- 
+  rpois(length(weeks), lambda=50 * exp(-0.1 * (weeks - 3)^2))
+smaller_no_vax[week_vax_eff:length(smaller_no_vax)] <- 0
+
+# Small outbreak (peak at week 8)
+small_no_vax <- rpois(length(weeks), lambda=70 * exp(-0.08 * (weeks - 8)^2))
+small_with_vax <- small_no_vax
+small_with_vax[weeks > week_vax_eff] <- round(small_with_vax[weeks > week_vax_eff] * 0.5)  # 50% reduction
+
+# Large outbreak (peak at week 12)
+large_no_vax <- rpois(length(weeks), lambda=120 * exp(-0.04 * (weeks - 12)^2))
+large_with_vax <- large_no_vax
+large_with_vax[weeks > week_vax_eff] <- round(large_with_vax[weeks > week_vax_eff] * 0.5)  # 50% reduction
+
+# Combine into a data frame
+df <- tibble(
+  week = rep(weeks, 6),
+  cases = c(smallest_no_vax, smaller_no_vax, small_no_vax, small_with_vax, 
+            large_no_vax, large_with_vax),
+  outbreak = rep(c("Smallest", "Smaller", "Small", "Small", "Large", "Large"), 
+                 each = length(weeks)),
+  scenario = c(rep("No Vaccine", 2*length(weeks)), 
+               rep(c("No Vaccine", "With Vaccine"), times=2, each=length(weeks)))
+)
+
+# Create wide version of the data
+df_wide <- df %>%
+  pivot_wider(names_from = scenario, values_from = cases) %>%
+  mutate(reduction = `No Vaccine` - `With Vaccine`)
+
+# Rectangle positions for equation 1 ----------------------------------
+# Starting position for first equation
+base_x1 <- 15
+base_y1 <- 65
+
+# a/b fraction
+a_x1 <- base_x1
+a_y1 <- base_y1
+a_x2 <- a_x1 + rect_width
+a_y2 <- a_y1 + rect_height
+
+b_x1 <- a_x1
+b_y1 <- a_y1 - gap_vertical
+b_x2 <- b_x1 + rect_width
+b_y2 <- b_y1 + rect_height
+
+ab_div_y <- (a_y1 + b_y2) / 2
+
+# c/d fraction
+c_x1 <- a_x1 + gap_horizontal
+c_y1 <- a_y1
+c_x2 <- c_x1 + rect_width
+c_y2 <- c_y1 + rect_height
+
+d_x1 <- c_x1
+d_y1 <- b_y1
+d_x2 <- d_x1 + rect_width
+d_y2 <- d_y1 + rect_height
+
+cd_div_y <- (c_y1 + d_y2) / 2
+
+# Inequality symbol
+eq1_lt_x <- (a_x2 + c_x1) / 2
+eq1_lt_y <- (a_y1 + b_y2) / 2
+
+# Equation label
+eq1_label_x <- a_x1 - 1.2
+eq1_label_y <- cd_div_y
+
+# Rectangle positions for equation 2 ----------------------------------
+# Left side: 1/2(a/b+c/d)
+# a/b part
+eq2_a_x1 <- a_x1 + 0.2
+eq2_a_y1 <- a_y1 - eq2_vertical_offset
+eq2_a_x2 <- eq2_a_x1 + rect_width
+eq2_a_y2 <- eq2_a_y1 + rect_height
+
+eq2_b_x1 <- eq2_a_x1
+eq2_b_y1 <- eq2_a_y1 - gap_vertical
+eq2_b_x2 <- eq2_b_x1 + rect_width
+eq2_b_y2 <- eq2_b_y1 + rect_height
+
+# c/d part
+eq2_c_x1 <- eq2_a_x1 + gap_horizontal
+eq2_c_y1 <- eq2_a_y1
+eq2_c_x2 <- eq2_c_x1 + rect_width
+eq2_c_y2 <- eq2_c_y1 + rect_height
+
+eq2_d_x1 <- eq2_c_x1
+eq2_d_y1 <- eq2_b_y1
+eq2_d_x2 <- eq2_d_x1 + rect_width
+eq2_d_y2 <- eq2_d_y1 + rect_height
+
+# Parentheses
+left_paren_x <- eq2_a_x1 - 0.3
+right_paren_x <- eq2_c_x2 + 0.3
+paren_y <- (eq2_a_y1 + eq2_b_y2) / 2
+
+# 1/2 fraction position
+eq2_frac_x <- right_paren_x + 0.6
+eq2_frac_y_num <- (eq2_a_y1 + eq2_a_y2)/2
+eq2_frac_y_denom <- (eq2_b_y1 + eq2_b_y2)/2
+eq2_frac_y_line <- (eq2_a_y1 + eq2_b_y2)/2
+
+# Plus symbol position
+eq2_plus1_x <- (eq2_a_x2 + eq2_c_x1) / 2
+eq2_plus1_y <- (eq2_a_y1 + eq2_b_y2) / 2
+
+# Less than symbol for second equation
+eq2_lt_x <- eq2_frac_x + 0.8
+eq2_lt_y <- (eq2_a_y1 + eq2_b_y2)/2
+
+# Right side: (a+c)/(b+d)
+# Numerator (a+c)
+eq2_right_a_x1 <- eq2_lt_x + 0.8
+eq2_right_a_y1 <- eq2_a_y1
+eq2_right_a_x2 <- eq2_right_a_x1 + rect_width
+eq2_right_a_y2 <- eq2_right_a_y1 + rect_height
+
+eq2_right_c_x1 <- eq2_right_a_x1 + gap_horizontal
+eq2_right_c_y1 <- eq2_a_y1
+eq2_right_c_x2 <- eq2_right_c_x1 + rect_width
+eq2_right_c_y2 <- eq2_right_c_y1 + rect_height
+
+eq2_plus2_x <- (eq2_right_a_x2 + eq2_right_c_x1)/2
+eq2_plus2_y <- (eq2_right_a_y1 + eq2_right_a_y2)/2
+
+# Denominator (b+d)
+eq2_right_b_x1 <- eq2_right_a_x1
+eq2_right_b_y1 <- eq2_b_y1
+eq2_right_b_x2 <- eq2_right_b_x1 + rect_width
+eq2_right_b_y2 <- eq2_right_b_y1 + rect_height
+
+eq2_right_d_x1 <- eq2_right_c_x1
+eq2_right_d_y1 <- eq2_right_b_y1
+eq2_right_d_x2 <- eq2_right_d_x1 + rect_width
+eq2_right_d_y2 <- eq2_right_d_y1 + rect_height
+
+eq2_plus3_x <- eq2_plus2_x
+eq2_plus3_y <- (eq2_right_b_y1 + eq2_right_b_y2)/2
+
+# Division line
+eq2_right_div_x1 <- eq2_right_a_x1
+eq2_right_div_x2 <- eq2_right_c_x2
+eq2_right_div_y <- (eq2_right_a_y1 + eq2_right_b_y2) / 2
+
+# Equation 2 label
+eq2_label_x <- eq1_label_x
+eq2_label_y <- a_y1 - eq2_vertical_offset
+```
+
+#### Preemptive
+
+```{r}
+p1 <- ggplot(dlong, aes(week, value, linetype = name, 
+                    shape = name, group = name)) +
+  # Background stripes for no vaccination scenario
+  geom_rect_pattern(
+    data = subset(dlong, name == "No vacc"),
+    aes(xmin=week, xmax=lead(week), ymin=0, ymax=value),
+    pattern = 'stripe',
+    fill = NA,
+    colour = NA,
+    pattern_colour = NA,
+    pattern_density = pattern_dens,
+    pattern_fill = 'steelblue',
+    pattern_angle = 30) +  
+  # Vaccination impact rectangle
+  geom_rect(
+    data = d,
+    aes(xmin=week, xmax=lead(week), ymin=`Vacc_Preemptive`, 
+        ymax=`No vacc`), 
+    fill='steelblue', 
+    alpha=0.3,
+    color=NA,
+    inherit.aes = FALSE) +
+  # Step lines for clarity
+  geom_step(data=subset(dlong, name == "Vacc_Preemptive"),
+            aes(x=week, y=value),
+            linewidth=step_linewidth, linetype="solid") +
+  geom_step(data=subset(dlong, name == "No vacc"),
+            aes(x=week, y=value),
+            linewidth=step_linewidth, linetype="dashed") +
+  # Outbreak response triggered arrow and label
+  geom_segment(
+    x=week_pre, xend=week_pre, y=10+arrow_vertical_len,  yend=0,
+    arrow = arrow(type = "closed", angle = 10, length = unit(3, "mm")),
+    inherit.aes = FALSE
+  ) +
+  annotate(
+    "text", x=week_pre-2, y=38,
+    label = "Pre-emptive\nvaccination",
+    hjust=0.0, size=text_size, lineheight=line_height
+  ) +
+  annotate(
+    "text", x=16, y=75, 
+    label = "% case\nreduction", 
+    size=text_size, lineheight=line_height
+  ) +
+  annotate(
+    "text", x=19.2, y=75, 
+    label = bquote("= 100 \u00D7"), 
+    size=text_size, lineheight=line_height
+  ) +
+  # Fraction expressed using squares
+  create_divider(x1=21.1-0.2, x2=22.1+0.2, y=75) +
+  create_filled_square(
+    x1=21.1, x2=22.1, y1=77, y2=85, 
+    color='black', fill="steelblue", alpha=0.3) +
+  create_striped_square(
+    x1=21.1, x2=22.1, y1=64, y2=72,
+    fill_color='steelblue', color='black'
+  ) +
+  scale_x_continuous(limits=c(-8,25)) +
+  labs(x="", y=ylabel) +
+  theme_upper_panel()
+```
+
+#### Reactive
+
+```{r}
+p2 <- ggplot(dlong, aes(week, value, linetype = name, shape = name, group = name)) +
+  # Background stripes for no vaccination scenario
+  geom_rect_pattern(
+    data = subset(dlong, name == "No vacc"),
+    aes(xmin=week, xmax=lead(week), ymin=0, ymax=value),
+    pattern = 'stripe',
+    fill = NA,
+    colour = NA,
+    pattern_colour = NA,
+    pattern_density = pattern_dens,
+    pattern_fill = 'steelblue',
+    pattern_angle = 30) +
+  
+  # Vaccination impact rectangle
+  geom_rect(
+    data = d,
+    aes(xmin=week, xmax=lead(week), ymin=`Vacc_Reactive`, ymax=`No vacc`), 
+    fill='steelblue', 
+    alpha=0.5,
+    color=NA,
+    inherit.aes = FALSE) +
+  
+  # Step lines for clarity
+  geom_step(data=subset(dlong, name == "Vacc_Reactive"),
+            aes(x=week, y=value),
+            linewidth=step_linewidth, linetype="solid") +
+  geom_step(data=subset(dlong, name == "No vacc"),
+            aes(x=week, y=value),
+            linewidth=step_linewidth, linetype="dashed") +
+  # Outbreak response triggered arrow and label
+  geom_segment(
+    x=week_or, y=10+arrow_vertical_len, xend=week_or, yend=10,
+    arrow = arrow(type = "closed", angle = 10, length = unit(3, "mm")),
+    inherit.aes = FALSE
+  ) +
+  annotate(
+    "text", x=week_or-0.5, y=38, 
+    label = "Outbreak\nresponse triggered", 
+    hjust=0.5, size=text_size, lineheight=line_height
+  ) +
+  # Vaccination started arrow and label
+  geom_segment(
+    x=week_vax, y=32+arrow_vertical_len, xend=week_vax, yend=32,
+    arrow = arrow(type = "closed", angle = 10, length = unit(3, "mm")),
+    inherit.aes = FALSE
+  ) +
+  annotate(
+    "text", x=week_vax, y=60, 
+    label = "Vaccination\nstarted", hjust=1,
+    size=text_size, lineheight=line_height
+  ) +
+  
+  # Vaccine takes effect arrow and label
+  geom_segment(
+    x=week_vax_eff, y=122+arrow_vertical_len, xend=week_vax_eff, yend = 122,
+    arrow = arrow(type = "closed", angle = 10, length = unit(3, "mm")),
+    inherit.aes = FALSE
+  ) +
+  annotate(
+    "text", x=week_vax_eff, y=147, 
+    label="Vaccine\ntakes effect", hjust=1,
+    size=text_size, lineheight=line_height
+  ) +
+  
+  # Scenario labels
+  annotate(
+    "text", x=11.5, y=120, 
+    label = "Without\nvaccination", hjust=0, 
+    size=text_size, lineheight=line_height
+  ) +
+  annotate(
+    "text", x=9.5, y=12, 
+    label = "With\nvaccination", hjust=0,
+    size=text_size, lineheight=line_height
+  )+
+  
+  # Colored lines on the horizontal axis marking periods
+  annotate("segment", x=0, y=0, xend=3, yend=0, linewidth=2, color="firebrick") +
+  annotate("segment", x=3, y=0, xend=7, yend=0, linewidth=2, color="forestgreen") +
+  annotate("segment", x=7, y=0, xend=9, yend=0, linewidth=2, color="purple") +
+  
+  scale_x_continuous(limits=c(-8,25)) +
+  labs(x="", y=ylabel) +
+  theme_classic() +
+  theme(
+    axis.title.y = element_text(size = 16),
+    axis.text.y = element_text(size = 14),
+    plot.caption = element_text(size = 14),
+    legend.position = "none")
+```
+
+Combine the plots
+
+```{r}
+# Combine plots
+combined_plot <- (p1 / p2) + 
+  plot_layout(
+    heights = c(1, 1), 
+    axis_titles = 'collect',
+    guides = 'collect'
+  )
+
+if (save_plot) {
+  fac <- 1.8
+  ggsave(paste0("plots/preemptive_reactive_schematic_", tstamp(), ".pdf"),
+        combined_plot,
+        device = cairo_pdf,
+        width=1.25*fgw1*fac,
+        height=1.6*fgw1*fac,
+        units = "mm")
+}
+```
+
+### Targetting accuracy vs. relative impact of preemptive vaccination
+
+```{r}
+# Data for reactive scenario vs no intervention
+baseline <- data.frame(time=c(0,10,20), cases=c(0,100,0))
+reactive <- data.frame(time=c(0,5,12), cases=c(0,50,0))
+
+# Coordinates for error bars at the peak of reactive scenario
+peak_time <- 5; peak_cases <- 50
+err_time <- 1; err_cases <- 15  # uncertainty: ±1 day, ±15 cases
+err_df <- data.frame(x=peak_time, y=peak_cases,
+                     ymin=peak_cases - err_cases, ymax=peak_cases + err_cases,
+                     xmin=peak_time - err_time, xmax=peak_time + err_time)
+
+p_reactive <- ggplot() +
+  geom_area(data=reactive, aes(x=time, y=cases), fill="steelblue", alpha=0.4) +
+  geom_line(data=baseline, aes(x=time, y=cases), color="black", linetype="dashed", size=1) +
+  # Vertical error bar at peak
+  geom_errorbar(data=err_df, aes(x=x, ymin=ymin, ymax=ymax), width=0.5) +
+  # Horizontal error bar at peak (as a segment)
+  geom_segment(data=err_df, aes(x=xmin, xend=xmax, y=y, yend=y)) +
+  labs(x="Time (days)", y="Cases", title="Reactive vaccination vs. no intervention") +
+  # Annotate key times
+  annotate("text", x=0, y=10, label="t0") +
+  annotate("text", x=10, y=105, label="t_p") +
+  annotate("text", x=20, y=10, label="t_1") +
+  theme_classic()
+
+print(p_reactive)
+
+```
+
+### Simplied outbreak version
+```{r}
+library(ggplot2)
+library(patchwork)
+library(grid)  # for unit()
+
+```
+
+```{r}
+pcr_preemptive <- 0.95
+pcr_reactive <- 0.45
+# Tent function
+tent_curve <- function(t, t0, tp, t1, r0, rp) {
+  ifelse(
+    t < t0 | t > t1, r0,
+    ifelse(t <= tp,
+           r0 + (rp - r0) * (t - t0)/(tp - t0),
+           rp - (rp - r0) * (t - tp)/(t1 - tp))
+  )
+}
+
+# Time vector
+t <- seq(0, 60, by = 0.1)
+# Time markers
+t_pre_vax <- 5
+t_detect  <- 20
+t_re_vax  <- 28
+t_effect  <- 30
+
+inc_baseline <- tent_curve(t, 15, 35, 60, 0, 20)
+
+# Counterfactual: same for both panels
+cf_curve <- data.frame(t = t, incidence = inc_baseline, group = "Counterfactual")
+
+# Preemptive reduced outbreak
+preemptive_curve <- data.frame(t = t, 
+                               incidence = (1-pcr_preemptive) * inc_baseline, 
+                               group = "Vacc_Preemptive")
+
+# Reactive observed outbreak (matches counterfactual before vaccination)
+reactive_curve <- data.frame(t = t, 
+                             incidence = ifelse(t >= t_effect, (1-pcr_reactive) * inc_baseline, inc_baseline), group = "Vacc_Reactive")
+```
+
+#### Pre-emptive
+```{r}
+library(ggpattern)
+p1 <- ggplot() +
+  geom_line(data = cf_curve, aes(t, incidence), linetype = "dashed", color = "black", linewidth = 1) +
+  geom_ribbon_pattern(
+    data = preemptive_curve,
+    aes(x=t, ymin=0, ymax=incidence),
+    pattern = 'stripe',
+    fill = NA,
+    colour = NA,
+    pattern_colour = NA,
+    pattern_density = pattern_dens,
+    pattern_fill = 'steelblue',
+    pattern_angle = 30) +
+   +
+  # Arrow
+  geom_segment(aes(x = t_pre_vax, xend = t_pre_vax, y = 7, yend = 1),
+               arrow = arrow(length = unit(0.1, "inches")), color = "black") +
+  # Circle at vaccination time
+  geom_point(aes(x = t_pre_vax, y = 0), shape = 21, color="black", fill = "firebrick", size = 4) +
+  annotate("text", x = t_pre_vax, y = 9, label = "Vaccination", hjust = 0.3) +
+  labs(title = "Preemptive Vaccination", x = "Time", y = "Cases") +
+  theme_minimal()
+
+p1
+```
+
+
+```{r}
+p2 <- ggplot() +
+  geom_line(data = cf_curve, aes(t, incidence), linetype = "dashed", color = "black", linewidth = 1) +
+  geom_step(data = reactive_curve, aes(t, incidence), linetype = "solid", color = "steelblue", linewidth = 1) +
+  # Arrow
+  geom_segment(aes(x = t_detect, xend = t_detect, y = 7, yend = 1),
+               arrow = arrow(length = unit(0.1, "inches")), color = "black") +
+  geom_segment(aes(x = t_re_vax, xend = t_re_vax, y = 7, yend = 1),
+               arrow = arrow(length = unit(0.1, "inches")), color = "black") +
+  geom_segment(aes(x = t_effect, xend = t_effect, y = 7, yend = 1),
+               arrow = arrow(length = unit(0.1, "inches")), color = "black") +
+  # Circle at vaccination time
+  geom_point(aes(x = t_detect, y = 0), shape = 21, color="black", fill = "firebrick", size = 4) +
+  geom_point(aes(x = t_re_vax, y = 0), shape = 21, color="black", fill = "firebrick", size = 4) +
+  geom_point(aes(x = t_effect, y = 0), shape = 21, color="black", fill = "firebrick", size = 4) +
+  
+  annotate("text", x = t_pre_vax, y = 9, label = "Vaccination", hjust = 0.3) +
+  labs(title = "Preemptive Vaccination", x = "Time", y = "Cases") +
+  theme_minimal()
+
+p2
+
+
+```
+
+The proportion of allocation for pre-emptive vaccination against the average For given average probability of an outbreak, $\hat{p}$, you would need $p*N$ vaccine doses on average. In case, you have only $0.1*p*N$. What would be your optimal strategy?
+
+1.  Some parametric distribution on $p$
+2.  
+
+
+```{r}
+# Preemptive plot
+p1 <- ggplot() +
+  geom_line(data = preemptive_main, aes(t, incidence), linetype = "dashed", color = "black", linewidth = 1) +
+  geom_line(data = preemptive_small, aes(t, incidence), linetype = "dashed", color = "blue", linewidth = 1) +
+  geom_segment(data = arrow_df[1,],
+               aes(x = x, xend = xend, y = y, yend = yend),
+               arrow = arrow(type = "closed", length = unit(0.2, "inches")),
+               color = "black") +
+  annotate("text", x = arrow_df$x[1], y = 95, label = "Vaccination", hjust = 0.5) +
+  labs(title = "Preemptive Vaccination", x = "Time", y = "Cases") +
+  theme_minimal()
+
+# Reactive plot
+p2 <- ggplot() +
+  geom_line(data = reactive_real, aes(t, incidence), color = "black", linewidth = 1) +
+  geom_line(data = reactive_counter, aes(t, incidence), linetype = "dashed", color = "red", linewidth = 1) +
+  geom_segment(data = arrow_df[2,],
+               aes(x = x, xend = xend, y = y, yend = yend),
+               arrow = arrow(type = "closed", length = unit(0.2, "inches")),
+               color = "black") +
+  annotate("text", x = arrow_df$x[2], y = 115, label = "Vaccination", hjust = 0.5) +
+  labs(title = "Reactive Vaccination", x = "Time", y = "Cases") +
+  theme_minimal()
+
+```
+
+```{r}
+p1 / p2 + plot_layout(ncol = 1)
+
+```
+

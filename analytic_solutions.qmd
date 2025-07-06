@@ -1,0 +1,999 @@
+---
+title: "Reactive vs Preemptive Vaccination Strategies"
+author: "Jong-Hoon Kim"
+date: "2025-07-05"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    code-fold: true
+editor_options: 
+  chunk_output_type: console
+---
+
+# The Single Population Scenario
+
+We evaluate the expected **total cost** of two strategies (preemptive vs reactive vaccination) for **a single population** at risk of an outbreak.
+
+## Parameters
+
+Let:
+
+- $D$: The full cost of an outbreak (e.g., hospital burden, DALYs, economic cost)
+- $C$: The cost of deploying a vaccination campaign
+- $p$: The probability of an outbreak ($0 < p < 1$)
+- $r$: The **relative effectiveness** of a reactive vaccination campaign, where $0 < r < 1$
+
+## Strategy 1: Preemptive Vaccination
+
+-   We vaccinate regardless of whether an outbreak happens
+-   Outbreak is fully averted if it would have occurred
+-   Always pay vaccination cost $C$
+-   Expected outbreak cost is $0$
+
+$$
+\text{Cost}_{\text{pre}} = C
+$$
+
+## Strategy 2: Reactive Vaccination
+
+-   Vaccinate only if an outbreak occurs (probability $p$)
+-   Outbreak is only partially mitigated: remaining cost is $(1 - r)D$
+-   Vaccination cost $C$ is also incurred only when outbreak happens
+
+$$
+\text{Cost}_{\text{react}} = p \cdot (C + (1 - r)D)
+$$
+
+## Comparing the two strategies
+
+We prefer **preemptive vaccination** when:
+
+$$
+C < p \cdot (C + (1 - r)D)
+$$
+
+Solving for $p$:
+
+$$
+p^* = \frac{C}{C + (1 - r)D}
+$$
+
+This is the **threshold outbreak probability** above which preemptive vaccination is cost-saving.
+
+### Interpretation
+
+-   As $r \to 1$, reactive vaccination becomes nearly as effective as preemptive -> threshold $p^*$ increases 
+-   As the cost of an outbreak compared to the vaccination cost, $D / C$, becomes large -> threshold $p^*$ decreases
+
+
+## Symbolic derivation 
+
+```{python}
+import sympy as sp
+
+# Define symbols
+C, D, p, r = sp.symbols('C D p r', positive=True)
+
+# Define cost expressions
+cost_pre = C
+cost_react = p * (C + (1 - r)*D)
+
+# Solve: when is preemptive better?
+ineq = sp.Eq(cost_pre, cost_react)
+p_thresh = sp.solve(ineq, p)[0]
+p_thresh
+```
+
+Expected output:
+
+```{python}
+C / (C + (1 - r)*D)
+```
+
+## Visualizing the threshold $p^*$
+
+```{r, warning=FALSE, message=FALSE}
+library(ggplot2)
+library(dplyr)
+
+# Parameters
+r_vals <- seq(0.01, 0.99, by = 0.01)
+p_vals <- seq(0.01, 0.99, by = 0.01)
+D <- 1
+C_vals <- c(0.3, 1, 2, 5)
+
+# Generate grid
+grid <- expand.grid(p = p_vals, r = r_vals, C = C_vals) %>%
+  mutate(
+    p_star = C / (C + (1 - r) * D),
+    decision = ifelse(p > p_star, "preemptive", "reactive")
+  )
+
+# Create evaluation grid
+grid <- expand.grid(p = p_vals, r = r_vals, C = C_vals) %>%
+  mutate(
+    # Total cost for each strategy
+    cost_pre = C,
+    cost_react =  p * (C + (1 - r)*D),
+    decision = ifelse(cost_pre < cost_react, "preemptive", "reactive")
+  )
+
+# Threshold lines: where cost_pre == cost_react
+threshold_lines <- grid %>%
+  group_by(C, r) %>%
+  summarise(
+    p_thresh = approx(cost_pre - cost_react, p, xout = 0)$y,
+    .groups = "drop"
+  ) %>%
+  filter(!is.na(p_thresh))
+
+ggplot(grid, aes(x = r, y = p)) +
+  geom_line(data = threshold_lines, aes(x = r, y = p_thresh, group = C), 
+            color = "black", linewidth = 1, inherit.aes = FALSE) +
+  scale_y_continuous(limits=c(0,1))+
+  scale_x_continuous(limits=c(0,1))+
+  geom_text(data = data.frame(C = rep(C_vals, each = 2),
+                              label = rep(c("preemptive", "reactive"), 4),
+                              r = rep(0.05, 8),
+                              p = rep(c(0.95, 0.05), 4)),
+            aes(x = r, y = p, label = label), hjust = 0, 
+            color = "black", size = 4, inherit.aes = FALSE) +
+  scale_fill_manual(values = c("preemptive" = "steelblue", "reactive" = "tomato")) +
+  facet_wrap(~C, labeller = label_bquote(D/C == .(D/C))) +
+  labs(
+    title = "vaccination strategy decision with threshold",
+    x = expression("relative effectiveness of reactive strategy" ~ italic(r)),
+    y = expression("outbreak probability" ~ italic(p)),
+    fill = "Strategy"
+  ) +
+  theme_light() +
+  theme(legend.position = 'top')
+```
+
+## Summary
+
+This analysis shows that **preemptive vaccination** is preferred when:
+
+$$
+p > \frac{C}{C + (1 - r)D}
+$$
+
+This tradeoff depends jointly on: - **Uncertainty** ($p$), - **Response effectiveness** ($r$), - **Cost of prevention** ($C$), - **Cost of inaction** ($D$)
+
+# Two-population scenario
+
+We assume:
+
+-   Two populations, each has an independent probability $p$ of outbreak
+-   Only one vaccination campaign is available (can be used **preemptively** or **reactively** for one population)
+-   Key parameters:
+
+| Symbol | Description                                                      |
+|----------------------------|--------------------------------------------|
+| $X$    | Number of outbreaks ($X=0,1,2$)                                  |
+| $p$    | Probability of outbreak in a population                          |
+| $C$    | Cost of one vaccination campaign                                 |
+| $D$    | Cost of one unmitigated outbreak                                 |
+| $r$    | Relative effectiveness of **reactive** vaccination ($0 < r < 1$) |
+
+## Preemptive strategy
+
+We vaccinate **one population in advance**, say population A. No reactive response is used.
+
+### Case 0: No outbreaks ($X = 0$)
+
+-   Probability: $(1 - p)^2$
+-   Cost: only unnecessary vaccination of A → $C$
+
+$$
+\text{Cost}_{X=0,\text{pre}} = C
+$$
+### Case 1: One outbreak ($X = 1$)
+
+-   Probability: $2p(1 - p)$
+-   Two subcases (each with prob. $p(1 - p)$):
+    -   If outbreak occurs in A (vaccinated): outbreak prevented -> cost = $C$
+    -   If outbreak occurs in B (unvaccinated): outbreak occurs -> cost = $C + D$
+
+Average cost:
+
+$$
+\text{Cost}_{X=1,\text{pre}} = 2p(1 - p)\left(C + \frac{D}{2}\right)
+$$
+### Case 2: Two outbreaks ($X = 2$)
+
+-   Probability: $p^2$
+-   One outbreak prevented (in vaccinated population), one unmitigated -> cost = $C + D$
+
+$$
+\text{Cost}_{X=2,\text{pre}} = p^2(C + D)
+$$
+
+
+### Total expected cost for the preemptive strategy
+
+$$
+\begin{aligned}
+\mathbb{E}[\text{Cost}_{\text{pre}}] &= (1 - p)^2 C + 2p(1 - p)\left(C + \frac{D}{2} \right) + p^2(C + D) \\
+&= C(1 - p)^2 + 2p(1 - p)C + p(1 - p)D + p^2 C + p^2 D \\
+&= C[(1 - p)^2 + 2p(1 - p) + p^2] + D[p(1 - p) + p^2] \\
+&= C + pD
+\end{aligned}
+$$
+
+## Reactive strategy
+
+We wait for outbreaks and respond to **one** if detected.
+
+### Case 0: No outbreaks ($X = 0$)
+
+-   Probability: $(1 - p)^2$
+-   No vaccination needed, no outbreak → cost = $0$
+
+$$
+\text{Cost}_{X=0,\text{react}} = 0
+$$
+
+
+
+### Case 1: One outbreak ($X = 1$)
+
+-   Probability: $2p(1 - p)$
+-   Detect and respond to outbreak:
+    -   Vaccination cost = $C$
+    -   Partial mitigation: residual cost = $(1 - r)D$
+
+$$
+\text{Cost}_{X=1,\text{react}} = 2p(1 - p)\left(C + (1 - r)D\right)
+$$
+
+### Case 2: Two outbreaks ($X = 2$)
+
+-   Probability: $p^2$
+-   Only one outbreak can be addressed:
+    -   Vaccination cost = $C$
+    -   One outbreak mitigated -> $(1 - r)D$
+    -   One outbreak unmitigated -> $D$
+
+$$
+\text{Cost}_{X=2,\text{react}} = p^2\left(C + (1 - r)D + D\right) = p^2(C + (2 - r)D)
+$$
+
+### Total Expected Cost – Reactive Strategy
+
+$$
+\begin{aligned}
+\mathbb{E}[\text{Cost}_{\text{react}}] &= (1 - p)^2 \cdot 0 + 2p(1 - p)\left(C + (1 - r)D\right) + p^2\left(C + (2 - r)D\right) \\
+&= 2p(1 - p)\left(C + (1 - r)D\right) + p^2\left(C + (2 - r)D\right)
+\end{aligned}
+$$
+
+
+
+## Symbolic Comparison
+
+Compare:
+
+$$
+\mathbb{E}[\text{Cost}_{\text{pre}}] = C + pD
+$$
+
+vs.
+
+$$
+\mathbb{E}[\text{Cost}_{\text{react}}] = (2p - p^2)C + \left[2p(1 - p)(1 - r) + p^2(2 - r)\right]D
+$$
+
+Preemptive strategy is preferred when:
+
+$$
+C + pD < (2p - p^2)C + \left[2p(1 - p)(1 - r) + p^2(2 - r)\right]D
+$$
+
+```{python}
+from sympy import symbols, Eq, solve, simplify
+
+# Define symbols
+p, C, D, r = symbols('p C D r', positive=True)
+
+# Total cost of each strategy
+cost_pre = C + p * D
+cost_react = (2*p - p**2)*C + (2*p*(1 - p)*(1 - r) + p**2*(2 - r)) * D
+
+# Set inequality: preemptive better than reactive
+ineq = Eq(cost_pre, cost_react)
+
+# Solve for threshold p
+p_thresh = solve(ineq, p)
+
+# Simplify solution
+simplified_thresh = [simplify(expr) for expr in p_thresh]
+
+# Output
+for i, expr in enumerate(simplified_thresh):
+    print(f"Threshold p solution {i+1}:")
+    print(expr)
+
+```
+
+```{r}
+library(ggplot2)
+library(dplyr)
+
+# Parameters
+r_vals <- seq(0.01, 0.99, by = 0.01)
+p_vals <- seq(0.01, 0.99, by = 0.01)
+D <- 1
+C_vals <- c(0.3, 1, 2, 5)
+
+# Create evaluation grid
+grid <- expand.grid(p = p_vals, r = r_vals, C = C_vals) %>%
+  mutate(
+    # Total cost for each strategy
+    cost_pre = C + p * D,
+    cost_react = (2 * p - p^2) * C + (2 * p * (1 - p) * (1 - r) + p^2 * (2 - r)) * D,
+    decision = ifelse(cost_pre < cost_react, "preemptive", "reactive")
+  )
+
+# Threshold lines: where cost_pre == cost_react
+threshold_lines <- grid %>%
+  group_by(C, r) %>%
+  summarise(
+    p_thresh = approx(cost_pre - cost_react, p, xout = 0)$y,
+    .groups = "drop"
+  ) %>%
+  filter(!is.na(p_thresh))
+
+# Labels for each facet
+labels_df <- data.frame(
+  C = rep(C_vals, each = 2),
+  label = rep(c("preemptive", "reactive"), 4),
+  r = rep(0.05, 8),
+  p = rep(c(0.95, 0.05), 4)
+)
+
+ggplot(grid, aes(x = r, y = p)) +
+  geom_line(data = threshold_lines, aes(x = r, y = p_thresh, group = C), 
+            color = "black", linewidth = 1, inherit.aes = FALSE) +
+  scale_y_continuous(limits=c(0,1))+
+  scale_x_continuous(limits=c(0,1))+
+  geom_text(data = data.frame(C = rep(C_vals, each = 2),
+                              label = rep(c("preemptive", "reactive"), 4),
+                              r = rep(0.05, 8),
+                              p = rep(c(0.95, 0.05), 4)),
+            aes(x = r, y = p, label = label), hjust = 0, 
+            color = "black", size = 4, inherit.aes = FALSE) +
+  scale_fill_manual(values = c("preemptive" = "steelblue", "reactive" = "tomato")) +
+  facet_wrap(~C, labeller = label_bquote(D/C == .(D/C))) +
+  labs(
+    title = "vaccination strategy decision with threshold (n=2)",
+    x = expression("relative effectiveness of reactive strategy" ~ italic(r)),
+    y = expression("outbreak probability" ~ italic(p)),
+    fill = "Strategy"
+  ) +
+  theme_light() +
+  theme(legend.position = 'top')
+```
+
+## Compare single and two population scenarios
+
+```{r}
+grid1 <- expand.grid(p = p_vals, r = r_vals, C = C_vals) %>%
+  mutate(
+    # Total cost for each strategy
+    cost_pre = C,
+    cost_react =  p * (C + (1 - r)*D),
+    decision = ifelse(cost_pre < cost_react, "preemptive", "reactive")
+  )
+
+grid2 <- expand.grid(p = p_vals, r = r_vals, C = C_vals) %>%
+  mutate(
+    # Total cost for each strategy
+    cost_pre = C + p * D,
+    cost_react = (2 * p - p^2) * C + (2 * p * (1 - p) * (1 - r) + p^2 * (2 - r)) * D,
+    decision = ifelse(cost_pre < cost_react, "preemptive", "reactive")
+  )
+
+
+# Combine grids
+grid1 <- grid1 %>% mutate(scenario = "Single population")
+grid2 <- grid2 %>% mutate(scenario = "Two populations")
+grid_all <- bind_rows(grid1, grid2)
+
+# Threshold lines: compute for each scenario
+threshold_lines <- grid_all %>%
+  group_by(scenario, C, r) %>%
+  summarise(
+    p_thresh = approx(cost_pre - cost_react, p, xout = 0)$y,
+    .groups = "drop"
+  ) %>%
+  filter(!is.na(p_thresh))
+
+# Labels for plot interpretation
+labels_df <- expand.grid(
+  C = C_vals,
+  scenario =  c("Single population", "Two populations"),
+  label = c("preemptive", "reactive")
+) %>%
+  mutate(
+    r = ifelse(label == "preemptive", 0.1, 0.6),
+    p = ifelse(label == "preemptive", 0.95, 0.05)  # Different p positions
+  )
+
+ggplot() +
+  geom_line(data = threshold_lines, 
+            aes(x = r, y = p_thresh, color = scenario, linetype = scenario, 
+                group = interaction(scenario, C)),  linewidth = 1) +
+  geom_text(data = labels_df, aes(x = r, y = p, label = label),
+            hjust = 0, color = "black", size = 4, inherit.aes = FALSE) +
+  geom_abline(slope = 1, intercept = 0, color = "black", linetype = "dotted", linewidth = 0.8) +
+  scale_color_manual(values = c("Single population" = "steelblue", "Two populations" = "tomato")) +
+  scale_linetype_manual(values = c("Single population" = "solid", "Two populations" = "dashed")) +
+  scale_x_continuous(limits = c(0, 1)) +
+  scale_y_continuous(limits = c(0, 1)) +
+  facet_wrap(~C, labeller = label_bquote(D/C == .(D/C))) +
+  labs(
+    title = "Vaccination Strategy Thresholds by Scenario and Campaign Cost",
+    x = expression("Relative effectiveness of reactive strategy" ~ italic(r)),
+    y = expression("Outbreak probability" ~ italic(p)),
+    color = "Scenario",
+    linetype = "Scenario"
+  ) +
+  theme_light() +
+  theme(legend.position = "top")
+
+```
+
+## Multiple populations ($n>2$) scenario
+
+We consider $n$ populations where each has probability $p$ of an outbreak. We can afford to vaccinate a fraction $f$ of them, pre-emptively or reactively.
+
+Let:
+
+-   $n$: number of populations
+-   $p$: outbreak probability
+-   $f$: fraction of populations we can vaccinate
+-   $C$: vaccination cost per population
+-   $D$: outbreak cost (if unmitigated)
+-   $r$: relative effectiveness of reactive vaccination ($0 < r < 1$)
+
+### Strategy 1: Preemptive Vaccination
+
+We preemptively vaccinate $fn$ populations. If an outbreak occurs in the $(1 - f)n$ unvaccinated group, we pay $D$.
+
+Total expected cost:
+
+$$
+\text{Cost}_{\text{pre}} = fn \cdot C + (1 - f)np \cdot D
+$$
+
+### Reactive vaccination strategy
+
+## Step 2: Conditioning on $X = x$ outbreaks
+
+For a fixed number of outbreaks $X = x$:
+
+- If $x \le k$, we can respond to **all** outbreaks.
+
+  Total cost:
+  $$
+  \text{Cost}_{x,\text{react}} = x(C + (1 - r)D)
+  $$
+
+- If $x > k$, we can respond to **$k$ outbreaks**, and $x - k$ go **unmitigated**.
+
+  Mitigated cost:
+  $$
+  k(C + (1 - r)D)
+  $$
+
+  Unmitigated cost:
+  $$
+  (x - k)D
+  $$
+
+So the **expected cost when $X = x$** is:
+
+$$
+\text{Cost}_{x,\text{react}} =
+\begin{cases}
+x(C + (1 - r)D), & \text{if } x \le k \\
+k(C + (1 - r)D) + (x - k)D, & \text{if } x > k
+\end{cases}
+$$
+
+## Step 3: Total Expected Cost
+
+We now compute the total expected cost across all possible $x$:
+
+$$
+\mathbb{E}[\text{Cost}_{\text{react}}] =
+\sum_{x = 0}^{n} \Pr(X = x) \cdot \text{Cost}_{x,\text{react}}
+$$
+
+Split into two parts:
+
+### 🔹 Case 1: $x \le k$
+$$
+\sum_{x = 0}^{k}
+\binom{n}{x} p^x (1 - p)^{n - x} \cdot x(C + (1 - r)D)
+$$
+
+### 🔹 Case 2: $x > k$
+$$
+\sum_{x = k+1}^{n}
+\binom{n}{x} p^x (1 - p)^{n - x}
+\cdot \left[k(C + (1 - r)D) + (x - k)D \right]
+$$
+
+This expression does **not simplify into closed form**, but it can be computed numerically or approximated.
+
+### Strategy 2-1: Reactive Vaccination (Approximate)
+
+We reactively vaccinate up to $fn$ populations **after** outbreaks occur.
+
+Expected number of outbreaks: $np$\
+We can respond to $\min(np, fn)$ and leave $\max(np - fn, 0)$ unmitigated.
+
+Residual cost per mitigated outbreak = $(1 - r)D$
+
+Expected cost:
+
+$$
+\text{Cost}_{\text{react}} =
+\min(np, fn)(C + (1 - r)D) + \max(np - fn, 0) \cdot D
+$$
+
+
+## Symbolic Comparison using SymPy
+
+```{python}
+import sympy as sp
+
+# Define symbols
+n, p, f, C, D, r = sp.symbols('n p f C D r', positive=True)
+
+# Expressions
+np_ = n * p
+fn_ = f * n
+
+# Preemptive strategy cost
+cost_pre = fn_ * C + (1 - f) * np_ * D
+
+# Reactive strategy cost (piecewise via min/max)
+covered   = sp.Min(np_, fn_)
+uncovered = sp.Max(np_ - fn_, 0)
+
+cost_react = covered * (C + (1 - r) * D) + uncovered * D
+
+# Symbolic difference: reactive - preemptive
+cost_diff = sp.simplify(cost_react - cost_pre)
+cost_diff
+```
+
+## Decision Thresholds for Preemptive vs Reactive (Multiple Populations)
+
+We compute and plot threshold outbreak probability $p^*$ at which preemptive vaccination becomes cheaper than reactive, under various vaccination cost levels $C$ and vaccination capacity levels $f$.
+
+```{r}
+library(ggplot2)
+library(dplyr)
+
+# Parameters
+r_vals <- seq(0.01, 0.99, by = 0.01)
+p_vals <- seq(0.01, 0.99, by = 0.01)
+D <- 1
+C_vals <- c(0.3, 1, 2, 5)
+f_vals <- c(0.05, 0.1, 0.5)
+
+n <- 1009  # or any fixed value
+
+grid_all <- expand.grid(p = p_vals, r = r_vals, C = C_vals, f = f_vals) %>%
+  mutate(
+    cost_pre = n * (f * C + (1 - f) * p * D),
+    covered = pmin(p, f),
+    uncovered = pmax(p - f, 0),
+    cost_react = n * (covered * (C + (1 - r) * D) + uncovered * D),
+    decision = ifelse(cost_pre < cost_react, "preemptive", "reactive")
+  )
+
+# Compute threshold lines: p where cost_pre == cost_react
+threshold_lines <- grid_all %>%
+  group_by(C, f, r) %>%
+  summarise(
+    p_thresh = approx(cost_pre - cost_react, p, xout = 0)$y,
+    .groups = "drop"
+  ) %>%
+  filter(!is.na(p_thresh))
+
+
+# Dynamic label positioning based on actual threshold ranges
+labels_df <- expand.grid(
+  C = C_vals,
+  f = f_vals,
+  label = c("preemptive", "reactive")
+) %>%
+  mutate(
+    r = ifelse(label == "preemptive", 0.1, 0.6),
+    p = ifelse(label == "preemptive", 0.95, 0.05)  # Different p positions
+  )
+
+
+# Plot with threshold lines colored by f
+ggplot(threshold_lines, aes(x = r, y = p_thresh, color = factor(f), linetype = factor(f))) +
+  geom_line(linewidth = 1) +
+  geom_text(data = labels_df, aes(x = r, y = p, label = label),
+            hjust = 0, color = "black", size = 4, inherit.aes = FALSE) +
+  geom_abline(slope = 1, intercept = 0, color = "black", linetype = "dotted", linewidth = 0.8) +
+  facet_wrap(~C, labeller = label_bquote(C == .(C))) +
+  scale_color_manual(values = c("0.05" = "#1b9e77", "0.1" = "#d95f02", "0.5" = "#7570b3")) +
+  scale_linetype_manual(values = c("0.05" = "solid", "0.1" = "dashed", "0.5" = "dotdash")) +
+  scale_y_continuous(limits = c(0, 1)) +
+  scale_x_continuous(limits = c(0, 1)) +
+  labs(
+    title = "Threshold Outbreak Probability for Preemptive vs Reactive Strategy",
+    subtitle = "Multiple population scenario with varying vaccination capacity f",
+    x = expression("Relative effectiveness of reactive vaccination" ~ italic(r)),
+    y = expression("Threshold outbreak probability" ~ italic(p^"*")),
+    color = "Vaccination capacity (f)",
+    linetype = "Vaccination capacity (f)"
+  ) +
+  theme_light() +
+  theme(legend.position = "top")
+```
+
+```{r}
+# Exact cost computation for given parameters
+compute_exact_costs <- function(n, p, C, D, r, f) {
+  k <- floor(f * n)  # number of populations we can vaccinate
+
+  probs <- dbinom(0:n, size = n, prob = p)
+
+  # Preemptive: vaccinate k populations before outbreaks
+  cost_pre <- sum(
+    probs * (k * C + (1 - f) * (0:n) * D)  # Expected outbreak cost: only in unvaccinated
+  )
+
+  # Reactive: respond to up to k outbreaks after detection
+  cost_react <- sum(
+    probs * ifelse(
+      0:n <= k,
+      (0:n) * (C + (1 - r) * D),                    # All outbreaks mitigated
+      k * (C + (1 - r) * D) + (0:n - k) * D         # Only k mitigated, rest unmitigated
+    )
+  )
+
+  list(pre = cost_pre, react = cost_react)
+}
+
+find_threshold_p <- function(n, r, C, D, f, p_grid = seq(0.01, 0.99, by = 0.01)) {
+  for (p in p_grid) {
+    costs <- compute_exact_costs(n, p, C, D, r, f)
+    if ((costs$pre - costs$react) < 0) {
+      return(p)  # First p where preemptive is cheaper
+    }
+  }
+  return(NA)
+}
+```
+
+```{r}
+# Parameters
+n <- 20  # try 2 to compare with two-pop figure
+r_vals <- seq(0.01, 0.99, by = 0.01)
+C_vals <- c(0.3, 1, 2, 5)
+f_vals <- c(0.05, 0.1, 0.5)
+D <- 1
+
+# Dynamic label positioning based on actual threshold ranges
+labels_df <- expand.grid(
+  C = C_vals,
+  f = f_vals,
+  label = c("preemptive", "reactive")
+) %>%
+  mutate(
+    r = ifelse(label == "preemptive", 0.1, 0.6),
+    p = ifelse(label == "preemptive", 0.95, 0.05)  # Different p positions
+  )
+
+# Grid of all thresholds
+thresholds <- expand.grid(C = C_vals, f = f_vals, r = r_vals) %>%
+  rowwise() %>%
+  mutate(
+    p_thresh = find_threshold_p(n = n, r = r, C = C, D = D, f = f)
+  ) %>%
+  ungroup()
+
+
+ggplot(thresholds, aes(x = r, y = p_thresh, color = factor(f), linetype = factor(f))) +
+  geom_line(linewidth = 1) +
+  geom_text(data = labels_df, aes(x = r, y = p, label = label),
+            hjust = 0, color = "black", size = 4, inherit.aes = FALSE) +
+  geom_abline(slope = 1, intercept = 0, color = "black", linetype = "dotted", linewidth = 0.8) +
+  facet_wrap(~C, labeller = label_bquote(C == .(C))) +
+  scale_color_manual(values = c("0.05" = "#1b9e77", "0.1" = "#d95f02", "0.5" = "#7570b3")) +
+  scale_linetype_manual(values = c("0.05" = "solid", "0.1" = "dashed", "0.5" = "dotdash")) +
+  labs(
+    title = "Exact Threshold Outbreak Probability for Preemptive vs Reactive",
+    subtitle = paste("Based on Binomial outbreak distribution with n =", n),
+    x = expression("Relative effectiveness of reactive vaccination" ~ italic(r)),
+    y = expression("Threshold outbreak probability" ~ italic(p^"*")),
+    color = "Vaccination capacity (f)",
+    linetype = "Vaccination capacity (f)"
+  ) +
+  theme_light() +
+  theme(legend.position = "top")
+
+```
+
+```{r}
+library(ggplot2)
+library(dplyr)
+
+# --- Parameters ---
+r_vals <- seq(0.01, 0.99, by = 0.01)
+p_vals <- seq(0.01, 0.99, by = 0.01)
+D <- 1
+C_vals <- c(0.3, 1, 2, 5)
+f_vals <- c(0.4)  # exact overlay for f = 0.5
+n <- 20            # exact enumeration for n = 2
+
+# --- Function: exact expected cost given outbreak count ---
+compute_exact_costs <- function(n, p, C, D, r, f) {
+  k <- floor(f * n)
+  x_vals <- 0:n
+  probs <- dbinom(x_vals, size = n, prob = p)
+
+  # Preemptive: vaccinate k units, pay outbreak cost only for (1 - f)
+  cost_pre <- sum(probs * (k * C + (1 - f) * x_vals * D))
+
+  # Reactive: cover up to k outbreaks after detection
+  cost_react <- sum(probs * ifelse(
+    x_vals <= k,
+    x_vals * (C + (1 - r) * D),
+    k * (C + (1 - r) * D) + (x_vals - k) * D
+  ))
+
+  list(pre = cost_pre, react = cost_react)
+}
+
+# --- Function: Find p* threshold where preemptive becomes better ---
+find_threshold_p <- function(n, r, C, D, f, p_grid = seq(0.01, 0.99, by = 0.01)) {
+  for (p in p_grid) {
+    costs <- compute_exact_costs(n, p, C, D, r, f)
+    if ((costs$pre - costs$react) < 0) {
+      return(p)
+    }
+  }
+  return(NA)
+}
+
+# --- Compute threshold p* for each (r, C) using exact method ---
+threshold_exact <- expand.grid(C = C_vals, f = f_vals, r = r_vals) %>%
+  rowwise() %>%
+  mutate(
+    p_thresh = find_threshold_p(n = n, r = r, C = C, D = D, f = f)
+  ) %>%
+  ungroup() %>%
+  mutate(method = "Exact (n = 2)", f = factor(f))
+
+# --- Load two-population approximation for comparison ---
+grid2 <- expand.grid(p = p_vals, r = r_vals, C = C_vals) %>%
+  mutate(
+    cost_pre = C + p * D,
+    cost_react = (2 * p - p^2) * C + (2 * p * (1 - p) * (1 - r) + p^2 * (2 - r)) * D
+  )
+
+threshold_two_pop <- grid2 %>%
+  group_by(C, r) %>%
+  summarise(
+    p_thresh = approx(cost_pre - cost_react, p, xout = 0)$y,
+    .groups = "drop"
+  ) %>%
+  filter(!is.na(p_thresh)) %>%
+  mutate(method = "Two population approx", f = factor(0.5))
+
+# --- Combine and plot ---
+threshold_combined <- bind_rows(threshold_exact, threshold_two_pop)
+
+ggplot(threshold_combined, aes(x = r, y = p_thresh, color = method, linetype = method)) +
+  geom_line(linewidth = 1) +
+  facet_wrap(~C, labeller = label_bquote(C == .(C))) +
+  scale_color_manual(values = c("Exact (n = 2)" = "#1b9e77", "Two population approx" = "#d95f02")) +
+  scale_linetype_manual(values = c("Exact (n = 2)" = "solid", "Two population approx" = "dashed")) +
+  scale_y_continuous(limits = c(0, 1)) +
+  scale_x_continuous(limits = c(0, 1)) +
+  labs(
+    title = "Threshold Outbreak Probability for Preemptive vs Reactive (f = 0.5)",
+    subtitle = "Comparison between exact enumeration for n = 2 and two-population approximation",
+    x = expression("Relative effectiveness of reactive vaccination" ~ italic(r)),
+    y = expression("Threshold outbreak probability" ~ italic(p^"*")),
+    color = "Method",
+    linetype = "Method"
+  ) +
+  theme_light() +
+  theme(legend.position = "top")
+
+```
+
+## Asymptotic Limit: Preemptive vs Reactive
+
+As the number of populations $n \to \infty$ and vaccination capacity fraction $f \to 0$ (i.e., resources are extremely limited), the expected costs for preemptive and reactive strategies simplify.
+
+Let:
+
+-   $p$: probability of an outbreak per population,
+-   $r$: relative effectiveness of reactive vaccination,
+-   $C$: cost of one vaccination campaign,
+-   $D$: cost of one unmitigated outbreak,
+-   $fn$: number of populations we can afford to vaccinate (preemptively or reactively)
+
+
+
+### Preemptive Expected Cost
+
+Total cost:
+
+$$
+\text{Cost}_{\text{pre}} = fn \cdot C + (1 - f)np \cdot D
+$$
+
+As $f \to 0$, this becomes:
+
+$$
+\text{Cost}_{\text{pre}} \approx npD
+$$
+
+
+### Reactive Expected Cost
+
+Using the expression:
+
+$$
+\text{Cost}_{\text{react}} = \min(fn, np)(C + (1 - r)D) + \max(np - fn, 0) \cdot D
+$$
+
+If $fn \ll np$:
+
+$$
+\text{Cost}_{\text{react}} \approx fn(C + (1 - r)D) + (np - fn)D
+$$
+
+
+
+### Cost Difference
+
+Compute:
+
+$$
+\begin{aligned}
+\Delta &= \text{Cost}_{\text{pre}} - \text{Cost}_{\text{react}} \\
+&= fnC + (1 - f)npD - \left[fn(C + (1 - r)D) + (np - fn)D\right] \\
+&= fnD(r - p)
+\end{aligned}
+$$
+
+
+
+### ✅ Result
+
+-   If $r < p$: preemptive is cheaper ($\Delta < 0$)
+-   If $r > p$: reactive is cheaper ($\Delta > 0$)
+
+Thus, in the limit:
+
+$$
+p > r \quad \Rightarrow \quad \text{preemptive is preferred}
+$$
+
+This corresponds to the decision threshold line $p^* = r$ as $f \to 0$ and $n \to \infty$.
+
+```{r}
+# Overlay limit line p = r
+ggplot(threshold_combined, aes(x = r, y = p_thresh, color = method, linetype = method)) +
+  geom_line(linewidth = 1) +
+  scale_y_continuous(limits=c(0,1))+
+  geom_abline(slope = 1, intercept = 0, color = "black", linetype = "dotted", linewidth = 0.8) +
+  annotate("text", x = 0.7, y = 0.7, label = "p = r (limit)", angle = 45, hjust = -0.1, vjust = 1.2, size = 3.5) +
+  facet_wrap(~C, labeller = label_bquote(C == .(C))) +
+  scale_color_manual(values = c("Exact (n = 2)" = "#1b9e77", "Two population approx" = "#d95f02")) +
+  scale_linetype_manual(values = c("Exact (n = 2)" = "solid", "Two population approx" = "dashed")) +
+  labs(
+    title = "Threshold Outbreak Probability with Asymptotic Line p = r",
+    subtitle = "Black dotted line shows p = r decision boundary as n → ∞ and f → 0",
+    x = expression("Relative effectiveness of reactive vaccination" ~ italic(r)),
+    y = expression("Threshold outbreak probability" ~ italic(p^"*")),
+    color = "Method",
+    linetype = "Method"
+  ) +
+  theme_light() +
+  theme(legend.position = "top")
+
+```
+
+## Optimizing Hybrid Vaccination Strategy
+
+### Problem
+
+> Given a limited vaccination budget (or coverage fraction $f$), how should we split our efforts between **preemptive** and **reactive** vaccination strategies to **minimize total expected cost**?
+
+We define:
+
+-   $\alpha \in [0, 1]$: fraction of vaccination resources used **preemptively**
+-   $1 - \alpha$: fraction used **reactively**
+-   $f$: total fraction of the population that can be vaccinated
+-   $n$: total number of populations
+-   $p$: probability of outbreak in each population
+-   $C$: cost of one vaccination campaign
+-   $D$: cost of one unmitigated outbreak
+-   $r$: relative effectiveness of reactive vaccination
+
+
+##  Expected Cost Formula
+
+The total expected cost of a hybrid strategy that uses $\alpha$ of the vaccination capacity preemptively is:
+
+$$
+\text{Cost}(\alpha) =
+\underbrace{\alpha f n C}_{\text{preemptive vaccination}} +
+\underbrace{\min(x, k_{\text{react}})(C + (1 - r)D)}_{\text{reactive cost}} +
+\underbrace{\max(x - k_{\text{react}}, 0) D}_{\text{unmitigated outbreaks}}
+$$
+
+Where: - $x = (1 - \alpha f)np$: expected number of outbreaks in unvaccinated group - $k_{\text{react}} = (1 - \alpha)fn$: number of reactive campaigns available
+
+
+## Visualizing Cost of Hybrid Strategy
+
+We explore how the total expected cost varies with the fraction $\alpha$ of vaccine budget used preemptively.
+
+```{r}
+library(ggplot2)
+library(dplyr)
+
+# Parameters (adjustable)
+f <- 0.5     # total vaccination capacity
+n <- 100     # number of populations
+p <- 0.3     # outbreak probability per population
+C <- 1       # cost of a vaccination campaign
+D <- 5       # cost of an unmitigated outbreak
+r <- 0.4     # relative effectiveness of reactive vaccination
+
+# Alpha grid: preemptive share
+alpha_vals <- seq(0, 1, by = 0.01)
+
+# Compute total cost for each alpha
+cost_df <- data.frame(alpha = alpha_vals) %>%
+  mutate(
+    k_pre = alpha * f * n,
+    k_react = (1 - alpha) * f * n,
+    x = (1 - alpha * f) * n * p,
+    covered = pmin(x, k_react),
+    uncovered = pmax(x - k_react, 0),
+    cost = k_pre * C + covered * (C + (1 - r) * D) + uncovered * D
+  )
+```
+
+```{r}
+ggplot(cost_df, aes(x = alpha, y = cost)) +
+  geom_line(color = "steelblue", linewidth = 1.2) +
+  geom_point(data = cost_df %>% slice_min(cost), aes(x = alpha, y = cost), 
+             color = "firebrick", size = 3) +
+  annotate("text", 
+           x = cost_df$alpha[which.min(cost_df$cost)], 
+           y = min(cost_df$cost), 
+           label = "Minimum", 
+           hjust = -0.2, vjust = -1, color = "firebrick") +
+  labs(
+    title = expression("Expected Total Cost of Hybrid Strategy vs " ~ alpha),
+    subtitle = paste0("Parameters: p = ", p, ", f = ", f, ", n = ", n, 
+                      ", C = ", C, ", D = ", D, ", r = ", r),
+    x = expression("Fraction of vaccine budget used preemptively" ~ (alpha)),
+    y = "Expected total cost"
+  ) +
+  theme_light()
+```
+
+
