@@ -7,8 +7,6 @@ editor_options:
   chunk_output_type: console
 ---
 
-
-# Setup
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
 library(tidyverse)
@@ -17,6 +15,11 @@ save_plot <- FALSE
 library(ggpattern)
 library(patchwork)
 ```
+
+
+We see that $r$ is critical in assessing the effectiveness of the overall 
+
+
 
 When managing infectious disease risks such as cholera, limited vaccine supply often forces decision-makers to choose between **pre-emptive** and **reactive** vaccination campaigns. This post explores a cost-benefit model comparing the two strategies using analytical expressions and numerical simulations.
 
@@ -86,7 +89,7 @@ Let:
 
 ### Incidence Rate Function
 
-The incidence rate $ IR(t)$ is defined piecewise as:
+The incidence rate \$ IR(t) \$ is defined piecewise as:
 
 $$
 IR(t) = 
@@ -96,7 +99,7 @@ r_p - (r_p - r_0)\cdot \frac{t - t_p}{t_1 - t_p} & \text{if } t > t_p
 \end{cases}
 $$ \### Cumulative Cases Above Baseline (Area)
 
-For $ t \le t_p $, the area from $ t_0$  to $t$ is:
+For \$ t \le t_p \$, the area from \$ t_0 ) to ( t \$ is:
 
 $$
 A(t) = \frac{(t - t_0) \cdot (IR(t) - r_0)}{2}
@@ -121,6 +124,8 @@ Thus, the total area is:
 $$
 A(t) = A_1 + A_2
 $$
+
+------------------------------------------------------------------------
 
 ### Goal
 
@@ -159,6 +164,7 @@ print(preempt[order(-preempt$outbreak_prob),], n=20)
 
 vacc_strategy <- sample(c("none", "reactive", "preemptive"), 
                         size = 500, replace = TRUE)
+
 
 
 # Initialize NA vector
@@ -527,7 +533,7 @@ p1 <-
   theme_upper_panel()
 ```
 
-### Reactive
+#### Reactive
 
 ```{r}
 p2 <- ggplot(dlong, aes(week, value, linetype = name, shape = name, group = name)) +
@@ -641,7 +647,7 @@ if (save_plot) {
 }
 ```
 
-## Targetting accuracy vs. relative impact of preemptive vaccination
+### Targetting accuracy vs. relative impact of preemptive vaccination
 
 ```{r}
 # Data for reactive scenario vs no intervention

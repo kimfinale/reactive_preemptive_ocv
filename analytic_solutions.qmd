@@ -20,10 +20,10 @@ We evaluate the expected **total cost** of two strategies (preemptive vs reactiv
 
 Let:
 
-- $D$: The full cost of an outbreak (e.g., hospital burden, DALYs, economic cost)
+- $D$: The full cost of an outbreak (e.g., cases, deaths, DALYs)
 - $C$: The cost of deploying a vaccination campaign
 - $p$: The probability of an outbreak ($0 < p < 1$)
-- $r$: The **relative effectiveness** of a reactive vaccination campaign, where $0 < r < 1$
+- $r$: The **relative effectiveness** of a reactive vaccination campaign compared to the preemptive vaccination campaign ($0 < r < 1$)
 
 ## Strategy 1: Preemptive Vaccination
 
@@ -67,7 +67,6 @@ This is the **threshold outbreak probability** above which preemptive vaccinatio
 -   As $r \to 1$, reactive vaccination becomes nearly as effective as preemptive -> threshold $p^*$ increases 
 -   As the cost of an outbreak compared to the vaccination cost, $D / C$, becomes large -> threshold $p^*$ decreases
 
-
 ## Symbolic derivation 
 
 ```{python}
@@ -87,10 +86,9 @@ p_thresh
 ```
 
 Expected output:
-
-```{python}
-C / (C + (1 - r)*D)
-```
+$$
+\frac{C}{C + (1 - r)D}
+$$
 
 ## Visualizing the threshold $p^*$
 
@@ -103,13 +101,6 @@ r_vals <- seq(0.01, 0.99, by = 0.01)
 p_vals <- seq(0.01, 0.99, by = 0.01)
 D <- 1
 C_vals <- c(0.3, 1, 2, 5)
-
-# Generate grid
-grid <- expand.grid(p = p_vals, r = r_vals, C = C_vals) %>%
-  mutate(
-    p_star = C / (C + (1 - r) * D),
-    decision = ifelse(p > p_star, "preemptive", "reactive")
-  )
 
 # Create evaluation grid
 grid <- expand.grid(p = p_vals, r = r_vals, C = C_vals) %>%
@@ -129,17 +120,21 @@ threshold_lines <- grid %>%
   ) %>%
   filter(!is.na(p_thresh))
 
+labels_df <- data.frame(
+  C = rep(C_vals, each = 2),
+  label = rep(c("preemptive", "reactive"), 4),
+  r = rep(c(0.05, 0.75), 4),
+  p = rep(c(0.95, 0.05), 4)
+)
+
 ggplot(grid, aes(x = r, y = p)) +
   geom_line(data = threshold_lines, aes(x = r, y = p_thresh, group = C), 
             color = "black", linewidth = 1, inherit.aes = FALSE) +
+  geom_abline(slope = 1, intercept = 0, color = "black", linetype = "dotted", linewidth = 0.8) +
+  geom_text(data = labels_df, aes(x = r, y = p, label = label),
+            hjust = 0, color = "black", size = 4, inherit.aes = FALSE) +
   scale_y_continuous(limits=c(0,1))+
   scale_x_continuous(limits=c(0,1))+
-  geom_text(data = data.frame(C = rep(C_vals, each = 2),
-                              label = rep(c("preemptive", "reactive"), 4),
-                              r = rep(0.05, 8),
-                              p = rep(c(0.95, 0.05), 4)),
-            aes(x = r, y = p, label = label), hjust = 0, 
-            color = "black", size = 4, inherit.aes = FALSE) +
   scale_fill_manual(values = c("preemptive" = "steelblue", "reactive" = "tomato")) +
   facet_wrap(~C, labeller = label_bquote(D/C == .(D/C))) +
   labs(
@@ -160,7 +155,7 @@ $$
 p > \frac{C}{C + (1 - r)D}
 $$
 
-This tradeoff depends jointly on: - **Uncertainty** ($p$), - **Response effectiveness** ($r$), - **Cost of prevention** ($C$), - **Cost of inaction** ($D$)
+This tradeoff depends jointly on: - **Probability of an outbreak** ($p$), - **Relative effectiveness of a reactive strategy** ($r$), - **Cost of prevention** ($C$), - **Cost of inaction** ($D$)
 
 # Two-population scenario
 
@@ -271,7 +266,6 @@ $$
 $$
 
 
-
 ## Symbolic Comparison
 
 Compare:
@@ -315,7 +309,6 @@ simplified_thresh = [simplify(expr) for expr in p_thresh]
 for i, expr in enumerate(simplified_thresh):
     print(f"Threshold p solution {i+1}:")
     print(expr)
-
 ```
 
 ```{r}
@@ -350,21 +343,18 @@ threshold_lines <- grid %>%
 labels_df <- data.frame(
   C = rep(C_vals, each = 2),
   label = rep(c("preemptive", "reactive"), 4),
-  r = rep(0.05, 8),
+  r = rep(c(0.05, 0.75), 4),
   p = rep(c(0.95, 0.05), 4)
 )
 
 ggplot(grid, aes(x = r, y = p)) +
   geom_line(data = threshold_lines, aes(x = r, y = p_thresh, group = C), 
             color = "black", linewidth = 1, inherit.aes = FALSE) +
+  geom_abline(slope = 1, intercept = 0, color = "black", linetype = "dotted", linewidth = 0.8) +
+  geom_text(data = labels_df, aes(x = r, y = p, label = label),
+            hjust = 0, color = "black", size = 4, inherit.aes = FALSE) +
   scale_y_continuous(limits=c(0,1))+
   scale_x_continuous(limits=c(0,1))+
-  geom_text(data = data.frame(C = rep(C_vals, each = 2),
-                              label = rep(c("preemptive", "reactive"), 4),
-                              r = rep(0.05, 8),
-                              p = rep(c(0.95, 0.05), 4)),
-            aes(x = r, y = p, label = label), hjust = 0, 
-            color = "black", size = 4, inherit.aes = FALSE) +
   scale_fill_manual(values = c("preemptive" = "steelblue", "reactive" = "tomato")) +
   facet_wrap(~C, labeller = label_bquote(D/C == .(D/C))) +
   labs(
@@ -515,13 +505,13 @@ $$
 
 Split into two parts:
 
-### 🔹 Case 1: $x \le k$
+### Case 1: $x \le k$
 $$
 \sum_{x = 0}^{k}
 \binom{n}{x} p^x (1 - p)^{n - x} \cdot x(C + (1 - r)D)
 $$
 
-### 🔹 Case 2: $x > k$
+### Case 2: $x > k$
 $$
 \sum_{x = k+1}^{n}
 \binom{n}{x} p^x (1 - p)^{n - x}
@@ -616,7 +606,7 @@ labels_df <- expand.grid(
   label = c("preemptive", "reactive")
 ) %>%
   mutate(
-    r = ifelse(label == "preemptive", 0.1, 0.6),
+    r = ifelse(label == "preemptive", 0.05, 0.75),
     p = ifelse(label == "preemptive", 0.95, 0.05)  # Different p positions
   )
 
@@ -694,7 +684,7 @@ labels_df <- expand.grid(
   label = c("preemptive", "reactive")
 ) %>%
   mutate(
-    r = ifelse(label == "preemptive", 0.1, 0.6),
+    r = ifelse(label == "preemptive", 0.05, 0.75),
     p = ifelse(label == "preemptive", 0.95, 0.05)  # Different p positions
   )
 
@@ -798,8 +788,22 @@ threshold_two_pop <- grid2 %>%
 # --- Combine and plot ---
 threshold_combined <- bind_rows(threshold_exact, threshold_two_pop)
 
+# Dynamic label positioning based on actual threshold ranges
+labels_df <- expand.grid(
+  C = C_vals,
+  f = f_vals,
+  label = c("preemptive", "reactive")
+) %>%
+  mutate(
+    r = ifelse(label == "preemptive", 0.05, 0.75),
+    p = ifelse(label == "preemptive", 0.95, 0.05)  # Different p positions
+  )
+
 ggplot(threshold_combined, aes(x = r, y = p_thresh, color = method, linetype = method)) +
   geom_line(linewidth = 1) +
+  geom_text(data = labels_df, aes(x = r, y = p, label = label),
+            hjust = 0, color = "black", size = 4, inherit.aes = FALSE) +
+  geom_abline(slope = 1, intercept = 0, color = "black", linetype = "dotted", linewidth = 0.8) +
   facet_wrap(~C, labeller = label_bquote(C == .(C))) +
   scale_color_manual(values = c("Exact (n = 2)" = "#1b9e77", "Two population approx" = "#d95f02")) +
   scale_linetype_manual(values = c("Exact (n = 2)" = "solid", "Two population approx" = "dashed")) +
@@ -877,7 +881,7 @@ $$
 
 
 
-### ✅ Result
+### Result
 
 -   If $r < p$: preemptive is cheaper ($\Delta < 0$)
 -   If $r > p$: reactive is cheaper ($\Delta > 0$)
@@ -894,6 +898,8 @@ This corresponds to the decision threshold line $p^* = r$ as $f \to 0$ and $n \t
 # Overlay limit line p = r
 ggplot(threshold_combined, aes(x = r, y = p_thresh, color = method, linetype = method)) +
   geom_line(linewidth = 1) +
+  geom_text(data = labels_df, aes(x = r, y = p, label = label),
+            hjust = 0, color = "black", size = 4, inherit.aes = FALSE) +
   scale_y_continuous(limits=c(0,1))+
   geom_abline(slope = 1, intercept = 0, color = "black", linetype = "dotted", linewidth = 0.8) +
   annotate("text", x = 0.7, y = 0.7, label = "p = r (limit)", angle = 45, hjust = -0.1, vjust = 1.2, size = 3.5) +
@@ -913,11 +919,11 @@ ggplot(threshold_combined, aes(x = r, y = p_thresh, color = method, linetype = m
 
 ```
 
-## Optimizing Hybrid Vaccination Strategy
+# Optimizing Hybrid Vaccination Strategy
 
-### Problem
+## Problem
 
-> Given a limited vaccination budget (or coverage fraction $f$), how should we split our efforts between **preemptive** and **reactive** vaccination strategies to **minimize total expected cost**?
+> Given a limited vaccine supply, how should we split our efforts between **preemptive** and **reactive** vaccination strategies to **minimize total expected cost**?
 
 We define:
 
@@ -928,7 +934,7 @@ We define:
 -   $p$: probability of outbreak in each population
 -   $C$: cost of one vaccination campaign
 -   $D$: cost of one unmitigated outbreak
--   $r$: relative effectiveness of reactive vaccination
+-   $r$: relative effectiveness of reactive vaccination to the preemptive strategy
 
 
 ##  Expected Cost Formula
@@ -996,4 +1002,92 @@ ggplot(cost_df, aes(x = alpha, y = cost)) +
   theme_light()
 ```
 
+## Cost Function Derivation for Parametric Risk Distributions
+
+Define:
+- $p_i$: true outbreak probability in region $i$
+- $q(k_{\text{pre}}) = \sum_{i \in \text{top-}k_{\text{pre}}} p_i$: expected number of outbreaks covered by preemptive vaccination
+- $x = \sum_{i \notin \text{top-}k_{\text{pre}}} p_i = np - q(k_{\text{pre}})$: expected number of outbreaks among the non-preemptively vaccinated regions
+
+
+### Case 1: Uniform$(a, b)$
+- $p_i \sim \text{Uniform}(a, b)$
+- $\mathbb{E}[p_i] = \frac{a + b}{2}$
+- Expected total outbreaks: $np = n \cdot \frac{a + b}{2}$
+- Expected $q(k)$: $q(k_{\text{pre}}) = k_{\text{pre}} \cdot \frac{a + b}{2}$
+- $x = np - q(k_{\text{pre}}) = (n - k_{\text{pre}}) \cdot \frac{a + b}{2}$
+
+---
+
+### Case 2: Beta$(a, b)$
+- $p_i \sim \text{Beta}(a, b)$
+- $\mathbb{E}[p_i] = \frac{a}{a + b}$
+- $np = n \cdot \frac{a}{a + b}$
+- $q(k_{\text{pre}}) = k_{\text{pre}} \cdot \frac{a}{a + b}$
+- $x = (n - k_{\text{pre}}) \cdot \frac{a}{a + b}$
+
+---
+
+### Case 3: Truncated Normal$(\mu, \sigma^2)$ on $[0,1]$
+- $p_i \sim \text{TruncNorm}(\mu, \sigma^2, [0,1])$
+- $\mathbb{E}[p_i] = \mu_{\text{trunc}} = \text{mean of truncated normal}$
+- $np = n \cdot \mu_{\text{trunc}}$
+- $q(k_{\text{pre}}) = k_{\text{pre}} \cdot \mu_{\text{trunc}}$
+- $x = (n - k_{\text{pre}}) \cdot \mu_{\text{trunc}}$
+
+---
+
+### R Code for All Cases
+```{r}
+# Common parameters
+n <- 100
+f <- 0.5
+C <- 1
+D <- 5
+r <- 0.4
+alpha_vals <- seq(0, 1, by = 0.01)
+
+# Risk distribution parameters
+uniform_ab <- c(0.1, 0.5)
+beta_ab <- c(2, 5)
+mu <- 0.3
+sigma <- 0.15
+
+# Truncated normal mean (approximation via simulation)
+get_truncnorm_mean <- function(mu, sigma, n = 1e6) {
+  a <- (0 - mu) / sigma
+  b <- (1 - mu) / sigma
+  mean(rtruncnorm(n, a = 0, b = 1, mean = mu, sd = sigma))
+}
+
+mu_trunc <- get_truncnorm_mean(mu, sigma)
+
+# Cost computation function
+eval_cost <- function(alpha, n, f, p_mean, C, D, r) {
+  k_pre <- floor(alpha * f * n)
+  k_react <- floor((1 - alpha) * f * n)
+  x <- (n - k_pre) * p_mean
+  cost <- k_pre * C + min(x, k_react) * (C + (1 - r) * D) + max(0, x - k_react) * D
+  return(cost)
+}
+
+costs_uniform <- sapply(alpha_vals, eval_cost, n = n, f = f, p_mean = mean(uniform_ab), C = C, D = D, r = r)
+costs_beta    <- sapply(alpha_vals, eval_cost, n = n, f = f, p_mean = beta_ab[1] / sum(beta_ab), C = C, D = D, r = r)
+costs_trunc   <- sapply(alpha_vals, eval_cost, n = n, f = f, p_mean = mu_trunc, C = C, D = D, r = r)
+
+# Plot
+library(ggplot2)
+df <- data.frame(
+  alpha = rep(alpha_vals, 3),
+  cost = c(costs_uniform, costs_beta, costs_trunc),
+  dist = rep(c("Uniform(0.1, 0.5)", "Beta(2,5)", "TruncNorm(0.3,0.15)"), each = length(alpha_vals))
+)
+
+ggplot(df, aes(x = alpha, y = cost, color = dist)) +
+  geom_line(size = 1) +
+  labs(x = expression(alpha), y = "Expected Total Cost",
+       title = "Cost vs. Preemptive Allocation (alpha)",
+       color = "Risk Distribution") +
+  theme_minimal()
+```
 
