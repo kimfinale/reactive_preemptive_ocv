@@ -495,3 +495,314 @@ optimal_k_preemptive <- function(p, C, VE, Cov, delta) {
     ranks = rank_idx
   ))
 }
+
+
+#' Generate a risk profile for regions or individuals
+#'
+#' This function samples a numeric risk score from a specified distribution,
+#' commonly used to represent outbreak risk or infection probability across subpopulations.
+#' Supported distributions include Beta, Uniform, and Truncated Normal (bounded in [0, 1]).
+#'
+#' The output vector is sorted in decreasing order to facilitate risk ranking.
+#'
+#' @param n Integer. Number of samples to generate.
+#' @param dist Character. Distribution to sample from: `"beta"`, `"uniform"`, or `"normal"`.
+#' @param params List. Distribution parameters:
+#'   - For `"beta"`: `a`, `b` (shape parameters)
+#'   - For `"uniform"`: `min`, `max` (bounds)
+#'   - For `"normal"`: `mean`, `sd` (mean and standard deviation; truncated to [0,1])
+#' @param seed Integer or NULL. Optional random seed for reproducibility.
+#'
+#' @return Numeric vector of length `n`, sorted in decreasing order.
+#' @examples
+#' generate_risk_profile(10, dist = "beta", params = list(a = 2, b = 5), seed = 42)
+#' generate_risk_profile(10, dist = "uniform", params = list(min = 0, max = 1))
+#' generate_risk_profile(10, dist = "normal", params = list(mean = 0.5, sd = 0.1))
+#' @export
+generate_risk_profile <- function(n, dist = "beta", params = list(), seed = NULL) {
+  if (!is.null(seed)) set.seed(seed)
+
+  # Ensure truncnorm is available if needed
+  if (dist == "normal" && !requireNamespace("truncnorm", quietly = TRUE)) {
+    stop("Please install the 'truncnorm' package: install.packages('truncnorm')")
+  }
+
+  # Helper for default parameter values
+  `%||%` <- function(a, b) if (!is.null(a)) a else b
+
+  # Sample from the specified distribution
+  p_raw <- switch(
+    dist,
+    "beta" = {
+      a <- params$a %||% 2
+      b <- params$b %||% 5
+      rbeta(n, a, b)
+    },
+    "uniform" = {
+      min_val <- params$min %||% 0
+      max_val <- params$max %||% 1
+      runif(n, min_val, max_val)
+    },
+    "normal" = {
+      mu <- params$mean %||% 0.5
+      sigma <- params$sd %||% 0.1
+      truncnorm::rtruncnorm(n, a = 0, b = 1, mean = mu, sd = sigma)
+    },
+    stop("Unsupported distribution. Choose from 'beta', 'uniform', or 'normal'.")
+  )
+
+  # Return sorted risk profile (e.g., for prioritization)
+  sort(p_raw, decreasing = TRUE)
+}
+
+#' Compute total expected cost under a mixed preemptive and reactive strategy
+#'
+#' This function calculates the total expected cost of a hybrid strategy where
+#' a fraction `alpha` of the population is preemptively vaccinated (subject to
+#' vaccine supply constraint `f`), and the remainder is managed reactively after
+#' outbreaks occur. The risk profile should be sorted in decreasing order.
+#'
+#' Preemptively vaccinated regions incur a fixed cost `C` per region. Reactively
+#' managed regions experience an expected cost proportional to their risk, weighted
+#' by $(1 - r) \cdot D$, where `r` is the relative effectiveness of reactive
+#' response compared to preemptive vaccination.
+#'
+#' @param alpha Numeric. Proportion of the population targeted for preemptive vaccination (between 0 and 1).
+#' @param risk_profile Numeric vector. Outbreak risk scores for each region, sorted in decreasing order.
+#' @param C Numeric. Cost of preemptive vaccination per region.
+#' @param D Numeric. Cost of an unmitigated outbreak per region.
+#' @param r Numeric. Relative effectiveness of reactive response compared to preemptive vaccination (0 = no effect, 1 = equally effective).
+#' @param f Numeric. Vaccine supply availability as a fraction of the total population (e.g., `f = 1` = full coverage, `f = 0.1` = 10% coverage).
+#'
+#' @return Numeric. Total expected cost under the mixed intervention strategy.
+#' @examples
+#' risk <- generate_risk_profile(100)
+#' compute_total_cost(alpha = 0.3, risk_profile = risk, C = 10, D = 1000, r = 0.5, f = 0.2)
+#' @export
+compute_total_cost <- function(alpha, risk_profile, C, D, r, f = 1) {
+  n <- length(risk_profile)
+
+  # Calculate number of regions that can be preemptively vaccinated,
+  # constrained by vaccine supply fraction f
+  k <- floor(alpha * f * n)
+
+  # Preemptive cost: vaccinate k regions at cost C each
+  cost_preemptive <- k * C
+
+  # Reactive cost: sum of remaining outbreak risks × (1 - r) × D
+  cost_reactive <- sum(risk_profile[(k + 1):n]) * (1 - r) * D
+
+  # Total cost = preemptive + reactive
+  cost_preemptive + cost_reactive
+}
+
+#' Optimize preemptive vaccination allocation (alpha) to minimize total cost
+#'
+#' This function identifies the optimal fraction `alpha` of the population to
+#' preemptively vaccinate (subject to vaccine availability `f`) to minimize the
+#' total expected cost of a mixed preemptive–reactive strategy.
+#'
+#' The optimization can be done via:
+#' - `"optimize"`: continuous search using `stats::optimize()` (default).
+#' - `"grid"`: discrete grid search over alpha in [0, 1] using specified step size.
+#'
+#' @param risk_profile Numeric vector. Risk scores for each region, sorted in decreasing order.
+#' @param C Numeric. Cost of preemptive vaccination per region.
+#' @param D Numeric. Cost of an unmitigated outbreak per region.
+#' @param r Numeric. Relative effectiveness of reactive response compared to preemptive vaccination.
+#' @param f Numeric. Vaccine supply availability as a fraction of the population (e.g., `f = 0.2` means 20% of population can be preemptively vaccinated).
+#' @param method Character. Optimization method: `"optimize"` (default) or `"grid"`.
+#' @param by Numeric. Grid step size for alpha (used only if `method = "grid"`). Default is 0.01.
+#'
+#' @return A list with:
+#'   \item{alpha_opt}{Optimal alpha minimizing total cost}
+#'   \item{cost_opt}{Minimum total cost achieved}
+#' @examples
+#' risk <- generate_risk_profile(100)
+#' optimize_alpha(risk, C = 0.2, D = 1, r = 0.5, f = 0.2)
+#' optimize_alpha(risk, C = 1, D = 1, r = 0.5, f = 0.2, method = "grid", by = 0.05)
+#' @export
+optimize_alpha <- function(risk_profile, C, D, r, f = 1, method = "optimize", by = 0.01) {
+  # Define cost function to evaluate for a given alpha
+  cost_fn <- function(alpha) {
+    compute_total_cost(alpha, risk_profile, C, D, r, f)
+  }
+
+  if (method == "optimize") {
+    # Use continuous optimization
+    opt <- optimize(cost_fn, interval = c(0, 1), tol = 1e-4)
+    return(list(alpha_opt = opt$minimum, cost_opt = opt$objective))
+  }
+
+  if (method == "grid") {
+    # Perform discrete grid search over alpha
+    alpha_grid <- seq(0, 1, by = by)
+    costs <- sapply(alpha_grid, cost_fn)
+    i_min <- which.min(costs)
+    return(list(alpha_opt = alpha_grid[i_min], cost_opt = costs[i_min]))
+  }
+
+  stop("Invalid method. Use 'optimize' or 'grid'.")
+}
+
+
+#' Generate a noisy signal or rank preserving a target correlation
+#'
+#' This function perturbs a risk signal `p` to simulate imperfect prediction with
+#' a specified correlation to the true signal. You can generate:
+#'
+#' - A continuous noisy version with **Pearson correlation** ≈ `target_rho`, or
+#' - A permuted ranking with **Kendall's tau** ≈ `target_tau`.
+#'
+#' ## If `target_rho` is specified
+#'
+#' The function constructs:
+#'
+#' ```
+#' z_hat <- rho * p_z + sqrt(1 - rho^2) * noise
+#' ```
+#'
+#' where:
+#' - `p_z` is a standardized version of the input signal (normal scores)
+#' - `noise` is an independent standard normal vector
+#' - `rho` is the target Pearson correlation
+#'
+#' ### Justification
+#' The linear combination:
+#'
+#' $$
+#' Z_{\text{hat}} = \rho Z_{\text{signal}} + \sqrt{1 - \rho^2} Z_{\text{noise}}
+#' $$
+#'
+#' ensures that:
+#'
+#' - $\operatorname{Var}(Z_{\text{hat}}) = 1$
+#' - $\operatorname{Cov}(Z_{\text{hat}}, Z_{\text{signal}}) = \rho$
+#' - $\Rightarrow \operatorname{Cor}(Z_{\text{hat}}, Z_{\text{signal}}) = \rho$
+#'
+#' This is especially useful for modeling imperfect risk estimation with Gaussian-like noise.
+#'
+#' ## If `target_tau` is specified
+#'
+#' The function simulates noisy rankings by randomly swapping pairs of indices from a perfectly ordered
+#' ranking of `p` with a probability proportional to $(1 - \tau)$.
+#'
+#' ### Justification
+#' Kendall's tau is defined as:
+#'
+#' $$
+#' \tau = \frac{\text{\# concordant pairs} - \text{\# discordant pairs}}{\binom{n}{2}}
+#' $$
+#'
+#' Generate a Sequence with a Target Correlation
+#'
+#' Generates a new sequence from an input vector `p` that has a specified
+#' Pearson's correlation (`rho`) or Kendall's rank correlation (`tau`).
+#'
+#' @details
+#' This function has been revised to use a robust and efficient method based on a
+#' Gaussian copula. This approach correctly generates a new vector that not only
+#' meets the target correlation but also preserves the empirical distribution of
+#' the original vector `p`.
+#'
+#' The core logic is as follows:
+#' 1.  An underlying Pearson's correlation `rho` is determined. If `target_tau` is
+#'     provided, it's converted using `rho = sin(target_tau * pi / 2)`. If
+#'     `target_rho` is provided, it's used directly.
+#' 2.  The input vector `p` is converted to normal scores.
+#' 3.  A new, correlated normal score vector is generated.
+#' 4.  This new vector is transformed back to the empirical distribution of `p`.
+#'
+#' This method replaces the previous, less reliable pairwise swapping algorithm
+#' for `target_tau` and completes the logic for `target_rho`. The function now
+#' also supports negative correlations.
+#'
+#' @param p Numeric vector. The original sequence of values.
+#' @param target_rho Numeric in [-1, 1]. The target Pearson correlation between
+#'   the output and `p`. Set this OR `target_tau`.
+#' @param target_tau Numeric in [-1, 1]. The target Kendall's tau between the
+#'   output and `p`. Set this OR `target_rho`.
+#' @param seed Optional integer. A random seed for reproducibility.
+#'
+#' @return A numeric vector of the same length as `p`. The values in this
+#'   vector are drawn from the same empirical distribution as `p` and will have
+#'   a correlation with `p` that is approximately the target.
+#'
+#' @examples
+#' set.seed(123) # for reproducibility
+#' p <- 1:100
+#'
+#' # --- Example 1: Target Pearson's rho ---
+#' noisy_rho <- generate_noisy_rank(p, target_rho = 0.8)
+#' calculated_rho <- cor(noisy_rho, p, method = "pearson")
+#' print(paste("Target Rho:", 0.8, "| Calculated Rho:", round(calculated_rho, 4)))
+#'
+#' plot(p, noisy_rho, main = paste("Pearson's r =", round(calculated_rho, 3)),
+#'      xlab = "Original Sequence (p)", ylab = "Generated Sequence (y_rho)", pch=19)
+#'
+#' # --- Example 2: Target Kendall's tau ---
+#' noisy_tau <- generate_noisy_rank(p, target_tau = 0.6)
+#' calculated_tau <- cor(noisy_tau, p, method = "kendall")
+#' print(paste("Target Tau:", 0.6, "| Calculated Tau:", round(calculated_tau, 4)))
+#'
+#' plot(p, noisy_tau, main = paste("Kendall's Tau =", round(calculated_tau, 3)),
+#'      xlab = "Original Sequence (p)", ylab = "Generated Sequence (y_tau)", pch=19, col="blue")
+#'
+#' # --- Example 3: Negative Correlation ---
+#' noisy_neg_tau <- generate_noisy_rank(p, target_tau = -0.5)
+#' calculated_neg_tau <- cor(noisy_neg_tau, p, method = "kendall")
+#' print(paste("Target Tau:", -0.5, "| Calculated Tau:", round(calculated_neg_tau, 4)))
+#'
+#' plot(p, noisy_neg_tau, main = paste("Kendall's Tau =", round(calculated_neg_tau, 3)),
+#'      xlab = "Original Sequence (p)", ylab = "Generated Sequence (y_neg_tau)", pch=19, col="red")
+#'
+#' @export
+generate_noisy_rank <- function(p, target_rho = NULL, target_tau = NULL, seed = NULL) {
+  # --- 1. Input Validation and Setup ---
+  if (!is.null(seed)) set.seed(seed)
+
+  if (!is.null(target_rho) && !is.null(target_tau)) {
+    stop("Specify only one of `target_rho` or `target_tau`, not both.")
+  }
+  if (is.null(target_rho) && is.null(target_tau)) {
+    stop("You must specify either `target_rho` or `target_tau`.")
+  }
+  if (!is.numeric(p)) stop("'p' must be a numeric vector.")
+  n <- length(p)
+  if (n < 2) stop("'p' must have at least two elements.")
+
+  # --- 2. Determine the underlying Pearson correlation `rho` needed ---
+  if (!is.null(target_rho)) {
+    if (abs(target_rho) > 1) stop("`target_rho` must be between -1 and 1.")
+    rho <- target_rho
+  } else { # target_tau must be non-NULL
+    if (abs(target_tau) > 1) stop("`target_tau` must be between -1 and 1.")
+    rho <- sin(target_tau * pi / 2)
+  }
+
+  # --- 3. Handle Edge Cases for Perfect Correlation ---
+  if (rho == 1) {
+    return(sort(p))
+  }
+  if (rho == -1) {
+    return(rev(sort(p)))
+  }
+
+  # --- 4. Core Generation Logic (Gaussian Copula) ---
+
+  # a. Transform p to normal scores
+  p_ranks <- rank(p, ties.method = "random")
+  p_uniform <- p_ranks / (n + 1)
+  z_p <- qnorm(p_uniform)
+
+  # b. Generate the second, correlated normal vector
+  error_term <- rnorm(n)
+  z_y <- rho * z_p + sqrt(1 - rho^2) * error_term
+
+  # c. Transform the new normal vector back to the empirical distribution of p
+  u_y <- pnorm(z_y)
+  # Using quantile() with the original `p` maps the new ranks onto the original values
+  y <- quantile(p, probs = u_y, type = 1, names = FALSE)
+
+  return(y)
+}

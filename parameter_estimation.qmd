@@ -1,0 +1,195 @@
+---
+title: "parameter_estimation"
+format: html
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+# ─────────────────────────────────────────────────────────────
+# 0.  Packages & seed
+# ─────────────────────────────────────────────────────────────
+library(tidyverse)
+library(rstan)
+rstan_options(auto_write = TRUE)
+options(mc.cores = parallel::detectCores())
+set.seed(123)
+```
+
+```{r}
+# ─────────────────────────────────────────────────────────────
+# 1.  Fake-data generator  (Gaussian copula with group effects)
+# ─────────────────────────────────────────────────────────────
+## 1.1  Global hyper-parameters (choose any you like)
+G            <- 10                       # groups (e.g. countries)
+mu_t0        <- log(5)                   # log-mean time-to-peak (weeks)
+mu_I0        <- log(20)                  # log-mean peak cases
+mu_D0        <- log(15)                  # log-mean duration (weeks)
+sigma_mu_t   <- 0.4                      # SD of group means
+sigma_mu_I   <- 0.6
+sigma_mu_D   <- 0.4
+sigma_t      <- 0.5                      # log-normal SD (within-groups)
+phi_I        <- 0.30                     # NB over-dispersion (size = 1/φ)
+shape_D      <- 4                        # Gamma shape
+                                         # Gamma rate will vary per group
+
+## 1.2  Copula correlation matrix  (moderate positive correlations)
+R <- matrix(c(1, 0.4, 0.5,
+              0.4, 1, 0.6,
+              0.5, 0.6, 1), 3, 3)
+L <- chol(R)   # Cholesky for fast draws
+
+## 1.3  Draw group-specific log means
+mu_t_g <- rnorm(G, mu_t0, sigma_mu_t)
+mu_I_g <- rnorm(G, mu_I0, sigma_mu_I)
+mu_D_g <- rnorm(G, mu_D0, sigma_mu_D)
+
+## 1.4  Simulate outbreaks per group (sparse: 1–10 each)
+out_list <- vector("list", G)
+for (g in seq_len(G)) {
+  n_g <- rpois(1, lambda = 3) + 1        # many groups have few outbreaks
+  group_dat <- tibble()
+  while (nrow(group_dat) < n_g) {
+    ## Draw latent Gaussian; transform to uniforms
+    z <- t(L) %*% rnorm(3)
+    u <- pnorm(z)
+
+    ## Convert to marginals
+    t_pk <- max(1L,
+                round(qlnorm(u[1], meanlog = mu_t_g[g], sdlog = sigma_t)))
+
+    I_pk <- max(1L,
+                qnbinom(u[2], size = 1/phi_I, mu = exp(mu_I_g[g])))
+
+    rate_D_g <- shape_D / exp(mu_D_g[g])  # match mean = exp(mu_D_g[g])
+    Dur  <- round(qgamma(u[3], shape = shape_D, rate = rate_D_g))
+    Dur  <- max(Dur, t_pk)                # logical constraint
+
+    group_dat <- bind_rows(group_dat,
+      tibble(grp = g, t_peak = t_pk, I_peak = I_pk, D = Dur))
+  }
+  out_list[[g]] <- group_dat
+}
+df <- bind_rows(out_list) %>% mutate(grp = factor(grp))
+
+glimpse(df)
+```
+
+```{r}
+# ─────────────────────────────────────────────────────────────
+# 2.  Bundle data for Stan
+# ─────────────────────────────────────────────────────────────
+stan_data <- list(
+  N    = nrow(df),
+  G    = nlevels(df$grp),
+  g    = as.integer(df$grp),
+  t_pk = df$t_peak,
+  I_pk = df$I_peak,
+  Dur  = df$D
+)
+```
+
+```{r}
+# ─────────────────────────────────────────────────────────────
+# 3.  Write the Stan model to disk   (copula_hier.stan)
+# ─────────────────────────────────────────────────────────────
+stan_code <- "
+data {
+  int<lower=1> N;
+  int<lower=1> G;
+  int<lower=1,upper=G> g[N];
+  vector<lower=0>[N] t_pk;
+  int<lower=1> I_pk[N];
+  vector<lower=0>[N] Dur;
+}
+parameters {
+  real mu_t0;         real mu_I0;          real mu_D0;
+  real<lower=0> sigma_mu_t;   real<lower=0> sigma_mu_I;  real<lower=0> sigma_mu_D;
+  vector[G] mu_t_raw; vector[G] mu_I_raw;  vector[G] mu_D_raw;
+
+  real<lower=0> sigma_t;
+  real<lower=0> phi_I;
+  real<lower=0> shape_D;        real<lower=0> rate_D;
+
+  cholesky_factor_corr[3] L_corr;
+}
+transformed parameters {
+  vector[G] mu_t = mu_t0 + sigma_mu_t * mu_t_raw;
+  vector[G] mu_I = mu_I0 + sigma_mu_I * mu_I_raw;
+  vector[G] mu_D = mu_D0 + sigma_mu_D * mu_D_raw;
+}
+model {
+  // Hyper-priors
+  mu_t0 ~ normal(log(5), 1.5);
+  mu_I0 ~ normal(log(20), 2);
+  mu_D0 ~ normal(log(15), 1.5);
+  sigma_mu_t ~ exponential(1);
+  sigma_mu_I ~ exponential(1);
+  sigma_mu_D ~ exponential(1);
+  mu_t_raw ~ normal(0,1);
+  mu_I_raw ~ normal(0,1);
+  mu_D_raw ~ normal(0,1);
+
+  sigma_t  ~ exponential(1);
+  phi_I    ~ exponential(1);
+  shape_D  ~ gamma(2,0.1);
+  rate_D   ~ gamma(2,0.1);
+  L_corr   ~ lkj_corr_cholesky(2);
+
+  // Likelihood with Gaussian copula
+  for (n in 1:N) {
+    int g_n = g[n];
+    real mu_tn = mu_t[g_n];
+    real mu_In = exp(mu_I[g_n]);
+    real mu_Dn = exp(mu_D[g_n]);
+    
+    // Dur (duration) must be larger than t_pk (peak week)
+    if (Dur[n] >= t_pk[n]) { 
+      // Marginal log-densities
+      target += lognormal_lpdf(t_pk[n] | mu_tn, sigma_t);
+      target += neg_binomial_2_lpmf(I_pk[n] | mu_In, 1/phi_I);
+      target += gamma_lpdf(Dur[n] | shape_D, rate_D);
+  
+      // Copula part
+      real u1 = lognormal_cdf(t_pk[n], mu_tn, sigma_t);
+      real F_lo = neg_binomial_2_cdf(I_pk[n]-1, mu_In, 1/phi_I);
+      real F_hi = neg_binomial_2_cdf(I_pk[n], mu_In, 1/phi_I);
+      real u2 = 0.5*(F_lo + F_hi);             // mid-CDF for discrete NB
+      real u3 = gamma_cdf(Dur[n], shape_D, rate_D);
+  
+      vector[3] z;
+      z[1] = inv_Phi(u1);
+      z[2] = inv_Phi(u2);
+      z[3] = inv_Phi(u3);
+  
+      target += multi_normal_cholesky_lpdf(z | rep_vector(0,3), L_corr)
+                - normal_lpdf(z[1] | 0,1) - normal_lpdf(z[2] | 0,1)
+                - normal_lpdf(z[3] | 0,1);
+    } else {
+      // Assign zero probability to illegal cases
+      target += negative_infinity();
+    }
+  }
+}
+
+"
+writeLines(stan_code, "copula_hier.stan")
+```
+
+```{r}
+# ─────────────────────────────────────────────────────────────
+# 4.  Compile and sample
+# ─────────────────────────────────────────────────────────────
+mod <- stan_model("copula_hier.stan")
+
+fit <- sampling(mod,
+                data    = stan_data,
+                chains  = 4,
+                iter    = 1500,
+                warmup  = 750,
+                seed    = 2025,
+                control = list(adapt_delta = 0.9, max_treedepth = 12))
+
+print(fit, pars = c("mu_t0","mu_I0","mu_D0",
+                    "sigma_t","phi_I","shape_D","rate_D"))
+```

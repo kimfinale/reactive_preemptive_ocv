@@ -13,8 +13,8 @@ editor_options:
   chunk_output_type: console
 ---
 
-# Setup
 
+# Setup
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
 library(tidyverse)
@@ -28,50 +28,55 @@ source("R/utils.R")
 
 # Introduction
 
-Oral cholera vaccines (OCVs) are an important tool for cholera control. Vaccine can be used reactively and premptively. This strategic choice carries high stakes for both health outcomes and resource utilization. Preemptive vaccination can avert outbreaks by immunizing at-risk populations in advance, but it incurs upfront costs and risks vaccinating for an outbreak that might never occur. Reactive vaccination, in contrast, targets outbreaks once they are detected, potentially saving doses and avoiding unnecessary campaigns; however, losses accrue before control measures take effect, 
- 
+In the face of emerging infectious disease threats, public health officials must decide whether to deploy vaccines preemptively (before an outbreak occurs) or reactively (after an outbreak is detected). This strategic choice carries high stakes for both health outcomes and resource utilization. Preemptive vaccination can avert outbreaks by immunizing at-risk populations in advance, but it incurs upfront costs and risks vaccinating for an outbreak that might never occur. Reactive vaccination, in contrast, targets outbreaks once they are detected, potentially saving doses and avoiding unnecessary campaigns; however, losses accrue before control measures take effect [@Middleton2024; @Azman2019].
+
 This dilemma is complicated by uncertainty. Outbreak risks vary between populations due to heterogeneous social, environmental, and biological factors, yet risk forecasts are imperfect [@Wells2020]. If authorities had perfect information, they could vaccinate high-risk populations in advance. In practice, risk estimates may be noisy, leading to misallocation of limited vaccines and potential failure to prevent major outbreaks [@Colijn2021].
 
 Models from diverse diseases highlight that no one strategy is best across settings. Studies on mpox, hepatitis E, and MERS-CoV suggest that preemptive campaigns can be life-saving if outbreaks are severe or grow quickly [@Quilty2023; @Azman2019; @Wells2020]. Conversely, reactive strategies may use doses more efficiently when supply is constrained or preemptive coverage is uncertain [@Middleton2024].
 
-Despite these insights, no unifying quantitative framework exists to compare reactive and preemptive vaccination, in particular under varying outbreak probability, resource availability, and risk uncertainty. Our study addresses this gap by developing an analytic and simulation-based framework for identifying the optimal allocation of vaccine resources across populations with potentially heterogeneous and uncertain risk.
+Despite these insights, no unifying quantitative framework exists to compare reactive and preemptive vaccination under varying outbreak probability, resource availability, and risk uncertainty. Our study addresses this gap by developing an analytic and simulation-based framework for identifying the optimal allocation of vaccine resources — defined as the proportion $\alpha$ used preemptively — across populations with potentially heterogeneous and uncertain risk.
 
-Through analytical derivation and simulation, we characterize the impact of outbreak probability ($p$), reactive efficacy ($r$), vaccine budget ($f$), and targeting accuracy (Spearman rank correlation $\rho$) on strategy performance. Our results offer practical guidance for policymakers deciding how much to invest in preemptive campaigns when vaccine stockpiles are constrained and risk signals are imperfect.
+Through analytical derivation and simulation, we characterize the impact of outbreak probability ($p$), reactive efficacy ($r$), vaccine budget ($f$), and targeting accuracy (Spearman rank correlation $
+ho$) on strategy performance. Our results offer practical guidance for policymakers deciding how much to invest in preemptive campaigns when vaccine stockpiles are constrained and risk signals are imperfect.
 
 # The Model
-
 ## The Single Population Scenario
 
-We evaluate the expected total cost of two strategies (preemptive vs reactive vaccination) for a single population at risk of an outbreak. Parameters are:
+We evaluate the expected **total cost** of two strategies (preemptive vs reactive vaccination) for **a single population** at risk of an outbreak.
+
+### Parameters
+
+Let:
 
 -   $D$: The full cost of an outbreak (e.g., cases, deaths, DALYs)
 -   $C$: The cost of deploying a vaccination campaign
--   $\sigma = D/C$
--   $p$: The probability of an outbreak ($0<p<1$)
--   $r$: The relative effectiveness (in terms of case reduction) of a reactive vaccination campaign compared to the preemptive vaccination campaign ($0<r<1$)
-
+-   $p$: The probability of an outbreak ($0 < p < 1$)
+-   $r$: The **relative effectiveness** of a reactive vaccination campaign compared to the preemptive vaccination campaign ($0 < r < 1$)
 
 ## Strategy 1: Preemptive Vaccination
 
-Under a preemptive vaccination scenario, we vaccinate regardless of whether an outbreak happens. We assume that outbreak is fully averted if it would have occurred under a preemptive vaccination. In other words, expected outbreak cost is $0$ and we always pay vaccination cost $C$.
+-   We vaccinate regardless of whether an outbreak happens
+-   Outbreak is fully averted if it would have occurred
+-   Always pay vaccination cost $C$
+-   Expected outbreak cost is $0$
 
-Total cost under a preemptive vaccination is 
 $$
 \text{Cost}_{\text{pre}} = C
 $$
 
 ## Strategy 2: Reactive Vaccination
 
-Under a reactive vaccination scenario, we vaccinate only if an outbreak occurs (probability $p$). The outbreak is only partially mitigated with remaining cost being $(1 - r)D$.   Vaccination cost $C$ is incurred only when outbreak happens. 
+-   Vaccinate only if an outbreak occurs (probability $p$)
+-   Outbreak is only partially mitigated: remaining cost is $(1 - r)D$
+-   Vaccination cost $C$ is also incurred only when outbreak happens
 
-Total cost under a reactive vaccination is
 $$
 \text{Cost}_{\text{react}} = p \cdot (C + (1 - r)D)
 $$
 
 ## Comparing the two strategies
 
-We prefer preemptive vaccination when:
+We prefer **preemptive vaccination** when:
 
 $$
 C < p \cdot (C + (1 - r)D)
@@ -83,14 +88,14 @@ $$
 p^* = \frac{C}{C + (1 - r)D}
 $$
 
-This is the threshold outbreak probability above which preemptive vaccination is cost-saving compared with the reactive vaccination.
+This is the **threshold outbreak probability** above which preemptive vaccination is cost-saving.
 
 ### Interpretation
 
--   As $r \to 1$, reactive vaccination becomes nearly as effective as preemptive, threshold $p^*$ increases
--   As the cost of an outbreak compared to the vaccination cost, $\sigma = D / C$, becomes large, threshold $p^*$ decreases
+-   As $r \to 1$, reactive vaccination becomes nearly as effective as preemptive -\> threshold $p^*$ increases
+-   As the cost of an outbreak compared to the vaccination cost, $D / C$, becomes large -\> threshold $p^*$ decreases
 
-## Symbolic derivation for $p^*$
+## Symbolic derivation
 
 ```{python}
 import sympy as sp
@@ -108,11 +113,16 @@ p_thresh = sp.solve(ineq, p)[0]
 p_thresh
 ```
 
-## Visualizing the decision plane across $p$ and $r$
+Expected output: $$
+\frac{C}{C + (1 - r)D}
+$$
 
-As $r$ increases, reactive vaccination is preferred. As $p$ increases, preemptive vaccination is preferred. As the $\sigma=D/C$ increase, preemptive vaccination is preferred. 
+## Visualizing the threshold $p^*$
 
 ```{r, warning=FALSE, message=FALSE}
+library(ggplot2)
+library(dplyr)
+
 # Parameters
 r_vals <- seq(0.01, 0.99, by = 0.01)
 p_vals <- seq(0.01, 0.99, by = 0.01)
@@ -155,7 +165,7 @@ ggplot(grid, aes(x = r, y = p)) +
   scale_fill_manual(values = c("preemptive" = "steelblue", "reactive" = "tomato")) +
   facet_wrap(~C, labeller = label_bquote(D/C == .(D/C))) +
   labs(
-    title = bquote("threshold probability, " * italic(p)^"*"), 
+    title = "vaccination strategy decision with threshold",
     x = expression("relative effectiveness of reactive strategy" ~ italic(r)),
     y = expression("outbreak probability" ~ italic(p)),
     fill = "Strategy"
@@ -164,94 +174,58 @@ ggplot(grid, aes(x = r, y = p)) +
   theme(legend.position = 'top')
 ```
 
-## Visualizing the threshold $p^*$
-
-Threshold probability $p^*$, above which preemptive vaccination is preferred, increases as the relative effectiveness $r$ and the cost of the outbreak $D$ relative to the cost of a vaccination campaign $C$,  $\sigma$, decreases. 
-
-```{r, warning=FALSE, message=FALSE}
-# install.packages("metR") # Run this if you haven't installed it yet
-library(metR)
-
-# Parameters
-r_vals <- seq(0.01, 0.99, by = 0.01)
-# C_vals <- seq(0.1, 10, by = 0.1)
-D <- 1
-sigma_vals <- seq(0.1, 10, by = 0.1)
-
-# Create evaluation grid
-grid <- expand.grid(r = r_vals, sigma = sigma_vals, D = D) %>%
-  mutate(
-    C = D / sigma,  # threshold probability
-    p_thresh = C / (C + (1 - r) * D) # threshold probability
-  )
-
-# Plot with contour labels
-ggplot(grid, aes(x = r, y = sigma, fill = p_thresh)) +
-  geom_tile() +
-  geom_contour(aes(z = p_thresh), color = "black", linewidth = 0.5) +
-  geom_text_contour(aes(z = p_thresh), stroke = 0.2, size = 3, color = "black") +
-  scale_fill_viridis_c() +
-  labs(
-    title = bquote("threshold probability, " * italic(p)^"*"),
-    x = expression(italic(r)),
-    y = expression(sigma),
-    fill = expression(italic(p)^"*")
-  ) +
-  theme_minimal()
-
-```
-
-
 ## Summary
 
-This tradeoff depends jointly on: probability of an outbreak ($p$), relative effectiveness of a reactive strategy($r$), cost of prevention ($C$), and the cost of an unmitigated outbreak ($D$)
+This analysis shows that **preemptive vaccination** is preferred when:
+
+$$
+p > \frac{C}{C + (1 - r)D}
+$$
+
+This tradeoff depends jointly on: - **Probability of an outbreak** ($p$), - **Relative effectiveness of a reactive strategy** ($r$), - **Cost of prevention** ($C$), - **Cost of inaction** ($D$)
 
 # Two-population scenario
 
 We assume:
 
 -   Two populations, each has an independent probability $p$ of outbreak
--   Only one vaccination campaign is available (can be used preemptively or reactively for one population)
+-   Only one vaccination campaign is available (can be used **preemptively** or **reactively** for one population)
 -   Key parameters:
 
 | Symbol | Description                                                      |
-|--------|------------------------------------------------------------------|
+|----------------------------|--------------------------------------------|
 | $X$    | Number of outbreaks ($X=0,1,2$)                                  |
 | $p$    | Probability of outbreak in a population                          |
 | $C$    | Cost of one vaccination campaign                                 |
 | $D$    | Cost of one unmitigated outbreak                                 |
-| $r$    | Relative effectiveness of reactive vaccination ($0<r<1$)         |
+| $r$    | Relative effectiveness of **reactive** vaccination ($0 < r < 1$) |
 
 ## Preemptive strategy
 
-We vaccinate one population in advance, say population A. No reactive response is used.
+We vaccinate **one population in advance**, say population A. No reactive response is used.
 
 ### Case 0: No outbreaks ($X = 0$)
 
--   Probability: $(1-p)^2$
--   Cost: only unnecessary vaccination of A: $C$
+-   Probability: $(1 - p)^2$
+-   Cost: only unnecessary vaccination of A → $C$
 
 $$
 \text{Cost}_{X=0,\text{pre}} = C
-$$ 
-
-### Case 1: One outbreak ($X = 1$)
+$$ \### Case 1: One outbreak ($X = 1$)
 
 -   Probability: $2p(1 - p)$
 -   Two subcases (each with prob. $p(1 - p)$):
-    -   If outbreak occurs in A (vaccinated): outbreak prevented $\rightarrow$ cost = $C$
-    -   If outbreak occurs in B (unvaccinated): outbreak occurs $\rightarrow$ cost = $C + D$
+    -   If outbreak occurs in A (vaccinated): outbreak prevented -\> cost = $C$
+    -   If outbreak occurs in B (unvaccinated): outbreak occurs -\> cost = $C + D$
 
 Average cost:
 
 $$
 \text{Cost}_{X=1,\text{pre}} = 2p(1 - p)\left(C + \frac{D}{2}\right)
-$$ 
-
-### Case 2: Two outbreaks ($X = 2$)
+$$ \### Case 2: Two outbreaks ($X = 2$)
 
 -   Probability: $p^2$
--   One outbreak prevented (in vaccinated population), one unmitigated $\rightarrow$ cost = $C + D$
+-   One outbreak prevented (in vaccinated population), one unmitigated -\> cost = $C + D$
 
 $$
 \text{Cost}_{X=2,\text{pre}} = p^2(C + D)
@@ -270,12 +244,12 @@ $$
 
 ## Reactive strategy
 
-We wait for outbreaks and respond to one if detected.
+We wait for outbreaks and respond to **one** if detected.
 
 ### Case 0: No outbreaks ($X = 0$)
 
 -   Probability: $(1 - p)^2$
--   No vaccination needed, no outbreak $\rightarrow$ cost = $0$
+-   No vaccination needed, no outbreak → cost = $0$
 
 $$
 \text{Cost}_{X=0,\text{react}} = 0
@@ -297,14 +271,14 @@ $$
 -   Probability: $p^2$
 -   Only one outbreak can be addressed:
     -   Vaccination cost = $C$
-    -   One outbreak mitigated $\rightarrow$ $(1-r)D$
-    -   One outbreak unmitigated $\rightarrow$ $D$
+    -   One outbreak mitigated -\> $(1 - r)D$
+    -   One outbreak unmitigated -\> $D$
 
 $$
 \text{Cost}_{X=2,\text{react}} = p^2\left(C + (1 - r)D + D\right) = p^2(C + (2 - r)D)
 $$
 
-### Total expected cost for a reactive strategy
+### Total Expected Cost – Reactive Strategy
 
 $$
 \begin{aligned}
@@ -393,24 +367,23 @@ labels_df <- data.frame(
   r = rep(c(0.05, 0.75), 4),
   p = rep(c(0.95, 0.05), 4)
 )
-labels_df$sigma_ <- round(D/labels_df$C, digits=1)
 
 ggplot(grid, aes(x = r, y = p)) +
   geom_line(data = threshold_lines, aes(x = r, y = p_thresh, group = C), 
             color = "black", linewidth = 1, inherit.aes = FALSE) +
-  geom_abline(slope = 1, intercept = 0, color = "black", linetype = "dotted", 
-              linewidth = 0.8) +
+  geom_abline(slope = 1, intercept = 0, color = "black", linetype = "dotted", linewidth = 0.8) +
   geom_text(data = labels_df, aes(x = r, y = p, label = label),
             hjust = 0, color = "black", size = 4, inherit.aes = FALSE) +
   scale_y_continuous(limits=c(0,1))+
   scale_x_continuous(limits=c(0,1))+
   scale_fill_manual(values = c("preemptive" = "steelblue", "reactive" = "tomato")) +
-  facet_wrap(~C, labeller = label_bquote(sigma == .(D/C))) +
+  facet_wrap(~C, labeller = label_bquote(D/C == .(D/C))) +
   labs(
     title = "vaccination strategy decision with threshold (n=2)",
     x = expression("relative effectiveness of reactive strategy" ~ italic(r)),
     y = expression("outbreak probability" ~ italic(p)),
-    fill = "Strategy") +
+    fill = "Strategy"
+  ) +
   theme_light() +
   theme(legend.position = 'top')
 ```
@@ -1020,7 +993,6 @@ cost_df <- data.frame(alpha = alpha_vals) %>%
 ```
 
 Plot
-
 ```{r}
 ggplot(cost_df, aes(x = alpha, y = cost)) +
   geom_line(color = "steelblue", linewidth = 1.2) +
@@ -1086,15 +1058,20 @@ ggplot(grid_plot, aes(x = r, y = p, fill = alpha_opt)) +
   theme(legend.position = "bottom")
 ```
 
+
 ## Heterogeneous risk
 
 ### Beta distribution
 
 Alternative parameterization of $\text{Beta}(a,b)$ is using mean $p$ and the sample size (or concentration)
 
-$$a=p\kappa$$, $$b=(1-p)\kappa$$ $$\text{Var}(X) = \frac{p(1-p)}{1+\kappa}$$
+$$a=p\kappa$$, 
+$$b=(1-p)\kappa$$
+$$\text{Var}(X) = \frac{p(1-p)}{1+\kappa}$$
+
 
 Find optimal $\alpha$
+
 
 ```{r}
 # --- Grid parameters ---
@@ -1117,7 +1094,6 @@ risk_profiles <- pmap(grid, function(p, r, C, f) {
 ```
 
 Parallel session although overhead is larger than the performance gain in this case
-
 ```{r}
 plan(multisession, workers = parallel::detectCores() - 1) 
 risk_profiles2 <- future_pmap(grid, function(p, r, C, f) {
@@ -1131,7 +1107,6 @@ plan(sequential)  # Reset to sequential execution
 ```
 
 Optimal $\alpha$ for each parameter set
-
 ```{r}
 grid$alpha_opt <- map2_dbl(risk_profiles, seq_len(nrow(grid)), function(profile, i) {
   row <- grid[i, ]
@@ -1163,26 +1138,25 @@ ggplot(grid_plot, aes(x = r, y = p, fill = alpha_opt)) +
   theme(legend.position = "bottom")
 ```
 
-
-
-
 ## Imperfect assessment
 
 ### Generating noisy ranks with a specified correlation to the original sequence
 
 We aim to generate a noisy version of a standardized signal vector `p_z` such that the new vector `z_hat` has a target **Pearson correlation** $r$ with `p_z`.
 
+
 The following formula is used to construct the noisy vector:
 
-$$
-\hat{z}  = r  p_z + \sqrt{1 - r^2}~ \mathcal{N}(0,1)
-$$
+```{r}
+z_hat <- r * p_z + sqrt(1 - r^2) * noise
+```
 
 where:
 
--   $p_z$ is a normalized version of the original signal (mean 0, variance 1)
--   $\mathcal{N}(0,1)$ is an independent standard normal vector
--   `r` is the desired correlation between $\hat{z}$  and $p_z$
+- `p_z` is a normalized version of the original signal (mean 0, variance 1)
+- `noise` is an independent standard normal vector
+- `rho` is the desired correlation between `z_hat` and `p_z`
+
 
 This is a linear combination of two independent standard normal vectors:
 
@@ -1192,9 +1166,9 @@ $$
 
 where:
 
--   $Z_{\text{signal}} \sim \mathcal{N}(0, 1)$
--   $Z_{\text{noise}} \sim \mathcal{N}(0, 1)$
--   $\operatorname{Cov}(Z_{\text{signal}}, Z_{\text{noise}}) = 0$
+- $Z_{\text{signal}} \sim \mathcal{N}(0, 1)$
+- $Z_{\text{noise}} \sim \mathcal{N}(0, 1)$
+- $\operatorname{Cov}(Z_{\text{signal}}, Z_{\text{noise}}) = 0$
 
 The variance of the resulting vector is:
 
@@ -1217,7 +1191,7 @@ $$
 \operatorname{Cor}(Z_{\text{hat}}, Z_{\text{signal}}) = \frac{\operatorname{Cov}(Z_{\text{hat}}, Z_{\text{signal}})}{\sqrt{\operatorname{Var}(Z_{\text{hat}}) \cdot \operatorname{Var}(Z_{\text{signal}})}} = \frac{r}{1} = r
 $$
 
-Once we know how to generate a sequence with a specified Pearson's $r$, given a sequence, we can also generate a sequence with desired Spearman's $\rho$ because Spearman's $\rho$ is a Pearson's $r$ applied to ranked sequence. Similarly, using the relationship between Spearman's $\rho$, we can generate a sequence with a desired Kendall's $tau$.
+Once we know how to generate a sequence with a specified Pearson's $r$, given a sequence, we can also generate a sequence with desired Spearman's $\rho$ because Spearman's $\rho$ is a Pearson's $r$ applied to ranked sequence. Similarly, using the relationship between Spearman's $\rho$, we can generate a sequence with a desired Kendall's $tau$.   
 
 #### test the function
 
@@ -1233,252 +1207,335 @@ noisy2 <- generate_noisy_rank(p, target_tau = target_tau)
 cor(noisy2, p, method = "kendall")    # ~0.6
 ```
 
-<!-- ```{r} -->
-<!-- p_vals <- seq(0.3, 0.5, 0.7) -->
-<!-- r_vals <- c(0.2, 0.5, 0.8) -->
-<!-- f_vals <- c(0.1) -->
-<!-- C_vals <- c(0.3, 1, 2, 5) -->
-<!-- rho_vals <- seq(0.1, 0.9, by=0.05) -->
-<!-- D <- 2 -->
-<!-- n <- 100 -->
-<!-- concentration <- 20 -->
-<!-- set.seed(42) -->
 
-<!-- # Full parameter grid excluding rho -->
-<!-- grid_core <- expand.grid(p = p_vals, r = r_vals, f = f_vals, C = C_vals) -->
-
-<!-- # Add D/C ratio -->
-<!-- grid_core <- grid_core %>% mutate(DC_ratio = D / C) -->
-
-<!-- # Generate true risk profiles (same for all rhos in the same scenario) -->
-<!-- risk_profiles <- pmap( -->
-<!--   grid_core %>% select(p, r, f, C),  # only use needed columns -->
-<!--   function(p, r, f, C) { -->
-<!--     a <- p * concentration -->
-<!--     b <- (1 - p) * concentration -->
-<!--     generate_risk_profile(n = n, dist = "beta", params = list(a = a, b = b)) -->
-<!--   } -->
-<!-- ) -->
-<!-- ``` -->
-
-<!-- ```{r} -->
-<!-- grid_core$alpha_ref <- map2_dbl(risk_profiles, seq_len(nrow(grid_core)), function(profile, i) { -->
-<!--   row <- grid_core[i, ] -->
-<!--   optimize_alpha( -->
-<!--     risk_profile = profile, -->
-<!--     C = row$C, -->
-<!--     D = D, -->
-<!--     r = row$r, -->
-<!--     f = row$f, -->
-<!--     rho = NULL  # perfect targeting -->
-<!--   )$alpha_opt -->
-<!-- }) -->
-<!-- ``` -->
-
-<!-- ```{r} -->
-<!-- # Expand the grid to include each rho -->
-<!-- grid_with_rho <- grid_core %>% -->
-<!--   slice(rep(1:n(), each = length(rho_vals))) %>% -->
-<!--   mutate(rho = rep(rho_vals, times = nrow(grid_core))) -->
-
-<!-- # Repeat risk profiles accordingly -->
-<!-- risk_profiles_rho <- rep(risk_profiles, each = length(rho_vals)) -->
-
-<!-- # Compute alpha for each rho -->
-<!-- grid_with_rho$alpha_rho <- map2_dbl(risk_profiles_rho, seq_len(nrow(grid_with_rho)), function(profile, i) { -->
-<!--   row <- grid_with_rho[i, ] -->
-<!--   optimize_alpha( -->
-<!--     risk_profile = profile, -->
-<!--     C = row$C, -->
-<!--     D = D, -->
-<!--     r = row$r, -->
-<!--     f = row$f, -->
-<!--     rho = row$rho -->
-<!--   )$alpha_opt -->
-<!-- }) -->
-
-<!-- # Compute Δalpha = alpha_rho - alpha_ref -->
-<!-- grid_with_rho$alpha_ref <- rep(grid_core$alpha_ref, each = length(rho_vals)) -->
-<!-- grid_with_rho$delta_alpha <- grid_with_rho$alpha_rho - grid_with_rho$alpha_ref -->
-
-<!-- ``` -->
-
-<!-- ```{r} -->
-<!-- ggplot(grid_with_rho, aes(x = rho, y = delta_alpha, group = interaction(p, r), color = p)) + -->
-<!--   geom_line(linewidth = 1, alpha = 0.8) + -->
-<!--   geom_hline(yintercept = 0, linetype = "dashed") + -->
-<!--   facet_grid(f ~ DC_ratio, labeller = label_bquote(rows = f == .(f), cols = D/C == .(DC_ratio))) + -->
-<!--   scale_color_viridis_c(name = "True\nmean p", option = "D") + -->
-<!--   labs( -->
-<!--     title = expression("Change in Optimal Preemptive Allocation (" * Delta * alpha^"*" * ") with Imperfect Risk Assessment"), -->
-<!--     subtitle = expression(Delta * alpha^"*" * " = " * alpha^"*_{rho} - " * alpha^"*_{perfect}"), -->
-<!--     x = expression("Spearman rank correlation (" * rho * ")"), -->
-<!--     y = expression(Delta * alpha^"*") -->
-<!--   ) + -->
-<!--   theme_minimal(base_size = 13) + -->
-<!--   theme(legend.position = "right") -->
-
-<!-- ``` -->
-
-<!-- ```{r} -->
-<!-- p_vals <- c(0.3, 0.55, 0.8) -->
-<!-- r_vals <- c(0.3, 0.55, 0.8) -->
-<!-- f_vals <- c(0.1) -->
-<!-- C_vals <- c(1, 2, 5, 10) -->
-<!-- rho_vals <- seq(0.1, 0.9, by=0.1) -->
-<!-- D <- 10 -->
-<!-- n <- 1000 -->
-<!-- concentration <- 20 -->
-<!-- n_sim <- 200 -->
-
-<!-- # Base grid (1 row per simulation and scenario excluding rho) -->
-<!-- grid_core <- expand.grid( -->
-<!--   sim = 1:n_sim, -->
-<!--   p = p_vals, -->
-<!--   r = r_vals, -->
-<!--   C = C_vals, -->
-<!--   f = f_vals -->
-<!-- ) %>% -->
-<!--   mutate(DC_ratio = D / C) -->
-
-<!-- # Expand over rho -->
-<!-- grid_rho <- grid_core %>% -->
-<!--   slice(rep(1:n(), each = length(rho_vals))) %>% -->
-<!--   mutate(rho = rep(rho_vals, times = nrow(grid_core))) -->
-
-<!-- # Generate unique risk profiles once -->
-<!-- grid_core_unique <- distinct(grid_core, p, r, C, f, .keep_all = TRUE) -->
-<!-- risk_profiles_unique <- pmap( -->
-<!--   grid_core_unique %>% select(p, r, C, f), -->
-<!--   function(p, r, C, f) { -->
-<!--     a <- p * concentration -->
-<!--     b <- (1 - p) * concentration -->
-<!--     replicate(n_sim, generate_risk_profile(n = n, dist = "beta", params = list(a = a, b = b))) -->
-<!--   } -->
-<!-- ) -->
+```{r}
+# Example
+p <- runif(1000)  # Random risk scores
+noisy <- generate_noisy_rank(p, target_tau = 0.6, seed = 12)
+cor(p, noisy, method = "kendall")  # Should be approximately 0.6
+```
 
 
-<!-- simulate_alpha_diff <- function(p, r, C, f, rho, sim, risk_profiles_unique, grid_core_unique) { -->
-<!--   profile_idx <- which(grid_core_unique$p == p & grid_core_unique$r == r &  -->
-<!--                        grid_core_unique$C == C & grid_core_unique$f == f) -->
-<!--   p_true <- risk_profiles_unique[[profile_idx]][, sim] -->
-<!--   alpha_ref <- optimize_alpha( -->
-<!--     risk_profile = p_true, C = C, D = D, r = r, f = f, rho = NULL, method = "grid", by = 0.05 -->
-<!--   )$alpha_opt -->
-<!--   alpha_rho <- optimize_alpha( -->
-<!--     risk_profile = p_true, C = C, D = D, r = r, f = f, rho = rho, method = "grid", by = 0.05 -->
-<!--   )$alpha_opt -->
-<!--   tibble(p, r, C, f, rho, sim, alpha_ref, alpha_rho, delta_alpha = alpha_rho - alpha_ref) -->
-<!-- } -->
-<!-- # run scenarios -->
-<!-- results <- pmap_dfr( -->
-<!--   grid_rho %>% select(p, r, C, f, rho, sim), -->
-<!--   simulate_alpha_diff, -->
-<!--   risk_profiles_unique = risk_profiles_unique, -->
-<!--   grid_core_unique = grid_core_unique -->
-<!-- ) -->
+```{r}
+rho <- 0.8
+p_hat <- generate_noisy_rank_with_rho(p, target_rho = rho)
+target_order <- order(p_hat, decreasing = TRUE)
+p_sorted <- p[target_order]  # true risks sorted by noisy estimates
 
-<!-- library(furrr) -->
-<!-- plan(multisession, workers = parallel::detectCores() - 1)  # Use all but one core -->
-<!-- # results <- future_pmap_dfr( -->
-<!-- #   grid_rho %>% select(p, r, C, f, rho, sim), -->
-<!-- #   simulate_alpha_diff, -->
-<!-- #   .options = furrr_options(seed = TRUE)  # Ensure reproducible random numbers -->
-<!-- # ) -->
+```
 
-<!-- results <- future_pmap_dfr( -->
-<!--   grid_rho %>% select(p, r, C, f, rho, sim), -->
-<!--   simulate_alpha_diff, -->
-<!--   risk_profiles_unique = risk_profiles_unique, -->
-<!--   grid_core_unique = grid_core_unique, -->
-<!--   .options = furrr_options(seed = TRUE)  -->
-<!-- ) -->
-<!-- plan(sequential)  # Reset to sequential execution -->
+```{r}
+compute_total_cost_given_alpha_imperfect <- function(alpha, p_true, rho, C, D, r, f = 1) {
+  n <- length(p_true)
+  
+  # 1. Generate imperfect estimates
+  p_hat <- generate_noisy_rank_with_rho(p_true, target_rho = rho)
+  
+  # 2. Rank by estimated risk, apply to true risks
+  target_order <- order(p_hat, decreasing = TRUE)
+  p_sorted <- p_true[target_order]
+  
+  # 3. Vaccinate top-k
+  k <- floor(alpha * f * n)
+  
+  # 4. Compute cost
+  cost_preemptive <- k * C
+  cost_reactive <- sum(p_sorted[(k + 1):n]) * (1 - r) * D
+  
+  total_cost <- cost_preemptive + cost_reactive
+  return(total_cost)
+}
 
-<!-- # Function to simulate one scenario -->
+```
 
-<!-- # simulate_alpha_diff <- function(p, r, C, f, rho, sim) { -->
-<!-- #   a <- p * concentration -->
-<!-- #   b <- (1 - p) * concentration -->
-<!-- #   p_true <- generate_risk_profile(n = n, dist = "beta", params = list(a = a, b = b)) -->
-<!-- #  -->
-<!-- #   alpha_ref <- optimize_alpha( -->
-<!-- #     risk_profile = p_true, -->
-<!-- #     C = C, -->
-<!-- #     D = D, -->
-<!-- #     r = r, -->
-<!-- #     f = f, -->
-<!-- #     rho = NULL, -->
-<!-- #     method = "optimize" -->
-<!-- #   )$alpha_opt -->
-<!-- #  -->
-<!-- #   alpha_rho <- optimize_alpha( -->
-<!-- #     risk_profile = p_true, -->
-<!-- #     C = C, -->
-<!-- #     D = D, -->
-<!-- #     r = r, -->
-<!-- #     f = f, -->
-<!-- #     rho = rho, -->
-<!-- #     method = "optimize" -->
-<!-- #   )$alpha_opt -->
-<!-- #  -->
-<!-- #   tibble(p, r, C, f, rho, sim, alpha_ref, alpha_rho, delta_alpha = alpha_rho - alpha_ref) -->
-<!-- # } -->
-<!-- #  -->
-<!-- # # Run all simulations -->
-<!-- # results <- pmap_dfr( -->
-<!-- #   grid_rho %>% select(p, r, C, f, rho, sim),  # only pass needed columns -->
-<!-- #   simulate_alpha_diff -->
-<!-- # ) -->
-<!-- ``` -->
 
-<!-- ```{r} -->
-<!-- results <- results %>% -->
-<!--   mutate(DC_ratio = D / C) -->
 
-<!-- results %>% filter(r == 0.3) %>%  -->
-<!--   ggplot(aes(x = rho, y = delta_alpha)) + -->
-<!--   geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") + -->
-<!--   stat_summary(fun = median, geom = "line", color = "black", linewidth = 1) + -->
-<!--   stat_summary(fun.data = ~quantile(., probs = c(0.25, 0.75)) %>% -->
-<!--                  {data.frame(y = median(.), ymin = .[1], ymax = .[2])}, -->
-<!--                geom = "ribbon", alpha = 0.2, fill = "gray60") + -->
-<!--   facet_grid(p ~ DC_ratio, labeller = label_bquote(rows = p == .(p), cols = D/C == .(round(DC_ratio, 1)))) + -->
-<!--   labs( -->
-<!--     title = expression("Effect of Imperfect Risk Ranking on Optimal Preemptive Allocation"), -->
-<!--     subtitle = expression(Delta * alpha^"*" * " = " * alpha[rho]^"*" * " - " * alpha[perfect]^"*"), -->
-<!--     x = expression("Spearman rank correlation (" * rho * ")"), -->
-<!--     y = expression(Delta * alpha^"*") -->
-<!--   ) + -->
-<!--   theme_minimal(base_size = 13) + -->
-<!--   theme(legend.position = "none") -->
+```{r}
+n <- 100
+p_true <- rbeta(n, 2, 5)
 
-<!-- ``` -->
+# Parameters
+C <- 1
+D <- 10
+r <- 0.6
+f <- 0.1
 
-<!-- $alpha$ -->
+# Run for rho = 1 (perfect targeting)
+res_perfect <- optimize_alpha(
+  risk_profile = p_true,
+  C = C,
+  D = D,
+  r = r,
+  f = f,
+  rho = NULL,           # NULL → use perfect targeting
+  method = "optimize"
+)
 
-<!-- ```{r} -->
-<!-- results %>% filter(rho == 0.9) %>%  -->
-<!--   ggplot(aes(x = r, y = alpha_ref)) + -->
-<!--   geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") + -->
-<!--   stat_summary(fun = median, geom = "line", color = "black", linewidth = 1) + -->
-<!--   stat_summary(fun.data = ~quantile(., probs = c(0.25, 0.75)) %>% -->
-<!--                  {data.frame(y = median(.), ymin = .[1], ymax = .[2])}, -->
-<!--                geom = "ribbon", alpha = 0.2, fill = "gray60") + -->
-<!--   facet_grid(p ~ DC_ratio, labeller = label_bquote(rows = p == .(p), cols = D/C == .(round(DC_ratio, 1)))) + -->
-<!--   labs( -->
-<!--     title = expression("Effect of Imperfect Risk Ranking on Optimal Preemptive Allocation"), -->
-<!--     subtitle = expression(Delta * alpha^"*" * " = " * alpha[rho]^"*" * " - " * alpha[perfect]^"*"), -->
-<!--     x = expression("Spearman rank correlation (" * rho * ")"), -->
-<!--     y = expression(Delta * alpha^"*") -->
-<!--   ) + -->
-<!--   theme_minimal(base_size = 13) + -->
-<!--   theme(legend.position = "none") -->
+# Run for rho = 0.6 (imperfect targeting)
+res_imperfect <- optimize_alpha(
+  risk_profile = p_true,
+  C = C,
+  D = D,
+  r = r,
+  f = f,
+  rho = 0.6,
+  method = "optimize"
+)
 
-<!-- ``` -->
+# Show results
+cat("Perfect targeting (rho = 1):\n")
+cat(sprintf("  alpha* = %.3f\n  total cost = %.3f\n\n", res_perfect$alpha_opt, res_perfect$cost_opt))
 
-<!-- # Future work -->
+cat("Imperfect targeting (rho = 0.6):\n")
+cat(sprintf("  alpha* = %.3f\n  total cost = %.3f\n", res_imperfect$alpha_opt, res_imperfect$cost_opt))
 
-<!-- 1.  Incidence rate rather than the presence or absence of the outbreak (or in a way always outbreak) -->
-<!-- 2.  It is critical how we measure the cost of the outbreak / Cost-benefit or cost-effectiveness -->
-<!-- 3.  The ratio is also a function of the outbreak size. -->
+```
+
+```{r}
+p_vals <- seq(0.3, 0.5, 0.7)
+r_vals <- c(0.2, 0.5, 0.8)
+f_vals <- c(0.1)
+C_vals <- c(0.3, 1, 2, 5)
+rho_vals <- seq(0.1, 0.9, by=0.05)
+D <- 2
+n <- 100
+concentration <- 20
+set.seed(42)
+
+# Full parameter grid excluding rho
+grid_core <- expand.grid(p = p_vals, r = r_vals, f = f_vals, C = C_vals)
+
+# Add D/C ratio
+grid_core <- grid_core %>% mutate(DC_ratio = D / C)
+
+# Generate true risk profiles (same for all rhos in the same scenario)
+risk_profiles <- pmap(
+  grid_core %>% select(p, r, f, C),  # only use needed columns
+  function(p, r, f, C) {
+    a <- p * concentration
+    b <- (1 - p) * concentration
+    generate_risk_profile(n = n, dist = "beta", params = list(a = a, b = b))
+  }
+)
+```
+
+```{r}
+grid_core$alpha_ref <- map2_dbl(risk_profiles, seq_len(nrow(grid_core)), function(profile, i) {
+  row <- grid_core[i, ]
+  optimize_alpha(
+    risk_profile = profile,
+    C = row$C,
+    D = D,
+    r = row$r,
+    f = row$f,
+    rho = NULL  # perfect targeting
+  )$alpha_opt
+})
+```
+
+```{r}
+# Expand the grid to include each rho
+grid_with_rho <- grid_core %>%
+  slice(rep(1:n(), each = length(rho_vals))) %>%
+  mutate(rho = rep(rho_vals, times = nrow(grid_core)))
+
+# Repeat risk profiles accordingly
+risk_profiles_rho <- rep(risk_profiles, each = length(rho_vals))
+
+# Compute alpha for each rho
+grid_with_rho$alpha_rho <- map2_dbl(risk_profiles_rho, seq_len(nrow(grid_with_rho)), function(profile, i) {
+  row <- grid_with_rho[i, ]
+  optimize_alpha(
+    risk_profile = profile,
+    C = row$C,
+    D = D,
+    r = row$r,
+    f = row$f,
+    rho = row$rho
+  )$alpha_opt
+})
+
+# Compute Δalpha = alpha_rho - alpha_ref
+grid_with_rho$alpha_ref <- rep(grid_core$alpha_ref, each = length(rho_vals))
+grid_with_rho$delta_alpha <- grid_with_rho$alpha_rho - grid_with_rho$alpha_ref
+
+```
+
+```{r}
+ggplot(grid_with_rho, aes(x = rho, y = delta_alpha, group = interaction(p, r), color = p)) +
+  geom_line(linewidth = 1, alpha = 0.8) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  facet_grid(f ~ DC_ratio, labeller = label_bquote(rows = f == .(f), cols = D/C == .(DC_ratio))) +
+  scale_color_viridis_c(name = "True\nmean p", option = "D") +
+  labs(
+    title = expression("Change in Optimal Preemptive Allocation (" * Delta * alpha^"*" * ") with Imperfect Risk Assessment"),
+    subtitle = expression(Delta * alpha^"*" * " = " * alpha^"*_{rho} - " * alpha^"*_{perfect}"),
+    x = expression("Spearman rank correlation (" * rho * ")"),
+    y = expression(Delta * alpha^"*")
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "right")
+
+```
+
+```{r}
+p_vals <- c(0.3, 0.55, 0.8)
+r_vals <- c(0.3, 0.55, 0.8)
+f_vals <- c(0.1)
+C_vals <- c(1, 2, 5, 10)
+rho_vals <- seq(0.1, 0.9, by=0.1)
+D <- 10
+n <- 1000
+concentration <- 20
+n_sim <- 200
+
+# Base grid (1 row per simulation and scenario excluding rho)
+grid_core <- expand.grid(
+  sim = 1:n_sim,
+  p = p_vals,
+  r = r_vals,
+  C = C_vals,
+  f = f_vals
+) %>%
+  mutate(DC_ratio = D / C)
+
+# Expand over rho
+grid_rho <- grid_core %>%
+  slice(rep(1:n(), each = length(rho_vals))) %>%
+  mutate(rho = rep(rho_vals, times = nrow(grid_core)))
+
+# Generate unique risk profiles once
+grid_core_unique <- distinct(grid_core, p, r, C, f, .keep_all = TRUE)
+risk_profiles_unique <- pmap(
+  grid_core_unique %>% select(p, r, C, f),
+  function(p, r, C, f) {
+    a <- p * concentration
+    b <- (1 - p) * concentration
+    replicate(n_sim, generate_risk_profile(n = n, dist = "beta", params = list(a = a, b = b)))
+  }
+)
+
+
+simulate_alpha_diff <- function(p, r, C, f, rho, sim, risk_profiles_unique, grid_core_unique) {
+  profile_idx <- which(grid_core_unique$p == p & grid_core_unique$r == r & 
+                       grid_core_unique$C == C & grid_core_unique$f == f)
+  p_true <- risk_profiles_unique[[profile_idx]][, sim]
+  alpha_ref <- optimize_alpha(
+    risk_profile = p_true, C = C, D = D, r = r, f = f, rho = NULL, method = "grid", by = 0.05
+  )$alpha_opt
+  alpha_rho <- optimize_alpha(
+    risk_profile = p_true, C = C, D = D, r = r, f = f, rho = rho, method = "grid", by = 0.05
+  )$alpha_opt
+  tibble(p, r, C, f, rho, sim, alpha_ref, alpha_rho, delta_alpha = alpha_rho - alpha_ref)
+}
+# run scenarios
+results <- pmap_dfr(
+  grid_rho %>% select(p, r, C, f, rho, sim),
+  simulate_alpha_diff,
+  risk_profiles_unique = risk_profiles_unique,
+  grid_core_unique = grid_core_unique
+)
+
+library(furrr)
+plan(multisession, workers = parallel::detectCores() - 1)  # Use all but one core
+# results <- future_pmap_dfr(
+#   grid_rho %>% select(p, r, C, f, rho, sim),
+#   simulate_alpha_diff,
+#   .options = furrr_options(seed = TRUE)  # Ensure reproducible random numbers
+# )
+
+results <- future_pmap_dfr(
+  grid_rho %>% select(p, r, C, f, rho, sim),
+  simulate_alpha_diff,
+  risk_profiles_unique = risk_profiles_unique,
+  grid_core_unique = grid_core_unique,
+  .options = furrr_options(seed = TRUE) 
+)
+plan(sequential)  # Reset to sequential execution
+
+# Function to simulate one scenario
+
+# simulate_alpha_diff <- function(p, r, C, f, rho, sim) {
+#   a <- p * concentration
+#   b <- (1 - p) * concentration
+#   p_true <- generate_risk_profile(n = n, dist = "beta", params = list(a = a, b = b))
+# 
+#   alpha_ref <- optimize_alpha(
+#     risk_profile = p_true,
+#     C = C,
+#     D = D,
+#     r = r,
+#     f = f,
+#     rho = NULL,
+#     method = "optimize"
+#   )$alpha_opt
+# 
+#   alpha_rho <- optimize_alpha(
+#     risk_profile = p_true,
+#     C = C,
+#     D = D,
+#     r = r,
+#     f = f,
+#     rho = rho,
+#     method = "optimize"
+#   )$alpha_opt
+# 
+#   tibble(p, r, C, f, rho, sim, alpha_ref, alpha_rho, delta_alpha = alpha_rho - alpha_ref)
+# }
+# 
+# # Run all simulations
+# results <- pmap_dfr(
+#   grid_rho %>% select(p, r, C, f, rho, sim),  # only pass needed columns
+#   simulate_alpha_diff
+# )
+```
+
+```{r}
+results <- results %>%
+  mutate(DC_ratio = D / C)
+
+results %>% filter(r == 0.3) %>% 
+  ggplot(aes(x = rho, y = delta_alpha)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+  stat_summary(fun = median, geom = "line", color = "black", linewidth = 1) +
+  stat_summary(fun.data = ~quantile(., probs = c(0.25, 0.75)) %>%
+                 {data.frame(y = median(.), ymin = .[1], ymax = .[2])},
+               geom = "ribbon", alpha = 0.2, fill = "gray60") +
+  facet_grid(p ~ DC_ratio, labeller = label_bquote(rows = p == .(p), cols = D/C == .(round(DC_ratio, 1)))) +
+  labs(
+    title = expression("Effect of Imperfect Risk Ranking on Optimal Preemptive Allocation"),
+    subtitle = expression(Delta * alpha^"*" * " = " * alpha[rho]^"*" * " - " * alpha[perfect]^"*"),
+    x = expression("Spearman rank correlation (" * rho * ")"),
+    y = expression(Delta * alpha^"*")
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "none")
+
+```
+
+$alpha$
+
+```{r}
+results %>% filter(rho == 0.9) %>% 
+  ggplot(aes(x = r, y = alpha_ref)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+  stat_summary(fun = median, geom = "line", color = "black", linewidth = 1) +
+  stat_summary(fun.data = ~quantile(., probs = c(0.25, 0.75)) %>%
+                 {data.frame(y = median(.), ymin = .[1], ymax = .[2])},
+               geom = "ribbon", alpha = 0.2, fill = "gray60") +
+  facet_grid(p ~ DC_ratio, labeller = label_bquote(rows = p == .(p), cols = D/C == .(round(DC_ratio, 1)))) +
+  labs(
+    title = expression("Effect of Imperfect Risk Ranking on Optimal Preemptive Allocation"),
+    subtitle = expression(Delta * alpha^"*" * " = " * alpha[rho]^"*" * " - " * alpha[perfect]^"*"),
+    x = expression("Spearman rank correlation (" * rho * ")"),
+    y = expression(Delta * alpha^"*")
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "none")
+
+```
+
+# Future work
+1. Incidence rate rather than the presence or absence of the outbreak (or in a way always outbreak)
+2. It is critical how we measure the cost of the outbreak / Cost-benefit or cost-effectiveness 
+3. The ratio is also a function of the outbreak size.

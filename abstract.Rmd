@@ -1,0 +1,23 @@
+---
+title: "abstract"
+output: html_document
+date: "2025-07-09"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### **Abstract**
+
+**Title:** Reactive vs. Preemptive Vaccination Strategies: A Framework for Optimal Resource Allocation Under Uncertainty
+
+**Author:** Jong-Hoon Kim
+
+**Background:** Public health authorities must decide whether to deploy limited vaccine supplies preemptively or reactively. This decision involves a critical tradeoff: preemptive strategies can avert outbreaks but risk wasting resources on events that never occur, while reactive strategies conserve resources but risk uncontrolled spread. This dilemma is intensified by uncertainties in outbreak probability, resource availability, and risk forecasting. This study develops a quantitative framework to identify the optimal vaccination strategy under these constraints, applying it to historical cholera outbreak data from sub-Saharan Africa (2010–2020) to guide policy on vaccine allocation.
+
+**Methods:** We developed an analytical and simulation-based framework comparing the expected costs of vaccination strategies across multiple populations with constrained supplies. Our model identifies decision thresholds based on key parameters: outbreak probability ($p$), the relative effectiveness of reactive vaccination ($r$), outbreak cost ($D$), and campaign cost ($C$). Recognizing that $p$ and $r$ are context-specific, we grounded our model by simulating scenarios using parameters from historical cholera data in sub-Saharan Africa (2010-2020). The framework also optimizes hybrid strategies (allocating a fraction $α$ of resources preemptively) and incorporates complexities like heterogeneous risk and imperfect risk assessment.
+
+**Results:** Our analysis identifies a threshold outbreak probability ($p^*$) above which preemptive vaccination is cost-effective. This threshold increases with higher reactive effectiveness ($r$) and decreases with a higher outbreak-to-campaign cost ratio ($D/C$). In an asymptotic limit of numerous populations and scarce resources, the decision rule simplifies to preferring preemptive action when $p > r$. For hybrid strategies, the optimal allocation ($α^*$) is typically an intermediate mix of both approaches, dependent on $p$, $r$, and the $D/C$ ratio, rather than an all-or-nothing choice.
+
+**Conclusion:** Our framework offers practical, evidence-based guidance for policymakers navigating vaccination strategy choices. By grounding a generalizable model with a regional case study, we demonstrate its utility for strategic planning and resource allocation. This work provides a robust tool to optimize public health responses when vaccine stockpiles are limited and outbreak risk intelligence is imperfect.
