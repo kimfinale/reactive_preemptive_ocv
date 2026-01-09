@@ -1,4 +1,19 @@
-.Rproj.user
+# 1. Ignore everything by default
+/*
+
+# 2. Re-allow directories we want to track
+!R/
+!data/
+
+# 3. Inside R/ and data/, track everything
+!R/**
+!data/**
+
+# 4. Ignore R / IDE / session artifacts everywhere
+.Rproj.user/
 .Rhistory
 .RData
 .Ruserdata
+
+# 5. Ignore rendered outputs
+*.html
