@@ -1,0 +1,1258 @@
+---
+title: "Reactive vs Preemptive Vaccination Strategies"
+author: "Jong-Hoon Kim"
+date: "`r Sys.Date()`"
+format: html
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(tidyverse)
+library(gridExtra)
+library(scales)
+save_plot <- FALSE
+library(ggpattern)
+library(patchwork)
+library(data.table)
+library(readxl)
+source("R/utils.R")
+```
+
+This document describes the simulations that extend the simple scenarios where the analytic or simple numerical solutions to determine how to allocate resources (i.e., pre-emptive, reactive vaccination, or the combination of boths)  were explored in the analytic_study.qmd document. 
+
+
+# Estimating Cumulative Cases from a Tent-Shaped Incidence Curve
+
+## Model Setup
+
+We assume a stylized outbreak with a tent-shaped incidence curve:
+
+- Incidence increases linearly from a baseline to a peak
+- Then decreases linearly back to the baseline
+
+### Definitions
+
+- $t_0$: outbreak start time  
+- $t_p$: peak time  
+- $t_1$: end time  
+- $r_0$: baseline incidence rate  
+- $r_p$: peak incidence rate (i.e., $IR(t_p)$)  
+- $t \in [t_0, t_1]$  
+- $N$: population size  
+- $C$: cumulative number of cases above baseline  
+
+Cumulative cases are defined as:
+$$
+C = N \times A(t),
+$$
+where $A(t)$ is the **area above baseline incidence**.
+
+---
+
+## Incidence Rate Function
+
+The incidence rate is defined piecewise as:
+
+$$
+IR(t) =
+\begin{cases}
+r_0 + (r_p - r_0)\dfrac{t - t_0}{t_p - t_0}, & t \le t_p, \\
+r_p - (r_p - r_0)\dfrac{t - t_p}{t_1 - t_p}, & t > t_p.
+\end{cases}
+$$
+
+---
+
+## Area Above Baseline
+
+We define
+$$
+A(t) = \int_{t_0}^{t} \big(IR(s) - r_0\big)\, ds.
+$$
+
+---
+
+## Case 1: $t \le t_p$ (rising phase)
+
+For $t \le t_p$, the height above baseline increases linearly from 0 to
+$IR(t) - r_0$. The area is therefore triangular:
+
+$$
+A(t) = \frac{(t - t_0)\big(IR(t) - r_0\big)}{2}.
+$$
+
+Equivalently,
+$$
+A(t)
+= \frac{(t - t_0)}{2}\frac{(r_p - r_0)(t - t_0)}{t_p - t_0}.
+$$
+
+---
+
+## Case 2: $t > t_p$ (declining phase)
+
+The total area is decomposed into two parts.
+
+### Area up to the peak
+
+$$
+A_1 = \frac{(t_p - t_0)(r_p - r_0)}{2}.
+$$
+
+This term corresponds to the triangular area accumulated by $t_p$.
+
+---
+
+### Area after the peak
+
+On the interval $[t_p, t]$, the height above baseline decreases linearly from
+$(r_p - r_0)$ to $(IR(t) - r_0)$.
+
+$$
+A_2
+= (t - t_p)\left[(IR(t) - r_0)
++ \frac{r_p - IR(t)}{2}\right] \\
+= (t - t_p)\cdot
+\frac{(r_p - r_0) + (IR(t) - r_0)}{2}.
+$$
+
+---
+
+## Mapping to Cumulative Cases
+
+Finally,
+$$
+C = N\,A(t),
+$$
+or equivalently,
+$$
+A(t) = \frac{C}{N}.
+$$
+
+This formulation can be inverted to obtain the outbreak detection time $t$
+given a cumulative case threshold $C$.
+
+### Goal
+
+Solve for the time $t$ such that:
+
+$$
+A(t) = \frac{C}{N}
+$$
+
+## Simulation
+
+### Creating regions (populations) and outbreaks
+
+Parameters
+```{r}
+seed_rng_val <- 42
+
+n_region_val <- 900
+pop_val <- 1e3
+rho0_val <- 0.8
+ell_val <- 20
+theta_val <- 5
+
+alpha_val <- 0.8
+f_val <- 0.4
+R_val <- 10
+r_val <- 0.3
+eta_val <- 0.9
+nu_val <- 0.9
+kappa_val <- 0.9
+
+rho_target_val <- 0.3
+n_seeds_val <- 20
+patch_size_val <- 60
+vacc_resource_val <- 200 # normalized by population size. 
+B_pre_val <- round(alpha_val * vacc_resource_val) # number of cells (populations) that can be vaccinated
+
+# assign_reactive_vaccination inputs
+vacc_coverage_val <- 0.7
+reactive_vacc_delay_range <- c(7, 21)
+weight_attack_rate <- 0.6
+weight_attack_case <- 0.4
+
+# assign_outbreak_trajectory inputs
+start_time_range <- c(0, 180)
+total_duration_range <- c(7, 120)
+peak_frac_shape_beta_params <- c(2, 2)
+peak_incidence_range <- c(5e-6, 5e-4)
+max_attack_rate <- 0.1
+r0 <- 0
+```
+
+Create regions and assign outbreak risks
+```{r}
+regions <- setup_spatial_region(n_region = n_region_val,
+                                pop_size_range = c(1, 1),
+                                prop_U5_range = c(0.15, 0.17),
+                                theta = theta_val,
+                                rho0 = rho0_val,
+                                ell = ell_val,
+                                adj_type = "rook",
+                                rho_score = rho_target_val,
+                                n_seeds = n_seeds_val,
+                                patch_size = patch_size_val,
+                                seed_rng = seed_rng_val)
+```
+
+Allocate pre-emptive vaccination
+
+```{r}
+patch_pre_vax <- 
+  allocate_preemptive_patches(patch_df = regions$patches$summary, 
+                              B_pre = B_pre_val)
+
+pacth_id_prevax <- which(patch_pre_vax$pre_vax == TRUE)
+
+cells <- regions$cells
+cells$pre_vax <- 
+  ifelse(cells$patch_id %in% pacth_id_prevax, TRUE, FALSE)
+```
+
+Assign outbreak characteristics for outbreak regions 
+
+```{r}
+outbreaks <- simulate_outbreak_spillover(p     = cells$risk$p,
+                                         adj   = cells$adj, 
+                                         vax   = cells$pre_vax,
+                                         eta   = eta_val,
+                                         nu    = nu_val,
+                                         kappa = kappa_val)
+cells$outbreak <- outbreaks$Y
+df <- data.frame(id = cells$id, pop_size = cells$pop_size, 
+                 Y = cells$outbreak)
+traj <- assign_outbreak_trajectory(regions = df[df$Y,],
+                   start_time_range = c(0, 180),
+                   total_duration_range = c(7, 120),
+                   peak_frac_shape = c(2, 2),
+                   peak_incidence_range = c(5e-6, 5e-4),
+                   max_attack_rate = 0.1,
+                   r0 = 0)
+
+# sum(is.na(traj$t0))
+# sum(!is.na(traj$t0))
+# sum(!is.na(traj$t0)) == sum(outbreaks$Y)
+# summary(traj$attack_rate_per_capita)
+# summary(traj$duration)
+```
+
+Assign reacitve vaccination parameters
+```{r}
+
+df <- assign_reactive_vaccination(outbreaks = traj, 
+                                  t_now = 12, 
+                                  max_targets = round(vacc_resource_val - B_pre_val))
+# View(df)
+sum(df$eligible)
+sum(df$reactive_vax)
+
+df_ci <- compute_frac_reduction_ci(subset(df, !is.na(rv_delay)), nu=nu_val)
+
+df_ci2 <- left_join(df, df_ci[, c("id", "frac_reduction_ci")], by="id")
+# for plot later
+cells$reactive_vax <- ifelse(cells$id %in% df_ci2[df_ci2$reactive_vax, ]$id, 
+                             TRUE, FALSE)
+```
+
+
+### Figures
+
+#### Figure 1. Spatially correlated risks $p_i$
+
+```{r, fig.width=7, fig.height=4.5}
+coords <- regions$cells$coords
+df_risk <- data.frame(
+  x = coords[,1],
+  y = coords[,2],
+  p = regions$cells$risk$p
+)
+
+ggplot(df_risk, aes(x = x, y = y, fill = p)) +
+  geom_tile() +
+  coord_equal() +
+  scale_fill_viridis_c(
+    limits = c(0, 1),
+    option = "C",
+    labels = number_format(accuracy = 0.01)
+  ) +
+  labs(
+    title = expression("Spatially correlated risks " * italic(p)[i]),
+    fill  = expression(italic(p)[i]),
+    x = NULL, y = NULL
+  ) +
+  theme_map()
+```
+
+#### Figure 2. Imperfect risk score vs true risk
+
+```{r, fig.width=6.5, fig.height=4.2}
+df_score <- data.frame(
+  p     = regions$cells$risk$p,
+  score = regions$patches$patch_out$score
+)
+
+ggplot(df_score, aes(x = p, y = score)) +
+  geom_point(alpha = 0.35, size = 1) +
+  geom_smooth(method = "loess", se = FALSE, linewidth = 1) +
+  labs(
+    title = paste0(
+      "Imperfect score vs true risk (Spearman rho = ",
+      round(regions$cells$rank$rho_achieved, 2), ")"
+    ),
+    x = expression(italic(p)[i]),
+    y = expression(score[i])
+  ) +
+  theme_minimal(base_size = 12)
+```
+
+#### Figure 3. Patch map
+
+```{r, fig.width=7, fig.height=4.5}
+df_patchmap <- data.frame(
+  x     = coords[, 1],
+  y     = coords[, 2],
+  patch = factor(regions$cells$patch_id)
+)
+
+ggplot(df_patchmap, aes(x = x, y = y, fill = patch)) +
+  geom_tile() +
+  coord_equal() +
+  guides(fill = "none") +
+  labs(
+    title = "Patches (contiguous groups grown from high-score seeds)",
+    x = NULL, y = NULL
+  ) +
+  theme_map()
+
+```
+
+#### Figure 4.Simulated pre-emptive vs reactive vs outbreaks
+
+```{r, fig.width=8, fig.height=4.8}
+df_state <- data.frame(
+  x     = coords[, 1],
+  y     = coords[, 2],
+  pre   = cells$pre_vax,
+  react = cells$reactive_vax,
+  out   = cells$outbreak
+) %>%
+  mutate(
+    state = case_when(
+      out & react      ~ "Outbreak + reactive",
+      out & !react     ~ "Outbreak (unmitigated)",
+      !out & pre       ~ "Pre-emptive vaccinated",
+      !out & react     ~ "Reactive vaccinated (no outbreak)",
+      TRUE             ~ "None"
+    ),
+    state = factor(
+      state,
+      levels = c(
+        "None",
+        "Pre-emptive vaccinated",
+        "Reactive vaccinated (no outbreak)",
+        "Outbreak + reactive",
+        "Outbreak (unmitigated)"
+      )
+    )
+  )
+
+state_cols <- c(
+  "None"                          = "grey90",
+  "Pre-emptive vaccinated"        = "#2c7fb8",
+  "Reactive vaccinated (no outbreak)" = "#7fcdbb",
+  "Outbreak + reactive"           = "#fdae61",
+  "Outbreak (unmitigated)"        = "#d7191c"
+)
+
+ggplot(df_state, aes(x = x, y = y, fill = state)) +
+  geom_tile() +
+  coord_equal() +
+  scale_fill_manual(values = state_cols) +
+  labs(
+    title = paste0("Realization (", expression(alpha), " = ", alpha_val, ")"),
+    fill  = NULL,
+    x = NULL, y = NULL
+  ) +
+  theme_map()
+```
+
+
+### Costs
+
+```{r econ-demo-data, echo=FALSE}
+# Load life expectancy and GDP data
+life_exp_data <- 
+  as.data.frame(fread("data/wpp_life_expectancy_20241022.csv"))
+# life expectancy at age 25 during 2010-2020, mean age for cholera
+life_exp_data %>% 
+  filter(Year >= 2010, Year <= 2020, 
+         `Region, subregion, country or area *` == "Sub-Saharan Africa") %>% 
+  pull(`25`) %>%  
+  as.numeric() -> life_exp_25
+
+# Load population by age data 
+# prop of under 5 during 2010-2020
+age_dist <- 
+  as.data.frame(fread("data/wpp_pop_by_age_20241022.csv"))
+age_dist %>% 
+  filter(Year >= 2010, Year <= 2020,
+         `Region, subregion, country or area *` == "Sub-Saharan Africa") %>% 
+  pull(prop_u5) -> prop_U5
+
+# gdp data from World Bank during 2010-2020
+gdp_data <- read_xls("data/GDP_WorldBank.xls")
+gdp_data %>% 
+  filter(`Country Name` == "Sub-Saharan Africa (IDA & IBRD countries)") %>%
+  select(c(`2010`:`2020`)) |> 
+  as.numeric() -> gdp_ssa
+
+# workforce data
+workforce_data <- read_xls("data/Workforce_Worldbank.xls")
+workforce_data %>% 
+  filter(`Country Name` == "Sub-Saharan Africa (excluding high income)")%>%
+  select(c(`2010`:`2020`)) |> 
+  as.numeric() -> wf_ssa
+
+## Cost-effectiveness parameters
+
+parm <- fread("data/parameters.csv")
+parm <- parm[Disease == "Cholera"]
+# GBD data deleted and replaced with Mbewe (2025) Open Forum Infect Dis data
+# it is assumed that moderate and severe cases are reported 
+parm <- parm[!(Parameter == "Prop_Moderate" & Value == 0.289)]
+parm <- parm[!(Parameter == "Prop_Severe" & Value == 0.069)]
+
+# Disease burden parameters
+day_ill <- parm[Parameter == "Duration_Illness", Value]
+pr_moderate <- parm[Parameter == "Prop_Moderate", Value]
+pr_severe <- parm[Parameter == "Prop_Severe", Value]
+wt_moderate <- parm[Parameter == "Disability_Weight_Moderate", Value]
+wt_severe <- parm[Parameter == "Disability_Weight_Severe", Value]
+
+# Vaccination costs
+vacc_price_per_dose <- parm[Parameter == "Vaccine_Cost", Value]
+vacc_delivery_cost <- parm[Parameter == "Vaccine_Delivery_Cost", Value]
+vacc_shipping_cost <- parm[Parameter == "Vaccine_Shipping_Cost", Value]
+
+# Direct medical costs
+patient_cost_hosp <- parm[Parameter == "Patient_Cost_Hosp", Value]
+patient_cost_outpt <- parm[Parameter == "Patient_Cost_Outpt", Value]
+public_cost_hosp <- parm[Parameter == "Public_Cost_Hosp", Value]
+public_cost_outpt <- parm[Parameter == "Public_Cost_Outpt", Value] 
+
+# Productivity costs
+patient_workday_lost <- parm[Parameter == "Pt_Workdays_Lost", Value]
+caregiver_workday_lost <- parm[Parameter == "Caregiver_Workdays_Lost", Value]
+mean_age_inf <- parm[Parameter == "Mean_Age_Infection", Value]
+
+mean_gdp <- mean(gdp_ssa)
+mean_remaining_life <- mean(life_exp_25)
+mean_cfr <- 0.01 # across countries and year
+mean_prop_workforce <- mean(wf_ssa)/100 # across countries and year
+pr_tot <- pr_moderate + pr_severe
+mean_dis_wt <- wt_moderate * pr_moderate / pr_tot + 
+  wt_moderate * pr_severe / pr_tot
+```
+
+Total cost per case
+```{r}
+total_cost_per_case <- function(day_ill = 2, 
+                                mean_dis_wt = 0.188, 
+                                year_val = 1705.644,
+                                mean_prop_workforce = 0.6805938, 
+                                patient_workday_lost = 6.5,
+                                caregiver_workday_lost = 3.3,
+                                mean_cfr = 0.01,
+                                mean_remaining_life = 42.63315, 
+                                pr_moderate = 0.78, 
+                                pr_severe = 0.22,
+                                patient_cost_outpt = 5.71, 
+                                patient_cost_hosp = 38.87, 
+                                public_cost_outpt = 2.84, 
+                                public_cost_hosp = 65.77) {
+
+  indirect_coi_per_patient <- (day_ill / 365) * mean_dis_wt * year_val
+  
+  productivity_lost_per_patient <- 
+    mean_prop_workforce * (
+      patient_workday_lost / 365 +
+      caregiver_workday_lost / 365
+    ) * year_val
+  
+  indirect_cod_per_patient <- 
+    mean_cfr * mean_remaining_life * year_val
+  
+  pr_tot <- pr_moderate + pr_severe 
+  
+  direct_cost_per_patient <- 
+    pr_moderate / pr_tot * (patient_cost_outpt + public_cost_outpt) + 
+    pr_severe  / pr_tot * (patient_cost_hosp + public_cost_hosp)
+  
+  indirect_cost_per_patient <- 
+    indirect_coi_per_patient + 
+    indirect_cod_per_patient + 
+    productivity_lost_per_patient
+  
+  C_case <- direct_cost_per_patient + indirect_cost_per_patient
+  return(C_case)
+}
+```
+
+Outbreak cost by valuing a year (GDP vs 3*GDP)
+```{r}
+N_pop <- 1e6 
+dose_per_person <- 1  # Single-dose regimen
+
+# Vaccination costs per person (do not depend on GDP in this setup)
+vacc_cost_per_person <- (vacc_price_per_dose + vacc_delivery_cost + vacc_shipping_cost) * dose_per_person
+
+C_vac_per_person <- vacc_cost_per_person
+
+prop_vacc_cov <- 0.9
+C_V <- N_pop * prop_vacc_cov * C_vac_per_person
+
+# Function to build cost-ratio df for a given year_val and label
+build_cost_df <- function(year_val, scen_label) {
+  # indirect_coi_per_patient <- (day_ill / 365) * mean_dis_wt * year_val
+  # 
+  # productivity_lost_per_patient <- 
+  #   mean_prop_workforce * (
+  #     patient_workday_lost / 365 +
+  #     caregiver_workday_lost / 365
+  #   ) * year_val
+  # 
+  # indirect_cod_per_patient <- 
+  #   mean_cfr * mean_remaining_life * year_val
+  # 
+  # pr_tot <- pr_moderate + pr_severe 
+  # 
+  # direct_cost_per_patient <- 
+  #   pr_moderate / pr_tot * (patient_cost_outpt + public_cost_outpt) + 
+  #   pr_severe  / pr_tot * (patient_cost_hosp + public_cost_hosp)
+  # 
+  # indirect_cost_per_patient <- 
+  #   indirect_coi_per_patient + 
+  #   indirect_cod_per_patient + 
+  #   productivity_lost_per_patient
+  # 
+  # C_case <- direct_cost_per_patient + indirect_cost_per_patient
+  
+  C_case <- total_cost_per_case(day_ill = day_ill, 
+                                mean_dis_wt = mean_dis_wt, 
+                                year_val = year_val,
+                                mean_prop_workforce = mean_prop_workforce, 
+                                patient_workday_lost = patient_workday_lost,
+                                caregiver_workday_lost = caregiver_workday_lost,
+                                mean_cfr = mean_cfr,
+                                mean_remaining_life = mean_remaining_life, 
+                                pr_moderate = pr_moderate, 
+                                pr_severe = pr_severe,
+                                patient_cost_outpt = patient_cost_outpt, 
+                                patient_cost_hosp = patient_cost_hosp, 
+                                public_cost_outpt = public_cost_outpt, 
+                                public_cost_hosp = public_cost_hosp) 
+  # Use strictly positive attack rates for log scale
+  attack_rates <- seq(0.001, 0.1, by = 0.001)
+  
+  tibble(
+    attack_rate = attack_rates
+  ) |>
+    mutate(
+      cases   = N_pop * attack_rate,
+      C_I     = cases * C_case,
+      C_V     = C_V,
+      R_ratio = C_I / C_V,
+      scenario = scen_label
+    )
+}
+
+# Build data for GDP and 3x GDP
+df_costs_gdp   <- build_cost_df(mean_gdp,        "GDP")
+df_costs_3gdp  <- build_cost_df(3 * mean_gdp,    "3 \u00D7 GDP")
+
+df_costs_all <- bind_rows(df_costs_gdp, df_costs_3gdp)
+
+# Plot
+ggplot(df_costs_all, 
+       aes(x = attack_rate, y = R_ratio, color = scenario)) +
+  geom_line(linewidth = 1) +
+  geom_hline(yintercept = 1, linetype = "dotted") +
+  scale_x_log10() +
+  labs(
+    x = "Fraction of population infected",
+    y = expression(italic(R) == italic(C)[I] / italic(C)[V]),
+    color = "Year value"
+  ) +
+  theme_light()
+```
+
+
+#### Updated cost
+```{r}
+
+#' Compute total cost for a realization: outbreaks + pre-emptive + reactive vaccination
+#'
+#' - Pre-emptive vaccination reduces outbreak size (attack rate)
+#' - Reactive vaccination reduces outbreak size (attack rate)
+#'
+#' Reduction is applied multiplicatively on attack rate:
+#'   attack_rate_eff = attack_rate * (1 - pre_red) * (1 - react_red)
+#'
+#' Required columns:
+#'   cells_dt: id, pop_size, pre_vax (logical), outbreak (logical)
+#'   traj_dt:  id, attack_rate_per_capita (numeric in [0,1]) for outbreak cells
+#'   reactive_dt: id, reactive_vax (logical), frac_reduction_ci (optional)
+#'
+#' Optional columns:
+#'   - reactive_dt[[react_frac_red_col]]  (default "frac_reduction_ci")
+#'   - cells_dt[[pre_frac_red_col]]       (default "pre_frac_reduction_ci")
+#'
+#' If pre_frac_red_col is missing/NA for pre_vax cells, a default is used:
+#'   pre_red_default = pmin(1, nu * pre_coverage)
+#' (Adjust this mapping if you want a different pre-emptive effectiveness model.)
+#'
+#' @param cells_dt Cell-level table (all cells).
+#' @param traj_dt Outbreak trajectory table (outbreak cells).
+#' @param reactive_dt Reactive vaccination assignment table (subset or all ids).
+#' @param C_case Cost per case.
+#' @param C_vac_per_person Vaccination cost per vaccinated person.
+#' @param pre_coverage Coverage for pre-emptive vaccination in pre_vax cells.
+#' @param default_reactive_coverage Coverage for reactive vaccination if rv_coverage missing.
+#' @param reactive_coverage_col Column name for reactive coverage (default "rv_coverage").
+#' @param react_frac_red_col Column name for reactive fractional reduction (default "frac_reduction_ci").
+#' @param pre_frac_red_col Column name for pre-emptive fractional reduction (default "pre_frac_reduction_ci").
+#' @param nu Vaccine efficacy parameter (used only for default pre-emptive reduction mapping).
+#' @return A list with total costs and a per-cell breakdown data.table.
+compute_total_cost <- function(cells_dt,
+                               traj_dt,
+                               reactive_dt,
+                               C_case,
+                               C_vac_per_person,
+                               pre_coverage = 0.9,
+                               default_reactive_coverage = 0.9,
+                               reactive_coverage_col = "rv_coverage",
+                               react_frac_red_col = "frac_reduction_ci",
+                               pre_frac_red_col = "pre_frac_reduction_ci",
+                               nu = 0.9) {
+
+  cells <- data.table::as.data.table(cells_dt)
+  traj  <- data.table::as.data.table(traj_dt)
+  rv    <- data.table::as.data.table(reactive_dt)
+  
+  req_cells <- c("id", "pop_size", "pre_vax", "outbreak")
+  miss <- setdiff(req_cells, names(cells))
+  if (length(miss) > 0) 
+    stop("cells_dt missing columns: ", paste(miss, collapse = ", "))
+  
+  if (!("id" %in% names(traj))) stop("traj_dt must contain 'id'.")
+  if (!("attack_rate_per_capita" %in% names(traj))) 
+    stop("traj_dt must contain 'attack_rate_per_capita'.")
+  
+  if (!("id" %in% names(rv))) stop("reactive_dt must contain 'id'.")
+  if (!("reactive_vax" %in% names(rv))) 
+    stop("reactive_dt must contain 'reactive_vax'.")
+  
+  # Merge
+  
+  dt <- merge(cells, traj[, .(id, attack_rate_per_capita)], 
+              by = "id", all.x = TRUE)
+  dt <- merge(dt, rv, by = "id", all.x = TRUE)
+  
+  dt[, pre_vax := as.logical(pre_vax)]
+  dt[, outbreak := as.logical(outbreak)]
+  dt[, reactive_vax := as.logical(reactive_vax)]
+  dt[is.na(attack_rate_per_capita), attack_rate_per_capita := 0]
+  
+  # --- Pre-emptive fractional reduction (size reduction) ---
+  
+  pre_coverage <- pmin(pmax(pre_coverage, 0), 1)
+  pre_red_default <- pmin(1, nu * pre_coverage)
+  
+  if (!(pre_frac_red_col %in% names(dt))) dt[, (pre_frac_red_col) := NA_real_]
+  
+  dt[, pre_red_used := 
+       fifelse(pre_vax == TRUE, 
+               fifelse(is.na(get(pre_frac_red_col)), pre_red_default,
+                       get(pre_frac_red_col)), 0.0)]
+  dt[, pre_red_used := pmin(pmax(pre_red_used, 0), 1)]
+  
+  # --- Reactive fractional reduction (size reduction) ---
+  
+  if (!(react_frac_red_col %in% names(dt))) dt[, (react_frac_red_col) := NA_real_]
+  dt[, (react_frac_red_col) := 
+       suppressWarnings(as.numeric(get(react_frac_red_col)))]
+  dt[, react_red_used := 0.0]
+  dt[reactive_vax == TRUE & !is.na(get(react_frac_red_col)),
+     react_red_used := get(react_frac_red_col)]
+  dt[, react_red_used := pmin(pmax(react_red_used, 0), 1)]
+  
+  # dt[, react_red_used := 
+  #      fifelse(reactive_vax == TRUE,
+  #              fifelse(is.na(get(react_frac_red_col)), 
+  #                      0.0, get(react_frac_red_col)),  0.0)]
+  # dt[, react_red_used := pmin(pmax(react_red_used, 0), 1)]
+  
+  # --- Effective attack rate (apply both reductions multiplicatively) ---
+  
+  dt[, attack_rate_eff := 
+       attack_rate_per_capita * (1 - pre_red_used) * (1 - react_red_used)]
+  dt[, attack_rate_eff := fifelse(outbreak == TRUE, attack_rate_eff, 0)]
+  
+  # Outbreak costs
+  
+  dt[, C_outbreak := pop_size * attack_rate_eff * C_case]
+  
+  # Pre-emptive vaccination program costs
+  
+  dt[, C_pre := fifelse(pre_vax == TRUE, pop_size * pre_coverage * C_vac_per_person, 0)]
+  
+  # Reactive vaccination program costs
+  
+  if (!(reactive_coverage_col %in% names(dt))) dt[, (reactive_coverage_col) := NA_real_]
+  dt[, rv_cov_used := 
+       fifelse(is.na(get(reactive_coverage_col)), default_reactive_coverage,
+               get(reactive_coverage_col))]
+  dt[, rv_cov_used := pmin(pmax(rv_cov_used, 0), 1)]
+  dt[, C_reactive := 
+       fifelse(reactive_vax == TRUE, 
+               pop_size * rv_cov_used * C_vac_per_person, 0)]
+  
+  totals <- list(
+    outbreak_cost      = sum(dt$C_outbreak, na.rm = TRUE),
+    pre_vax_cost       = sum(dt$C_pre, na.rm = TRUE),
+    reactive_vax_cost  = sum(dt$C_reactive, na.rm = TRUE)
+  )
+  totals$total_cost <- 
+    totals$outbreak_cost + totals$pre_vax_cost + totals$reactive_vax_cost
+  
+  list(
+    totals = totals,
+    breakdown = dt[, .(id, pop_size, pre_vax, reactive_vax, outbreak,
+                       attack_rate_per_capita,
+                       pre_red_used, react_red_used,
+                       attack_rate_eff,
+                       C_outbreak, C_pre, C_reactive,
+                       C_total = C_outbreak + C_pre + C_reactive)]
+  )
+}
+
+```
+
+
+## Tests
+
+Parameters
+```{r}
+seed_rng_val <- 42
+
+n_region_val <- 900
+pop_val <- 1e3
+rho0_val <- 0.8
+ell_val <- 20
+theta_val <- 5
+
+alpha_val <- 0.8
+f_val <- 0.4
+R_val <- 10
+r_val <- 0.3
+eta_val <- 0.9
+nu_val <- 0.9
+kappa_val <- 0.9
+
+rho_target_val <- 0.9
+n_seeds_val <- 20
+patch_size_val <- 60
+vacc_resource_val <- 200 # normalized by population size. 
+B_pre_val <- round(alpha_val * vacc_resource_val) # number of cells (populations) that can be vaccinated
+
+# assign_reactive_vaccination inputs
+vacc_coverage_val <- 0.7
+reactive_vacc_delay_range <- c(14, 21)
+weight_attack_rate <- 0.6
+weight_attack_case <- 0.4
+
+# assign_outbreak_trajectory inputs
+outbreak_start_time_range <- c(0, 180)
+outbreak_total_duration_range <- c(7, 120)
+outbreak_peak_frac_shape_beta_params <- c(2, 2)
+outbreak_peak_incidence_range <- 4*c(5e-6, 5e-4)
+outbreak_max_attack_rate <- 0.1
+outbreak_base_incidence <- 0
+
+# For reproducibility across alpha runs
+t_now <- 12
+seed_base <- seed_rng_val
+```
+
+Setup regions
+```{r}
+# regions 
+regions <- setup_spatial_region(n_region = n_region_val,
+                                pop_size_range = c(1, 1),
+                                prop_U5_range = c(0.15, 0.17),
+                                theta = theta_val,
+                                rho0 = rho0_val,
+                                ell = ell_val,
+                                adj_type = "rook",
+                                rho_score = rho_target_val,
+                                n_seeds = n_seeds_val,
+                                patch_size = patch_size_val,
+                                seed_rng = seed_rng_val)
+```
+
+C_case
+```{r}
+
+C_case <- total_cost_per_case(day_ill = day_ill, 
+                                mean_dis_wt = mean_dis_wt, 
+                                year_val = mean_gdp,
+                                mean_prop_workforce = mean_prop_workforce, 
+                                patient_workday_lost = patient_workday_lost,
+                                caregiver_workday_lost = caregiver_workday_lost,
+                                mean_cfr = mean_cfr,
+                                mean_remaining_life = mean_remaining_life, 
+                                pr_moderate = pr_moderate, 
+                                pr_severe = pr_severe,
+                                patient_cost_outpt = patient_cost_outpt, 
+                                patient_cost_hosp = patient_cost_hosp, 
+                                public_cost_outpt = public_cost_outpt, 
+                                public_cost_hosp = public_cost_hosp) 
+```
+
+Experiment
+```{r}
+alpha_grid <- seq(0, 1, by = 0.1)
+
+res_alpha <- lapply(seq_along(alpha_grid), function(k) {
+
+  alpha_k <- alpha_grid[k]
+  
+  B_pre_k <- round(alpha_k * vacc_resource_val)
+  max_targets_k <- round(vacc_resource_val - B_pre_k)
+  
+  # 1) Allocate pre-emptive vaccination to patches
+  
+  patch_pre_vax_k <- allocate_preemptive_patches(
+    patch_df = regions$patches$summary,
+    B_pre = B_pre_k
+  )
+  patch_id_prevax_k <- which(patch_pre_vax_k$pre_vax == TRUE)
+  
+  cells_k <- regions$cells
+  cells_k$pre_vax <- cells_k$patch_id %in% patch_id_prevax_k
+  
+  # 2) Simulate outbreaks (your function may already incorporate vax in occurrence/spillover)
+  
+  set.seed(seed_base + 1000 + k)
+  outbreaks_k <- simulate_outbreak_spillover(
+    p     = cells_k$risk$p,
+    adj   = cells_k$adj,
+    vax   = cells_k$pre_vax,
+    eta   = eta_val,
+    nu    = nu_val,
+    kappa = kappa_val
+  )
+  cells_k$outbreak <- outbreaks_k$Y
+  
+  # 3) Assign outbreak trajectories for outbreaking cells
+  
+  df_out_k <- data.frame(
+    id = cells_k$id,
+    pop_size = cells_k$pop_size,
+    Y = cells_k$outbreak
+  )
+  
+  set.seed(seed_base + 2000 + k)
+  traj_k <- assign_outbreak_trajectory(
+    regions = df_out_k[df_out_k$Y, ],
+    start_time_range = outbreak_start_time_range,
+    total_duration_range = outbreak_total_duration_range,
+    peak_frac_shape = outbreak_peak_frac_shape_beta_params,
+    peak_incidence_range = outbreak_peak_incidence_range,
+    max_attack_rate = outbreak_max_attack_rate,
+    r0 = outbreak_base_incidence
+  )
+  # 4) Assign reactive vaccination (given remaining budget)
+
+  set.seed(seed_base + 3000 + k)
+  rv_k <- assign_reactive_vaccination(
+    outbreaks = traj_k,
+    t_now = t_now,
+    max_targets = max_targets_k,
+    coverage = vacc_coverage_val,
+    delay_range = reactive_vacc_delay_range,
+    w_attack = weight_attack_rate,
+    w_cases = weight_attack_case
+  )
+  
+  # 5) Compute reactive fractional reduction (delay-based); merge back
+  
+  # compute_frac_reduction_ci expects non-NA rv_delay (as you did)
+  
+  rv_red_k <- compute_frac_reduction_ci(subset(rv_k, !is.na(rv_delay)), 
+                              nu = nu_val)
+  rv_k2 <- dplyr::left_join(rv_k, 
+                            rv_red_k[, c("id", "frac_reduction_ci")],
+                            by = "id")
+  
+  # 6) Costing
+  
+  # (a) cells table for costing
+  
+  cells_cost_dt <- data.frame(
+    id       = cells_k$id,
+    pop_size = cells_k$pop_size,
+    pre_vax  = cells_k$pre_vax,
+    outbreak = cells_k$outbreak
+  )
+  
+  # (b) traj table for costing
+  
+  traj_cost_dt <- traj_k[, c("id", "attack_rate_per_capita")]
+  
+  # (c) reactive table for costing
+  
+  reactive_cost_dt <- rv_k2[, c("id", "reactive_vax", "frac_reduction_ci")]
+  
+  C_case <- 
+    total_cost_per_case(day_ill = day_ill, 
+                        mean_dis_wt = mean_dis_wt, 
+                        year_val = mean_gdp,
+                        mean_prop_workforce = mean_prop_workforce, 
+                        patient_workday_lost = patient_workday_lost,
+                        caregiver_workday_lost = caregiver_workday_lost,
+                        mean_cfr = mean_cfr,
+                        mean_remaining_life = mean_remaining_life, 
+                        pr_moderate = pr_moderate, 
+                        pr_severe = pr_severe,
+                        patient_cost_outpt = patient_cost_outpt, 
+                        patient_cost_hosp = patient_cost_hosp, 
+                        public_cost_outpt = public_cost_outpt, 
+                        public_cost_hosp = public_cost_hosp) 
+    
+  cost_k <- compute_total_cost(
+    cells_dt = cells_cost_dt,
+    traj_dt  = traj_cost_dt,
+    reactive_dt = reactive_cost_dt,
+    C_case = C_case,
+    C_vac_per_person = C_vac_per_person,
+    pre_coverage = prop_vacc_cov,
+    default_reactive_coverage = prop_vacc_cov,
+    nu = nu_val
+  )
+  
+  data.frame(
+    alpha = alpha_k,
+    B_pre = B_pre_k,
+    max_targets = max_targets_k,
+    outbreak_cost = cost_k$totals$outbreak_cost,
+    pre_vax_cost = cost_k$totals$pre_vax_cost,
+    reactive_vax_cost = cost_k$totals$reactive_vax_cost,
+    total_cost = cost_k$totals$total_cost,
+    n_outbreak = sum(cells_k$outbreak),
+    n_pre_vax_cells = sum(cells_k$pre_vax),
+    n_reactive_vax_cells = sum(rv_k2$reactive_vax, na.rm = TRUE)
+  )
+})
+
+df_alpha <- dplyr::bind_rows(res_alpha)
+
+df_alpha
+```
+
+Plot
+
+```{r}
+ggplot(df_alpha, aes(x = alpha, y = total_cost)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  labs(
+    x = expression(alpha~"(fraction allocated to pre-emptive)"),
+    y = "Total cost",
+    title = "Total cost vs fraction pre-emptive vaccination") +
+  theme_minimal(base_size = 12)
+
+```
+
+Monte Carlo experiments
+
+```{r}
+#' Evaluate total cost across alpha values with multiple Monte Carlo replicates
+#'
+#' For each alpha in `alpha_grid`, this function:
+#'  1) allocates pre-emptive vaccination with budget B_pre = round(alpha * vacc_resource)
+#'  2) simulates outbreaks (incl. spillover)
+#'  3) assigns outbreak trajectories
+#'  4) assigns reactive vaccination using remaining budget
+#'  5) computes fractional reduction for reactive vaccination (delay-based)
+#'  6) computes total costs (outbreak + pre + reactive)
+#'
+#' It returns both replicate-level outputs and alpha-level summaries:
+#' mean, median, and 95% central percentiles (2.5%, 97.5%).
+#'
+#' NOTE:
+#' - Assumes `regions` is already created via setup_spatial_region()
+#' - Uses your existing functions:
+#'   allocate_preemptive_patches(), simulate_outbreak_spillover(),
+#'   assign_outbreak_trajectory(), assign_reactive_vaccination(),
+#'   compute_frac_reduction_ci(), compute_total_cost()
+#'
+#' @param regions Output of setup_spatial_region().
+#' @param alpha_grid Numeric vector in [0,1].
+#' @param n_rep Number of simulations per alpha.
+#' @param vacc_resource Total vaccine resource (in your "cells" budget units).
+#' @param t_now Current time for reactive program.
+#' @param eta Spillover parameter.
+#' @param nu Vaccine efficacy parameter.
+#' @param kappa Spillover scaling parameter.
+#' @param C_case Cost per case.
+#' @param C_vac_per_person Vaccination cost per vaccinated person.
+#' @param pre_coverage Pre-emptive coverage within selected cells.
+#' @param reactive_coverage Default reactive coverage if rv_coverage not provided.
+#' @param seed_rng Base RNG seed for reproducibility.
+#' @return A list with:
+#'   - per_rep: data.frame of replicate-level outcomes
+#'   - summary: data.frame alpha-level summaries for total_cost and components
+test_cost_vs_alpha_mc <- function(regions,
+                                  alpha_grid = seq(0, 1, by = 0.1),
+                                  n_rep = 100,
+                                  vacc_resource,
+                                  t_now = 12,
+                                  eta,
+                                  nu,
+                                  kappa,
+                                  C_case,
+                                  C_vac_per_person,
+                                  pre_coverage = 0.9,
+                                  reactive_coverage = 0.9,
+                                  seed_rng = 1) {
+  
+  stopifnot(is.list(regions), !is.null(regions$cells),
+            !is.null(regions$patches$summary))
+  stopifnot(length(vacc_resource) == 1, vacc_resource >= 0)
+  stopifnot(all(alpha_grid >= 0 & alpha_grid <= 1))
+  stopifnot(n_rep >= 1)
+  
+  # Helper: one replicate at one alpha
+  
+  run_one <- function(alpha, rep_id) {
+    # deterministic seed per (alpha, rep) so results are reproducible
+    # without needing to set.seed globally outside.
+    set.seed(seed_rng + 100000 * rep_id + as.integer(round(alpha * 1000)))
+    
+    B_pre <- round(alpha * vacc_resource)
+    max_targets <- round(vacc_resource - B_pre)
+    
+    # 1) pre-emptive allocation
+    patch_pre <- allocate_preemptive_patches(
+      patch_df = regions$patches$summary,
+      B_pre = B_pre
+    )
+    pre_patch_ids <- which(patch_pre$pre_vax == TRUE)
+    
+    cells <- regions$cells
+    cells$pre_vax <- cells$patch_id %in% pre_patch_ids
+    
+    # 2) outbreaks
+    out <- simulate_outbreak_spillover(
+      p     = cells$risk$p,
+      adj   = cells$adj,
+      vax   = cells$pre_vax,
+      eta   = eta,
+      nu    = nu,
+      kappa = kappa
+    )
+    cells$outbreak <- out$Y
+    
+    # 3) trajectories
+    df_out <- data.frame(
+      id = cells$id,
+      pop_size = cells$pop_size,
+      Y = cells$outbreak
+    )
+    
+    # If no outbreaks, keep an empty traj with required columns
+    if (sum(df_out$Y) == 0) {
+      traj <- data.frame(id = integer(0), attack_rate_per_capita = numeric(0))
+      rv2  <- data.frame(id = cells$id, reactive_vax = FALSE, frac_reduction_ci = NA_real_)
+    } else {
+      traj <- assign_outbreak_trajectory(
+        regions = df_out[df_out$Y, ],
+        start_time_range = outbreak_start_time_range,
+        total_duration_range = outbreak_total_duration_range,
+        peak_frac_shape = outbreak_peak_frac_shape_beta_params,
+        peak_incidence_range = outbreak_peak_incidence_range,
+        max_attack_rate = outbreak_max_attack_rate,
+        r0 = outbreak_base_incidence
+      )
+    
+      # 4) reactive vaccination assignment
+      rv <- assign_reactive_vaccination(
+        outbreaks = traj,
+        t_now = t_now,
+        max_targets = max_targets, 
+        coverage = vacc_coverage_val,
+        delay_range = reactive_vacc_delay_range,
+        w_attack = weight_attack_rate,
+        w_cases = weight_attack_case
+      )
+    
+      # 5) reactive fractional reduction
+      # compute only among those with rv_delay
+      rv_red <- compute_frac_reduction_ci(subset(rv, !is.na(rv_delay)), nu = nu)
+    
+      rv2 <- dplyr::left_join(rv, rv_red[, c("id", "frac_reduction_ci")], by = "id")
+    
+      # ensure numeric type (prevents logical-all-NA issue after joins)
+      rv2$frac_reduction_ci <- as.numeric(rv2$frac_reduction_ci)
+    }
+    
+    # 6) costing
+    cells_cost <- data.frame(
+      id       = cells$id,
+      pop_size = cells$pop_size,
+      pre_vax  = cells$pre_vax,
+      outbreak = cells$outbreak
+    )
+    
+    # traj must have id + attack_rate_per_capita
+    traj_cost <- traj[, c("id", "attack_rate_per_capita"), drop = FALSE]
+    
+    reactive_cost <- rv2[, c("id", "reactive_vax", "frac_reduction_ci"), drop = FALSE]
+    
+    cost <- compute_total_cost(
+      cells_dt = cells_cost,
+      traj_dt  = traj_cost,
+      reactive_dt = reactive_cost,
+      C_case = C_case,
+      C_vac_per_person = C_vac_per_person,
+      pre_coverage = pre_coverage,
+      default_reactive_coverage = reactive_coverage,
+      nu = nu
+    )
+    
+    data.frame(
+      alpha = alpha,
+      rep = rep_id,
+      B_pre = B_pre,
+      max_targets = max_targets,
+      n_outbreak = sum(cells$outbreak),
+      n_pre_vax_cells = sum(cells$pre_vax),
+      n_reactive_vax_cells = sum(reactive_cost$reactive_vax, na.rm = TRUE),
+      outbreak_cost = cost$totals$outbreak_cost,
+      pre_vax_cost = cost$totals$pre_vax_cost,
+      reactive_vax_cost = cost$totals$reactive_vax_cost,
+      total_cost = cost$totals$total_cost
+    )
+    
+  }
+  
+  # Run all reps for all alphas
+  
+  per_rep <- do.call(
+    rbind,
+    lapply(alpha_grid, function(a) {
+      do.call(rbind, lapply(seq_len(n_rep), function(r) run_one(a, r)))
+    })
+  )
+  
+  # Summaries: mean, median, 95% central percentiles
+  
+  summarise_var <- function(x) {
+    c(
+      mean = mean(x, na.rm = TRUE),
+      median = stats::median(x, na.rm = TRUE),
+      p2.5 = as.numeric(stats::quantile(x, 0.025, na.rm = TRUE, type = 7)),
+      p97.5 = as.numeric(stats::quantile(x, 0.975, na.rm = TRUE, type = 7))
+    )
+  }
+  
+  summary <- per_rep |>
+  dplyr::group_by(alpha) |>
+  dplyr::summarise(
+    n_rep = dplyr::n(),
+    B_pre = dplyr::first(B_pre),
+    max_targets = dplyr::first(max_targets),
+  
+    n_outbreak_mean = mean(n_outbreak),
+    n_outbreak_median = median(n_outbreak),
+    n_outbreak_p2.5 = as.numeric(quantile(n_outbreak, 0.025)),
+    n_outbreak_p97.5 = as.numeric(quantile(n_outbreak, 0.975)),
+  
+    outbreak_cost_mean = summarise_var(outbreak_cost)[["mean"]],
+    outbreak_cost_median = summarise_var(outbreak_cost)[["median"]],
+    outbreak_cost_p2.5 = summarise_var(outbreak_cost)[["p2.5"]],
+    outbreak_cost_p97.5 = summarise_var(outbreak_cost)[["p97.5"]],
+  
+    pre_vax_cost_mean = summarise_var(pre_vax_cost)[["mean"]],
+    pre_vax_cost_median = summarise_var(pre_vax_cost)[["median"]],
+    pre_vax_cost_p2.5 = summarise_var(pre_vax_cost)[["p2.5"]],
+    pre_vax_cost_p97.5 = summarise_var(pre_vax_cost)[["p97.5"]],
+  
+    reactive_vax_cost_mean = summarise_var(reactive_vax_cost)[["mean"]],
+    reactive_vax_cost_median = summarise_var(reactive_vax_cost)[["median"]],
+    reactive_vax_cost_p2.5 = summarise_var(reactive_vax_cost)[["p2.5"]],
+    reactive_vax_cost_p97.5 = summarise_var(reactive_vax_cost)[["p97.5"]],
+  
+    total_cost_mean = summarise_var(total_cost)[["mean"]],
+    total_cost_median = summarise_var(total_cost)[["median"]],
+    total_cost_p2.5 = summarise_var(total_cost)[["p2.5"]],
+    total_cost_p97.5 = summarise_var(total_cost)[["p97.5"]],
+    .groups = "drop"
+  )
+
+  list(per_rep = per_rep, summary = summary)
+}
+
+```
+
+Multiple runs
+
+```{r}
+alpha_grid <- seq(0, 1, by = 0.1)
+
+mc_res <- test_cost_vs_alpha_mc(
+  regions = regions,
+  alpha_grid = alpha_grid,
+  n_rep = 50,                   # increase to 200+ for smoother percentiles
+  vacc_resource = vacc_resource_val,
+  t_now = 30,
+  eta = eta_val,
+  nu = nu_val,
+  kappa = kappa_val,
+  C_case = C_case,
+  C_vac_per_person = C_vac_per_person,
+  pre_coverage = prop_vacc_cov,
+  reactive_coverage = prop_vacc_cov,
+  seed_rng = seed_rng_val
+)
+
+mc_res$summary
+```
+
+Plot
+
+```{r}
+# Plot: mean + 95% central interval for total cost vs alpha
+
+df_sum <- mc_res$summary
+
+ggplot(df_sum, aes(x = alpha, y = total_cost_mean)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymin = total_cost_p2.5, 
+                    ymax = total_cost_p97.5), width = 0.02) +
+  labs(
+    x = expression(alpha~"(fraction allocated to pre-emptive)"),
+    y = "Total cost",
+    title = "Total cost vs alpha (mean with 95% central interval)"
+) +
+theme_minimal(base_size = 12)
+
+```
+
