@@ -18,7 +18,7 @@ library(MASS)
 library(Matrix)
 library(dplyr)
 library(ggplot2)
-source("R/utils.R")
+source("R/load_all.R")
 ```
 
 # Spatially correlated outbreak risks and spillover
@@ -133,7 +133,7 @@ Vaccination does not reduce infectiousness of neighbors (i.e., no outward spillo
 
 ## Expected outbreak count
 
-Let
+Let  
 $$
 N_{\mathrm{out}} = \sum_{i=1}^n Y_i
 $$
@@ -237,54 +237,6 @@ Expected costs are evaluated by Monte Carlo simulation:
 
 ---
 
-## Patch summaries and allocation
-
-
-
-```{r}
-allocate_preemptive_targeted <- function(patch_df, B_pre) {
-  ord <- order(patch_df$S_hat, decreasing = TRUE)
-  used <- 0
-  pre_vax <- rep(FALSE, nrow(patch_df))
-
-  for (k in ord) {
-    if (used + patch_df$m[k] <= B_pre) {
-      pre_vax[k] <- TRUE
-      used <- used + patch_df$m[k]
-    }
-  }
-
-  list(pre_vax = pre_vax, used = used)
-}
-```
-
----
-
-### Mixed outbreak mechanism
-
-```{r}
-# compute the number of cells with outbreaks
-draw_outbreak_adj <- function(p, adj, V = NULL, 
-                              eta = 0.6, nu = 0.8, kappa = 0.8) {
-
-  n <- length(p)
-  if (is.null(V)) V <- rep(FALSE, n)
-
-  p_eff <- p * (1 - nu * V)
-  eta_eff <- eta * (1 - kappa * V)
-
-  Y0 <- rbinom(n, 1, p_eff) == 1L
-  K <- vapply(seq_len(n), function(i) sum(Y0[adj[[i]]]), integer(1))
-  h <- 1 - (1 - eta_eff)^K
-  Y1 <- rbinom(n, 1, h) == 1L
-
-  Y <- Y0 | (!Y0 & Y1)
-  list(Y = Y, Y0 = Y0, Y1 = Y1)
-}
-```
-
----
-
 ### Mixed strategy simulation
 
 ```{r}
@@ -293,116 +245,117 @@ simulate_patch_spillover <- function(p_true, score_cell,
                                      alpha, f, R, r,
                                      eta = 0.2, nu = 0, kappa = 0,
                                      seed = NULL) {
+    if (!is.null(seed)) set.seed(seed)
 
-  if (!is.null(seed)) set.seed(seed)
-  
-  stopifnot(alpha >= 0, alpha <= 1, f > 0, f <= 1, R >= 0, r >= 0, r <= 1,
-            is.numeric(p_true), all(p_true > 0), all(p_true < 1),
-            is.numeric(score_cell), length(score_cell) == length(p_true))
-  
-  patches <- patches[!vapply(patches, is.null, logical(1))]
-  Kpatch  <- length(patches)
-  stopifnot(nrow(patch_df) == Kpatch)
-  
-  n <- length(p_true)
-  
-  # Budgets in number of CELLS
-  B_pre   <- alpha * f * n
-  B_react <- (1 - alpha) * f * n
-  # -------------------------------------------------
-  # 1. Pre-emptive vaccination (PATCH level, score-based)
-  # -------------------------------------------------
-  
-  pre <- allocate_preemptive_targeted(patch_df, B_pre = B_pre)
-  pre_vax_patch <- as.logical(pre$pre_vax)
-  used_pre <- as.numeric(pre$used)
-  
-  V_pre_cell <- rep(FALSE, n)
-  if (any(pre_vax_patch)) {
-    for (k in which(pre_vax_patch)) V_pre_cell[patches[[k]]] <- TRUE
-  }
-  
-  # -------------------------------------------------
-  # 2. Outbreak realization (CELL level, true risk)
-  # -------------------------------------------------
-  outb <- draw_outbreak_adj(
-    p = p_true,
-    adj = adj,
-    V = V_pre_cell,
-    eta = eta,
-    nu = nu,
-    kappa = kappa
-  )
-  
-  Y_cell  <- as.logical(outb$Y)
-  Y0_cell <- outb$Y0
-  Y1_cell <- outb$Y1
-  
-  # -------------------------------------------------
-  # 3. Reactive vaccination (CELL level, observation-only)
-  # -------------------------------------------------
-  
-  outbreak_cells <- which(Y_cell & !V_pre_cell)
-  
-  used_react <- min(length(outbreak_cells), floor(B_react))
-  react_cells <- if (used_react > 0) outbreak_cells[seq_len(used_react)] else integer(0)
-  
-  V_react_cell <- rep(FALSE, n)
-  if (length(react_cells) > 0) V_react_cell[react_cells] <- TRUE
-  
-  V_any_cell <- V_pre_cell | V_react_cell
-  
-  # -------------------------------------------------
-  # 4. Costs (CELL level)
-  # -------------------------------------------------
-  
-  vax_cost_total <- used_pre + used_react
-  
-  outbreak_cost <- R * sum(
-    as.integer(Y_cell) * ifelse(V_react_cell, (1 - r), 1)
-  )
-  
-  total_cost <- vax_cost_total + outbreak_cost
-  
-  # -------------------------------------------------
-  # 5. Derived PATCH summaries (reporting only
-  # -------------------------------------------------
-  
-  outbreak_patch <- vapply(
-    seq_len(Kpatch),
-    function(k) any(Y_cell[patches[[k]]]),
-    logical(1)
-  )
-  
-  react_vax_patch <- vapply(
-    seq_len(Kpatch),
-    function(k) any(V_react_cell[patches[[k]]]),
-    logical(1)
-  )
-  
-  list(
-    total_cost = total_cost,
-    vax_cost = vax_cost_total,
-    outbreak_cost = outbreak_cost,
-    # Cell-level (primary outputs)
-    V_pre_cell = V_pre_cell,
-    V_react_cell = V_react_cell,
-    V_any_cell = V_any_cell,
-    Y_cell = Y_cell,
-    Y0_cell = Y0_cell,
-    Y1_cell = Y1_cell,
-    
-    # Patch-level (derived)
-    pre_vax_patch = pre_vax_patch,
-    react_vax_patch = react_vax_patch,
-    outbreak_patch = outbreak_patch,
-    
-    # Bookkeeping
-    used_pre = used_pre,
-    used_react = used_react,
-    B_pre = B_pre,
-    B_react = B_react
-  )
+    stopifnot(
+        alpha >= 0, alpha <= 1, f > 0, f <= 1, R >= 0, r >= 0, r <= 1,
+        is.numeric(p_true), all(p_true > 0), all(p_true < 1),
+        is.numeric(score_cell), length(score_cell) == length(p_true)
+    )
+
+    patches <- patches[!vapply(patches, is.null, logical(1))]
+    Kpatch <- length(patches)
+    stopifnot(nrow(patch_df) == Kpatch)
+
+    n <- length(p_true)
+
+    # Budgets in number of CELLS
+    B_pre <- alpha * f * n
+    B_react <- (1 - alpha) * f * n
+    # -------------------------------------------------
+    # 1. Pre-emptive vaccination (PATCH level, score-based)
+    # -------------------------------------------------
+
+    pre <- allocate_preemptive_patches(patch_df, B_pre = B_pre)
+    pre_vax_patch <- as.logical(pre$pre_vax)
+    used_pre <- as.numeric(pre$used)
+
+    V_pre_cell <- rep(FALSE, n)
+    if (any(pre_vax_patch)) {
+        for (k in which(pre_vax_patch)) V_pre_cell[patches[[k]]] <- TRUE
+    }
+
+    # -------------------------------------------------
+    # 2. Outbreak realization (CELL level, true risk)
+    # -------------------------------------------------
+    outb <- simulate_outbreak_spillover(
+        p = p_true,
+        adj = adj,
+        vax = V_pre_cell,
+        eta = eta,
+        nu = nu,
+        kappa = kappa
+    )
+
+    Y_cell <- as.logical(outb$Y)
+    Y0_cell <- outb$Y0
+    Y1_cell <- outb$Y1
+
+    # -------------------------------------------------
+    # 3. Reactive vaccination (CELL level, observation-only)
+    # -------------------------------------------------
+
+    outbreak_cells <- which(Y_cell & !V_pre_cell)
+
+    used_react <- min(length(outbreak_cells), floor(B_react))
+    react_cells <- if (used_react > 0) outbreak_cells[seq_len(used_react)] else integer(0)
+
+    V_react_cell <- rep(FALSE, n)
+    if (length(react_cells) > 0) V_react_cell[react_cells] <- TRUE
+
+    V_any_cell <- V_pre_cell | V_react_cell
+
+    # -------------------------------------------------
+    # 4. Costs (CELL level)
+    # -------------------------------------------------
+
+    vax_cost_total <- used_pre + used_react
+
+    outbreak_cost <- R * sum(
+        as.integer(Y_cell) * ifelse(V_react_cell, (1 - r), 1)
+    )
+
+    total_cost <- vax_cost_total + outbreak_cost
+
+    # -------------------------------------------------
+    # 5. Derived PATCH summaries (reporting only
+    # -------------------------------------------------
+
+    outbreak_patch <- vapply(
+        seq_len(Kpatch),
+        function(k) any(Y_cell[patches[[k]]]),
+        logical(1)
+    )
+
+    react_vax_patch <- vapply(
+        seq_len(Kpatch),
+        function(k) any(V_react_cell[patches[[k]]]),
+        logical(1)
+    )
+
+    list(
+        total_cost = total_cost,
+        vax_cost = vax_cost_total,
+        outbreak_cost = outbreak_cost,
+        # Cell-level (primary outputs)
+        V_pre_cell = V_pre_cell,
+        V_react_cell = V_react_cell,
+        V_any_cell = V_any_cell,
+        Y_cell = Y_cell,
+        Y0_cell = Y0_cell,
+        Y1_cell = Y1_cell,
+
+        # Patch-level (derived)
+        pre_vax_patch = pre_vax_patch,
+        react_vax_patch = react_vax_patch,
+        outbreak_patch = outbreak_patch,
+
+        # Bookkeeping
+        used_pre = used_pre,
+        used_react = used_react,
+        B_pre = B_pre,
+        B_react = B_react
+    )
 }
 
 ```
@@ -410,47 +363,79 @@ simulate_patch_spillover <- function(p_true, score_cell,
 ---
 
 ### Monte Carlo evaluation and optimization
-
 ```{r}
-estimate_cost_alpha_patch_spillover <- 
-  function(p_true, score_cell, adj, patches, patch_df,
-           alpha, f, R, r, eta = 0.2, nu = 0, kappa = 0,
-           n_mc = 2000, seed = NULL) {
+estimate_cost_alpha_patch_spillover <-
+    function(p_true, score_cell, adj, patches, patch_df,
+             alpha, f, R, r, eta = 0.2, nu = 0, kappa = 0,
+             n_mc = 2000, seed = NULL) {
+        if (!is.null(seed)) set.seed(seed)
 
-  if (!is.null(seed)) set.seed(seed)
-  
-  costs <- replicate(n_mc, {
-  simulate_patch_spillover(
-    p_true = p_true, score_cell = score_cell,
-    adj = adj, patches = patches, patch_df = patch_df,
-    alpha = alpha, f = f, R = R, r = r,
-    eta = eta, nu = nu, kappa = kappa)$total_cost
-  })
-  
-  c(mean = mean(costs), sd = sd(costs))
-}
+        n <- length(p_true)
+        B_pre <- alpha * f * n
+        B_react <- (1 - alpha) * f * n
 
+        # Pre-emptive allocation (deterministic given inputs)
+        pre <- allocate_preemptive_patches(patch_df, B_pre = B_pre)
+        pre_vax_patch <- as.logical(pre$pre_vax)
+        used_pre <- as.numeric(pre$used)
+
+        V_pre_cell <- rep(FALSE, n)
+        if (any(pre_vax_patch)) {
+            # Fix: Ensure patches are valid indices
+            for (k in which(pre_vax_patch)) V_pre_cell[patches[[k]]] <- TRUE
+        }
+
+        costs <- replicate(n_mc, {
+            # Outbreak
+            outb <- simulate_outbreak_spillover(
+                p = p_true,
+                adj = adj,
+                vax = V_pre_cell,
+                eta = eta,
+                nu = nu,
+                kappa = kappa
+            )
+            Y_cell <- as.logical(outb$Y)
+
+            # Reactive
+            outbreak_cells <- which(Y_cell & !V_pre_cell)
+            used_react <- min(length(outbreak_cells), floor(B_react))
+
+            V_react_cell <- rep(FALSE, n)
+            if (used_react > 0) {
+                react_cells <- outbreak_cells[seq_len(used_react)]
+                V_react_cell[react_cells] <- TRUE
+            }
+
+            # Cost
+            vax_cost_total <- used_pre + used_react
+            outbreak_cost <- R * sum(as.integer(Y_cell) * ifelse(V_react_cell, (1 - r), 1))
+
+            vax_cost_total + outbreak_cost
+        })
+        c(mean = mean(costs), sd = sd(costs))
+    }
 ```
 
 ```{r}
-alpha_star_patch_grid_spillover <- 
-  function(p_true, score_cell, adj, patches, patch_df,
-           f, R, r, eta = 0.2, nu = 0, kappa = 0,
-           alpha_grid = seq(0, 1, by = 0.05), n_mc = 2000, seed = NULL) {
+alpha_star_patch_grid_spillover <-
+    function(p_true, score_cell, adj, patches, patch_df,
+             f, R, r, eta = 0.2, nu = 0, kappa = 0,
+             alpha_grid = seq(0, 1, by = 0.05), n_mc = 2000, seed = NULL) {
+        res <- data.frame(alpha = alpha_grid, mean_cost = NA_real_)
 
-  res <- data.frame(alpha = alpha_grid, mean_cost = NA_real_)
-  
-  for (i in seq_along(alpha_grid)) {
-    res$mean_cost[i] <- estimate_cost_alpha_patch_spillover(
-      p_true = p_true, score_cell = score_cell,
-      adj = adj, patches = patches, patch_df = patch_df,
-      alpha = alpha_grid[i], f = f, R = R, r = r,
-      eta = eta, nu = nu, kappa = kappa,
-      n_mc = n_mc, seed = seed)["mean"]
-  }
+        for (i in seq_along(alpha_grid)) {
+            res$mean_cost[i] <- estimate_cost_alpha_patch_spillover(
+                p_true = p_true, score_cell = score_cell,
+                adj = adj, patches = patches, patch_df = patch_df,
+                alpha = alpha_grid[i], f = f, R = R, r = r,
+                eta = eta, nu = nu, kappa = kappa,
+                n_mc = n_mc, seed = seed
+            )["mean"]
+        }
 
-  list(alpha_star = res$alpha[which.min(res$mean_cost)], grid = res)
-}
+        list(alpha_star = res$alpha[which.min(res$mean_cost)], grid = res)
+    }
 ```
 
 ---
@@ -458,15 +443,16 @@ alpha_star_patch_grid_spillover <-
 # Example run
 
 ```{r}
-nx <- 25; ny <- 20
+nx <- 25
+ny <- 20
 rho0_val <- 0.6
 ell_val <- 4
 theta_val <- 3
 
 rho_target_val <- 0.7
 n_seeds_val <- 10
-patch_size_val = 40
-  
+patch_size_val <- 40
+
 alpha_val <- 0.5
 f_val <- 0.3
 R_val <- 5
@@ -475,12 +461,14 @@ eta_val <- 0.8
 nu_val <- 0.9
 kappa_val <- 0.8
 
-n_mc = 1000
-  
+n_mc <- 1000
+
 coords <- as.matrix(expand.grid(x = 1:nx, y = 1:ny))
 
-sim <- spatial_beta_risk(coords, theta = theta_val, 
-                         rho0 = rho0_val, ell = ell_val)
+sim <- spatial_beta_risk(coords,
+    theta = theta_val,
+    rho0 = rho0_val, ell = ell_val
+)
 p_true <- sim$p
 
 rank_out <- make_ranking(p_true, rho_target = rho_target_val)
@@ -488,32 +476,33 @@ score_cell <- rank_out$score
 
 adj <- make_adj(coords, type = "distance", d0 = 1.01)
 
-patch_out <- make_patches(score_cell, 
-                                 adj,
-                                 n_seeds = n_seeds_val, 
-                                 patch_size = patch_size_val)
+patch_out <- make_patches(score_cell,
+    adj,
+    n_seeds = n_seeds_val,
+    patch_size = patch_size_val
+)
 patches <- patch_out$patches
 patches <- patches[!vapply(patches, is.null, logical(1))]
 
-patch_df <- summarize_patches(p_true, score_cell, patches)
+patch_df <- summarize_patches(list(score = score_cell, patches = patches))
 
 opt <- alpha_star_patch_grid_spillover(
-  p_true = p_true, 
-  score_cell = score_cell, 
-  adj = adj, 
-  patches = patches, 
-  patch_df = patch_df,
-  f = f_val, R = R_val, r = r_val,
-  eta = eta_val, nu = nu_val, kappa = kappa_val, 
-  alpha_grid = seq(0, 1, by = 0.02),
-  n_mc = 2000,
-  seed = 1
+    p_true = p_true,
+    score_cell = score_cell,
+    adj = adj,
+    patches = patches,
+    patch_df = patch_df,
+    f = f_val, R = R_val, r = r_val,
+    eta = eta_val, nu = nu_val, kappa = kappa_val,
+    alpha_grid = seq(0, 1, by = 0.02),
+    n_mc = 2000,
+    seed = 1
 )
 opt$alpha_star
 
 ggplot(opt$grid, aes(alpha, mean_cost)) +
-  geom_line() +
-  theme_light()
+    geom_line() +
+    theme_light()
 ```
 
 
@@ -521,31 +510,37 @@ ggplot(opt$grid, aes(alpha, mean_cost)) +
 
 ## Figure 1. Spatially correlated risks $p_i$
 
-```{r, fig.width=7, fig.height=4.5}
+```{r}
 df_risk <- data.frame(
-  x = coords[,1],
-  y = coords[,2],
-  p = p_true
+    x = coords[, 1],
+    y = coords[, 2],
+    p = p_true
 )
 
 ggplot(df_risk, aes(x = x, y = y, fill = p)) +
-  geom_tile() +
-  coord_equal() +
-  labs(title = expression("Spatially correlated risks " * italic(p)[i]),
-       x = NULL, y = NULL, fill = "p_i") +
-  theme_minimal(base_size = 12)
+    geom_tile() +
+    coord_equal() +
+    labs(
+        title = expression("Spatially correlated risks " * italic(p)[i]),
+        x = NULL, y = NULL, fill = "p_i"
+    ) +
+    theme_minimal(base_size = 12)
 ```
 
 ## Figure 2. Imperfect risk score vs true risk
 
-```{r, fig.width=6.5, fig.height=4.2}
+```{r}
 df_score <- data.frame(p = p_true, score = score_cell)
 ggplot(df_score, aes(x = p, y = score)) +
-  geom_point(alpha = 0.4) +
-  labs(title = paste0("Imperfect score vs true risk (Spearman rho = ",
-                      round(rank_out$rho_achieved, 2), ")"),
-       x = expression(italic(p)[i]), y = "score_i") +
-  theme_minimal(base_size = 12)
+    geom_point(alpha = 0.4) +
+    labs(
+        title = paste0(
+            "Imperfect score vs true risk (Spearman rho = ",
+            round(rank_out$rho_achieved, 2), ")"
+        ),
+        x = expression(italic(p)[i]), y = "score_i"
+    ) +
+    theme_light()
 ```
 
 ## Figure 3. Patch map
@@ -553,81 +548,106 @@ ggplot(df_score, aes(x = p, y = score)) +
 ```{r, fig.width=7, fig.height=4.5}
 patch_id_vec <- patch_out$patch_id
 df_patchmap <- data.frame(
-  x = coords[,1],
-  y = coords[,2],
-  patch = factor(patch_id_vec)
+    x = coords[, 1],
+    y = coords[, 2],
+    patch = factor(patch_id_vec)
 )
 
 ggplot(df_patchmap, aes(x = x, y = y, fill = patch)) +
-  geom_tile() +
-  coord_equal() +
-  guides(fill = "none") +
-  labs(title = "Patches (contiguous groups grown from high-score seeds)",
-       x = NULL, y = NULL) +
-  theme_minimal(base_size = 12)
+    geom_tile() +
+    coord_equal() +
+    guides(fill = "none") +
+    labs(
+        title = "Patches (contiguous groups grown from high-score seeds)",
+        x = NULL, y = NULL
+    ) +
+    theme_minimal(base_size = 12)
 ```
 
 ## Figure 4.Simulated pre-emptive vs reactive vs outbreaks
 
-```{r, fig.width=8, fig.height=4.8, include=F}
-sim <- simulate_patch_spillover(
-  p_true = p_true,
-  score = score_cell,
-  adj = adj,
-  patches = patches,
-  patch_df = patch_df,
-  alpha = alpha_val, f = f_val, R = R_val, r = r_val,
-  eta = eta_val, nu = nu_val, kappa = kappa_val
+```{r}
+# Budgets (calculated here for this specific realization)
+n <- length(p_true)
+B_pre <- floor(alpha_val * f_val * n)
+B_react <- floor((1 - alpha_val) * f_val * n)
+# 1. Pre-emptive allocation
+pre_alloc <- allocate_preemptive_patches(patch_df, B_pre = B_pre)
+pre_vax_patch <- as.logical(pre_alloc$pre_vax)
+V_pre_cell <- rep(FALSE, n)
+if (any(pre_vax_patch)) {
+    for (k in which(pre_vax_patch)) V_pre_cell[patches[[k]]] <- TRUE
+}
+# 2. Outbreak realization
+outb <- simulate_outbreak_spillover(
+    p = p_true,
+    adj = adj,
+    vax = V_pre_cell,
+    eta = eta_val,
+    nu = nu_val,
+    kappa = kappa_val
 )
-
-df_state <- 
-  data.frame(
-    x = coords[,1],
-    y = coords[,2],
-    pre = sim$V_pre_cell,
-    react = sim$V_react_cell,
-    out = sim$Y_cell
-  ) %>%
-  mutate(state = dplyr::case_when(
-    out & react ~ "Outbreak + reactive",
-    out & !react ~ "Outbreak (unmitigated)",
-    !out & pre ~ "Pre-emptive vaccinated",
-    !out & react ~ "Reactive vaccinated (no outbreak)",
-    TRUE ~ "None")
-  )
-
+Y_cell <- as.logical(outb$Y)
+# 3. Reactive vaccination
+outbreak_cells <- which(Y_cell & !V_pre_cell)
+used_react <- min(length(outbreak_cells), B_react)
+V_react_cell <- rep(FALSE, n)
+if (used_react > 0) {
+    react_cells <- outbreak_cells[seq_len(used_react)]
+    V_react_cell[react_cells] <- TRUE
+}
+df_state <-
+    data.frame(
+        x = coords[, 1],
+        y = coords[, 2],
+        pre = V_pre_cell,
+        react = V_react_cell,
+        out = Y_cell
+    ) %>%
+    mutate(state = dplyr::case_when(
+        out & react ~ "Outbreak + reactive",
+        out & !react ~ "Outbreak (unmitigated)",
+        !out & pre ~ "Pre-emptive vaccinated",
+        !out & react ~ "Reactive vaccinated (no outbreak)",
+        TRUE ~ "None"
+    ))
 ggplot(df_state, aes(x = x, y = y, fill = state)) +
-  geom_tile() +
-  coord_equal() +
-  labs(title = paste0("Realization (alpha = ", alpha_val, ")"),
-       x = NULL, y = NULL, fill = NULL) +
-  theme_minimal(base_size = 12)
+    geom_tile() +
+    coord_equal() +
+    labs(
+        title = paste0("Realization (alpha = ", alpha_val, ")"),
+        x = NULL, y = NULL, fill = NULL
+    ) +
+    theme_light(base_size = 12)
 ```
+
 
 ## Figure 5. Cost curve across $\alpha$ and estimated $\alpha^*$
 
 ```{r, fig.width=7, fig.height=4.5}
 opt <- alpha_star_patch_grid_spillover(
-  p_true = p_true,
-  score_cell = score_cell,
-  adj = adj,
-  patches = patches,
-  patch_df = patch_df,
-  f = f_val, R = R_val, r = r_val,
-  eta = eta_val, nu = nu_val, kappa = kappa_val,
-  alpha_grid = seq(0, 1, by = 0.02),
-  n_mc = 2000,
-  seed = 1
+    p_true = p_true,
+    score_cell = score_cell,
+    adj = adj,
+    patches = patches,
+    patch_df = patch_df,
+    f = f_val, R = R_val, r = r_val,
+    eta = eta_val, nu = nu_val, kappa = kappa_val,
+    alpha_grid = seq(0, 1, by = 0.02),
+    n_mc = 2000,
+    seed = 1
 )
 
 ggplot(opt$grid, aes(x = alpha, y = mean_cost)) +
-  geom_line(linewidth = 1) +
-  geom_point(size = 2) +
-  geom_vline(xintercept = opt$alpha_star, linetype = "dashed") +
-  labs(title = paste0("Mean cost vs alpha (alpha* = ", opt$alpha_star, ")"),
-       x = expression(alpha),
-       y = "Mean cost (units of C_V)") +
-  theme_minimal(base_size = 12)
+    geom_line(linewidth = 1) +
+    geom_point(size = 2) +
+    geom_vline(xintercept = opt$alpha_star, linetype = "dashed") +
+    labs(
+        title = paste0("Mean cost vs alpha (alpha* = ", opt$alpha_star, ")"),
+        x = expression(alpha),
+        y = "Mean cost (units of C_V)"
+    ) +
+    theme_light(base_size = 12)
 ```
 
 ---
@@ -636,20 +656,7 @@ ggplot(opt$grid, aes(x = alpha, y = mean_cost)) +
 Compare two alternative vaccination strategies. In Strategy A, pre-emptive vaccination occurs at the patch level after accounting for spill-over risk in addition to cell-level risk (environmental factors). In Strategy B, pre-emptive vaccination occurs at the cell level that only accounts for the cell-level risk (environmental factors). Reactive vaccination occurs at the cell level in both strategies.
 
 ```{r}
-augment_risk_spillover <- function(p_true, adj, eta) {
-  n <- length(p_true)
-  p_aug <- numeric(n)
 
-  for (i in seq_len(n)) {
-    nb <- adj[[i]]
-    if (length(nb) == 0L) {
-      p_aug[i] <- p_true[i]
-    } else {
-      p_aug[i] <- p_true[i] + (1 - p_true[i]) * (1 - prod(1 - eta * p_true[nb]))
-    }
-  }
-  pmin(pmax(p_aug, 0), 1)
-}
 
 ```
 
@@ -661,73 +668,72 @@ simulate_cell_spillover <- function(p_true, score_cell,
                                     alpha, f, R, r,
                                     eta = 0.2, nu = 0, kappa = 0,
                                     seed = NULL) {
+    if (!is.null(seed)) set.seed(seed)
 
-  if (!is.null(seed)) set.seed(seed)
+    stopifnot(length(p_true) == length(score_cell))
+    n <- length(p_true)
 
-  stopifnot(length(p_true) == length(score_cell))
-  n <- length(p_true)
+    # Budgets in CELLS
+    B_pre <- alpha * f * n
+    B_react <- (1 - alpha) * f * n
 
-  # Budgets in CELLS
-  B_pre   <- alpha * f * n
-  B_react <- (1 - alpha) * f * n
+    # -------------------------------------------------
+    # 1) Pre-emptive vaccination (CELL level, score-based)
+    # -------------------------------------------------
+    ord <- order(score_cell, decreasing = TRUE)
+    used_pre <- min(floor(B_pre), n)
+    pre_cells <- if (used_pre > 0) ord[seq_len(used_pre)] else integer(0)
 
-  # -------------------------------------------------
-  # 1) Pre-emptive vaccination (CELL level, score-based)
-  # -------------------------------------------------
-  ord <- order(score_cell, decreasing = TRUE)
-  used_pre <- min(floor(B_pre), n)
-  pre_cells <- if (used_pre > 0) ord[seq_len(used_pre)] else integer(0)
+    V_pre_cell <- rep(FALSE, n)
+    if (length(pre_cells) > 0) V_pre_cell[pre_cells] <- TRUE
 
-  V_pre_cell <- rep(FALSE, n)
-  if (length(pre_cells) > 0) V_pre_cell[pre_cells] <- TRUE
+    # -------------------------------------------------
+    # 2) Outbreak realization (CELL level, true risk)
+    # -------------------------------------------------
+    outb <- simulate_outbreak_spillover(
+        p = p_true,
+        adj = adj,
+        vax = V_pre_cell,
+        eta = eta,
+        nu = nu,
+        kappa = kappa
+    )
+    Y_cell <- as.logical(outb$Y)
 
-  # -------------------------------------------------
-  # 2) Outbreak realization (CELL level, true risk)
-  # -------------------------------------------------
-  outb <- draw_outbreak_adj(
-    p = p_true,
-    adj = adj,
-    V = V_pre_cell,
-    eta = eta,
-    nu = nu,
-    kappa = kappa
-  )
-  Y_cell <- as.logical(outb$Y)
+    # -------------------------------------------------
+    # 3) Reactive vaccination (CELL level, observation-only)
+    # -------------------------------------------------
+    outbreak_cells <- which(Y_cell & !V_pre_cell)
 
-  # -------------------------------------------------
-  # 3) Reactive vaccination (CELL level, observation-only)
-  # -------------------------------------------------
-  outbreak_cells <- which(Y_cell & !V_pre_cell)
+    used_react <- min(length(outbreak_cells), floor(B_react))
+    react_cells <- if (used_react > 0) outbreak_cells[seq_len(used_react)] else integer(0)
 
-  used_react <- min(length(outbreak_cells), floor(B_react))
-  react_cells <- if (used_react > 0) outbreak_cells[seq_len(used_react)] else integer(0)
+    V_react_cell <- rep(FALSE, n)
+    if (length(react_cells) > 0) V_react_cell[react_cells] <- TRUE
 
-  V_react_cell <- rep(FALSE, n)
-  if (length(react_cells) > 0) V_react_cell[react_cells] <- TRUE
+    # -------------------------------------------------
+    # 4) Costs (CELL level, units of C_V)
+    # -------------------------------------------------
+    vax_cost_total <- used_pre + used_react
 
-  # -------------------------------------------------
-  # 4) Costs (CELL level, units of C_V)
-  # -------------------------------------------------
-  vax_cost_total <- used_pre + used_react
+    outbreak_cost <- R * sum(
+        as.integer(Y_cell) * ifelse(V_react_cell, (1 - r), 1)
+    )
 
-  outbreak_cost <- R * sum(
-    as.integer(Y_cell) * ifelse(V_react_cell, (1 - r), 1)
-  )
+    total_cost <- vax_cost_total + outbreak_cost
 
-  total_cost <- vax_cost_total + outbreak_cost
-
-  list(
-    total_cost = total_cost,
-    vax_cost = vax_cost_total,
-    outbreak_cost = outbreak_cost,
-    V_pre_cell = V_pre_cell,
-    V_react_cell = V_react_cell,
-    Y_cell = Y_cell,
-    used_pre = used_pre,
-    used_react = used_react,
-    B_pre = B_pre,
-    B_react = B_react
-  )
+    list(
+        total_cost = total_cost,
+        vax_cost = vax_cost_total,
+        outbreak_cost = outbreak_cost,
+        V_pre_cell = V_pre_cell,
+        V_react_cell = V_react_cell,
+        Y_cell = Y_cell,
+        used_pre = used_pre,
+        used_react = used_react,
+        B_pre = B_pre,
+        B_react = B_react
+    )
 }
 
 ```
@@ -753,40 +759,40 @@ build_strategy_objects <- function(p_true, adj,
                                    patch_size = 40,
                                    seed_cell = 1,
                                    seed_patch = 2) {
+    # ---- Strategy A score: cell-risk only (imperfect ranking of p_true)
+    rank_cell <- make_ranking(p_true,
+        rho_target = rho_cell,
+        seed = seed_cell
+    )
+    score_cell <- rank_cell$score
 
-  # ---- Strategy A score: cell-risk only (imperfect ranking of p_true)
-  rank_cell <- make_ranking(p_true, rho_target = rho_cell, 
-                                          seed = seed_cell)
-  score_cell <- rank_cell$score
+    # ---- Strategy B score: spillover-aware (imperfect ranking of augmented risk)
+    p_aug <- augment_risk_spillover(p_true, adj, eta = eta_score)
+    rank_patch <- make_ranking(p_aug, rho_target = rho_patch, seed = seed_patch)
+    score_spill <- rank_patch$score
 
-  # ---- Strategy B score: spillover-aware (imperfect ranking of augmented risk)
-  p_aug <- augment_risk_spillover(p_true, adj, eta = eta_score)
-  rank_patch <- make_ranking(p_aug, rho_target = rho_patch, seed = seed_patch)
-  score_spill <- rank_patch$score
+    # ---- Patches built from spillover-aware score (consistent with strategy B)
+    patch_out <- make_patches(score_spill, adj,
+        n_seeds = n_seeds,
+        patch_size = patch_size
+    )
+    patches <- patch_out$patches
+    patches <- patches[!vapply(patches, is.null, logical(1))]
+    patch_df <- summarize_patches(list(score = score_spill, patches = patches))
 
-  # ---- Patches built from spillover-aware score (consistent with strategy B)
-  patch_out <- make_patches(score_spill, adj,
-                            n_seeds = n_seeds,
-                            patch_size = patch_size)
-  patches <- patch_out$patches
-  patches <- patches[!vapply(patches, is.null, logical(1))]
-  patch_df <- summarize_patches(p_true = p_true,
-                                score_cell = score_spill,
-                                patches = patches)
+    list(
+        # Strategy A
+        score_cell = score_cell,
+        rank_cell = rank_cell,
 
-  list(
-    # Strategy A
-    score_cell = score_cell,
-    rank_cell = rank_cell,
-
-    # Strategy B
-    p_aug = p_aug,
-    score_spill = score_spill,
-    rank_patch = rank_patch,
-    patches = patches,
-    patch_df = patch_df,
-    patch_id = patch_out$patch_id
-  )
+        # Strategy B
+        p_aug = p_aug,
+        score_spill = score_spill,
+        rank_patch = rank_patch,
+        patches = patches,
+        patch_df = patch_df,
+        patch_id = patch_out$patch_id
+    )
 }
 
 ```
@@ -801,55 +807,54 @@ compare_cell_vs_patch <- function(p_true,
                                   alpha, f, R, r,
                                   eta = 0.8, nu = 0.9, kappa = 0.8,
                                   n_mc = 1000, seed = 1) {
+    set.seed(seed)
+    seeds <- sample.int(1e9, n_mc)
 
-  set.seed(seed)
-  seeds <- sample.int(1e9, n_mc)
+    cost_cell <- numeric(n_mc)
+    cost_patch <- numeric(n_mc)
 
-  cost_cell  <- numeric(n_mc)
-  cost_patch <- numeric(n_mc)
+    for (b in seq_len(n_mc)) {
+        s <- seeds[b]
 
-  for (b in seq_len(n_mc)) {
-    s <- seeds[b]
+        A <- simulate_cell_spillover(
+            p_true = p_true,
+            score_cell = score_cell,
+            adj = adj,
+            alpha = alpha, f = f, R = R, r = r,
+            eta = eta, nu = nu, kappa = kappa,
+            seed = s
+        )
 
-    A <- simulate_cell_spillover(
-      p_true = p_true,
-      score_cell = score_cell,
-      adj = adj,
-      alpha = alpha, f = f, R = R, r = r,
-      eta = eta, nu = nu, kappa = kappa,
-      seed = s
+        B <- simulate_patch_spillover(
+            p_true = p_true,
+            score_cell = score_spill, # used ONLY for patch targeting
+            adj = adj,
+            patches = patches,
+            patch_df = patch_df,
+            alpha = alpha, f = f, R = R, r = r,
+            eta = eta, nu = nu, kappa = kappa,
+            seed = s
+        )
+
+        cost_cell[b] <- A$total_cost
+        cost_patch[b] <- B$total_cost
+    }
+
+    df <- data.frame(
+        cost_cell = cost_cell,
+        cost_patch = cost_patch,
+        diff = cost_patch - cost_cell
     )
 
-    B <- simulate_patch_spillover(
-      p_true = p_true,
-      score_cell = score_spill,  # used ONLY for patch targeting
-      adj = adj,
-      patches = patches,
-      patch_df = patch_df,
-      alpha = alpha, f = f, R = R, r = r,
-      eta = eta, nu = nu, kappa = kappa,
-      seed = s
+    list(
+        summary = c(
+            mean_cell  = mean(df$cost_cell),
+            mean_patch = mean(df$cost_patch),
+            mean_diff  = mean(df$diff),
+            sd_diff    = sd(df$diff)
+        ),
+        draws = df
     )
-
-    cost_cell[b]  <- A$total_cost
-    cost_patch[b] <- B$total_cost
-  }
-
-  df <- data.frame(
-    cost_cell  = cost_cell,
-    cost_patch = cost_patch,
-    diff = cost_patch - cost_cell
-  )
-
-  list(
-    summary = c(
-      mean_cell  = mean(df$cost_cell),
-      mean_patch = mean(df$cost_patch),
-      mean_diff  = mean(df$diff),
-      sd_diff    = sd(df$diff)
-    ),
-    draws = df
-  )
 }
 ```
 
@@ -857,14 +862,15 @@ Simulation parameters
 
 ```{r}
 # --- build risks + adjacency (as you already do) ---
-nx <- 25; ny <- 20
+nx <- 25
+ny <- 20
 rho0_val <- 0.8
 ell_val <- 20
 theta_val <- 5
 # rho_target_val <- 0.7
 # n_seeds_val <- 10
 # patch_size_val = 40
-  
+
 alpha_val <- 0.8
 f_val <- 0.4
 R_val <- 10
@@ -881,35 +887,37 @@ Simulation
 ```{r}
 coords <- as.matrix(expand.grid(x = 1:nx, y = 1:ny))
 
-sim <- sim_spatial_beta_risk(coords, theta=theta_val, 
-                             rho0=rho0_val, ell=ell_val)
+sim <- sim_spatial_beta_risk(coords,
+    theta = theta_val,
+    rho0 = rho0_val, ell = ell_val
+)
 p_true <- sim$p
-adj <- make_adj(coords, type="rook")  # or distance/queen
+adj <- make_adj(coords, type = "rook") # or distance/queen
 
 # --- strategy objects ---
 obj <- build_strategy_objects(
-  p_true = p_true,
-  adj = adj,
-  rho_cell = 0.7,
-  rho_patch = 0.7,
-  eta_score = 0.8,
-  n_seeds = n_seeds_val,
-  patch_size = patch_size_val,
-  seed_cell = 1,
-  seed_patch = 2
+    p_true = p_true,
+    adj = adj,
+    rho_cell = 0.7,
+    rho_patch = 0.7,
+    eta_score = 0.8,
+    n_seeds = n_seeds_val,
+    patch_size = patch_size_val,
+    seed_cell = 1,
+    seed_patch = 2
 )
 
 # --- compare at a chosen alpha ---
 res <- compare_cell_vs_patch(
-  p_true = p_true,
-  score_cell = obj$score_cell,
-  adj = adj,
-  patches = obj$patches,
-  patch_df = obj$patch_df,
-  score_spill = obj$score_spill,
-  alpha = alpha_val, f = f_val, R = R_val, r = r_val,
-  eta = eta_val, nu = nu_val, kappa = kappa_val,
-  n_mc = 2000, seed = 1
+    p_true = p_true,
+    score_cell = obj$score_cell,
+    adj = adj,
+    patches = obj$patches,
+    patch_df = obj$patch_df,
+    score_spill = obj$score_spill,
+    alpha = alpha_val, f = f_val, R = R_val, r = r_val,
+    eta = eta_val, nu = nu_val, kappa = kappa_val,
+    n_mc = 2000, seed = 1
 )
 
 res$summary
@@ -924,132 +932,128 @@ the budget for the pre-emptive vaccination. If leftover budget remains, top up w
 This makes dose usage comparable across patch sizes.
 ```{r}
 allocate_preemptive_patches_with_topup <- function(patch_df, patches, score_cell, B_pre, n) {
-  ord <- order(patch_df$S_hat, decreasing = TRUE)
+    ord <- order(patch_df$S_hat, decreasing = TRUE)
 
-  V_pre <- rep(FALSE, n)
-  used <- 0L
+    V_pre <- rep(FALSE, n)
+    used <- 0L
 
-  # 1) take whole patches greedily
-  for (k in ord) {
-    m <- patch_df$m[k]
-    if (used + m <= B_pre) {
-      V_pre[patches[[k]]] <- TRUE
-      used <- used + m
+    # 1) take whole patches greedily
+    for (k in ord) {
+        m <- patch_df$m[k]
+        if (used + m <= B_pre) {
+            V_pre[patches[[k]]] <- TRUE
+            used <- used + m
+        }
     }
-  }
 
-  # 2) top-up with best remaining cells (optional)
-  leftover <- B_pre - used
-  if (leftover > 0) {
-    cand <- which(!V_pre)
-    if (length(cand) > 0) {
-      ord_cell <- cand[order(score_cell[cand], decreasing = TRUE)]
-      take <- ord_cell[seq_len(min(leftover, length(ord_cell)))]
-      V_pre[take] <- TRUE
-      used <- used + length(take)
+    # 2) top-up with best remaining cells (optional)
+    leftover <- B_pre - used
+    if (leftover > 0) {
+        cand <- which(!V_pre)
+        if (length(cand) > 0) {
+            ord_cell <- cand[order(score_cell[cand], decreasing = TRUE)]
+            take <- ord_cell[seq_len(min(leftover, length(ord_cell)))]
+            V_pre[take] <- TRUE
+            used <- used + length(take)
+        }
     }
-  }
 
-  list(V_pre_cell = V_pre, used = used)
+    list(V_pre_cell = V_pre, used = used)
 }
 
 ```
 
 ```{r}
 simulate_preemptive_by_patchsize <- function(p_true, adj,
-                                            score_cell, 
-                                            patch_size,
-                                            n_seeds,
-                                            alpha, f, R, r,
-                                            eta = 0.2, nu = 0, kappa = 0,
-                                            topup = TRUE,
-                                            seed = NULL) {
+                                             score_cell,
+                                             patch_size,
+                                             n_seeds,
+                                             alpha, f, R, r,
+                                             eta = 0.2, nu = 0, kappa = 0,
+                                             topup = TRUE,
+                                             seed = NULL) {
+    if (!is.null(seed)) set.seed(seed)
+    n <- length(p_true)
 
-  if (!is.null(seed)) set.seed(seed)
-  n <- length(p_true)
+    # budgets
+    B_pre <- floor(alpha * f * n)
+    B_react <- floor((1 - alpha) * f * n)
 
-  # budgets
-  B_pre   <- floor(alpha * f * n)
-  B_react <- floor((1 - alpha) * f * n)
+    # ---- patch_size = 1 means "cell-level pre-emptive"
+    if (patch_size == 1) {
+        ord <- order(score_cell, decreasing = TRUE)
+        pre_cells <- ord[seq_len(min(B_pre, n))]
+        V_pre_cell <- rep(FALSE, n)
+        V_pre_cell[pre_cells] <- TRUE
+        used_pre <- sum(V_pre_cell)
 
-  # ---- patch_size = 1 means "cell-level pre-emptive"
-  if (patch_size == 1) {
-    ord <- order(score_cell, decreasing = TRUE)
-    pre_cells <- ord[seq_len(min(B_pre, n))]
-    V_pre_cell <- rep(FALSE, n)
-    V_pre_cell[pre_cells] <- TRUE
-    used_pre <- sum(V_pre_cell)
-
-    patches <- NULL
-    patch_df <- NULL
-
-  } else {
-
-    # build patches using the SAME score_cell (spillover-aware score if you choose)
-    patch_out <- make_patches(score_cell, adj,
-                                     n_seeds = n_seeds,
-                                     patch_size = patch_size)
-    patches <- patch_out$patches
-    patches <- patches[!vapply(patches, is.null, logical(1))]
-
-    patch_df <- summarize_patches(p_true = p_true,
-                                  score_cell = score_cell,
-                                  patches = patches)
-
-    if (topup) {
-      alloc <- allocate_preemptive_patches_with_topup(
-        patch_df = patch_df, patches = patches,
-        score_cell = score_cell, B_pre = B_pre, n = n
-      )
-      V_pre_cell <- alloc$V_pre_cell
-      used_pre <- alloc$used
+        patches <- NULL
+        patch_df <- NULL
     } else {
-      pre <- allocate_preemptive_targeted(patch_df, B_pre = B_pre)
-      used_pre <- as.integer(pre$used)
-      pre_vax_patch <- as.logical(pre$pre_vax)
-      V_pre_cell <- rep(FALSE, n)
-      if (any(pre_vax_patch)) {
-        for (k in which(pre_vax_patch)) V_pre_cell[patches[[k]]] <- TRUE
-      }
-      used_pre <- sum(V_pre_cell)
+        # build patches using the SAME score_cell (spillover-aware score if you choose)
+        patch_out <- make_patches(score_cell, adj,
+            n_seeds = n_seeds,
+            patch_size = patch_size
+        )
+        patches <- patch_out$patches
+        patches <- patches[!vapply(patches, is.null, logical(1))]
+
+        patch_df <- summarize_patches(list(score = score_cell, patches = patches))
+
+        if (topup) {
+            alloc <- allocate_preemptive_patches_with_topup(
+                patch_df = patch_df, patches = patches,
+                score_cell = score_cell, B_pre = B_pre, n = n
+            )
+            V_pre_cell <- alloc$V_pre_cell
+            used_pre <- alloc$used
+        } else {
+            pre <- allocate_preemptive_patches(patch_df, B_pre = B_pre)
+            used_pre <- as.integer(pre$used)
+            pre_vax_patch <- as.logical(pre$pre_vax)
+            V_pre_cell <- rep(FALSE, n)
+            if (any(pre_vax_patch)) {
+                for (k in which(pre_vax_patch)) V_pre_cell[patches[[k]]] <- TRUE
+            }
+            used_pre <- sum(V_pre_cell)
+        }
     }
-  }
 
-  # ---- outbreaks (true risk + spillover; identical)
-  outb <- draw_outbreak_adj(
-    p = p_true,
-    adj = adj,
-    V = V_pre_cell,
-    eta = eta,
-    nu = nu,
-    kappa = kappa
-  )
-  Y_cell <- as.logical(outb$Y)
+    # ---- outbreaks (true risk + spillover; identical)
+    outb <- simulate_outbreak_spillover(
+        p = p_true,
+        adj = adj,
+        vax = V_pre_cell,
+        eta = eta,
+        nu = nu,
+        kappa = kappa
+    )
+    Y_cell <- as.logical(outb$Y)
 
-  # ---- reactive (cell-level, observation-only)
-  outbreak_cells <- which(Y_cell & !V_pre_cell)
-  used_react <- min(length(outbreak_cells), B_react)
-  react_cells <- if (used_react > 0) outbreak_cells[seq_len(used_react)] else integer(0)
+    # ---- reactive (cell-level, observation-only)
+    outbreak_cells <- which(Y_cell & !V_pre_cell)
+    used_react <- min(length(outbreak_cells), B_react)
+    react_cells <- if (used_react > 0) outbreak_cells[seq_len(used_react)] else integer(0)
 
-  V_react_cell <- rep(FALSE, n)
-  if (length(react_cells) > 0) V_react_cell[react_cells] <- TRUE
+    V_react_cell <- rep(FALSE, n)
+    if (length(react_cells) > 0) V_react_cell[react_cells] <- TRUE
 
-  # ---- costs
-  vax_cost_total <- used_pre + used_react
-  outbreak_cost <- R * sum(as.integer(Y_cell) * ifelse(V_react_cell, (1 - r), 1))
-  total_cost <- vax_cost_total + outbreak_cost
+    # ---- costs
+    vax_cost_total <- used_pre + used_react
+    outbreak_cost <- R * sum(as.integer(Y_cell) * ifelse(V_react_cell, (1 - r), 1))
+    total_cost <- vax_cost_total + outbreak_cost
 
-  list(
-    total_cost = total_cost,
-    vax_cost = vax_cost_total,
-    outbreak_cost = outbreak_cost,
-    used_pre = used_pre,
-    used_react = used_react,
-    B_pre = B_pre,
-    B_react = B_react,
-    patch_size = patch_size,
-    n_seeds = n_seeds
-  )
+    list(
+        total_cost = total_cost,
+        vax_cost = vax_cost_total,
+        outbreak_cost = outbreak_cost,
+        used_pre = used_pre,
+        used_react = used_react,
+        B_pre = B_pre,
+        B_react = B_react,
+        patch_size = patch_size,
+        n_seeds = n_seeds
+    )
 }
 
 ```
@@ -1066,81 +1070,79 @@ score_spill <- rank_out$score
 ```{r}
 estimate_cost_by_patchsize <- function(p_true, adj, score_cell,
                                        patch_sizes = c(1, 2, 3, 5, 10, 20, 40),
-                                       cover_mult = 2.0,     # controls n_seeds as patch_size changes
+                                       cover_mult = 2.0, # controls n_seeds as patch_size changes
                                        alpha, f, R, r,
                                        eta = 0.2, nu = 0, kappa = 0,
                                        topup = TRUE,
                                        n_mc = 1000, seed = 1) {
+    n <- length(p_true)
 
-  n <- length(p_true)
+    # choose n_seeds so candidate patch pool stays roughly comparable
+    # target pool ~ cover_mult * B_pre_max where B_pre_max = f*n (alpha=1)
+    B_pre_max <- floor(f * n)
+    L_target <- min(cover_mult * B_pre_max, n)
 
-  # choose n_seeds so candidate patch pool stays roughly comparable
-  # target pool ~ cover_mult * B_pre_max where B_pre_max = f*n (alpha=1)
-  B_pre_max <- floor(f * n)
-  L_target <- min(cover_mult * B_pre_max, n)
+    set.seed(seed)
+    seeds <- sample.int(1e9, n_mc)
 
-  set.seed(seed)
-  seeds <- sample.int(1e9, n_mc)
+    res <- lapply(patch_sizes, function(ps) {
+        n_seeds <- if (ps == 1) NA_integer_ else ceiling(L_target / ps)
 
-  res <- lapply(patch_sizes, function(ps) {
+        costs <- numeric(n_mc)
+        used_pre <- numeric(n_mc)
 
-    n_seeds <- if (ps == 1) NA_integer_ else ceiling(L_target / ps)
+        for (b in seq_len(n_mc)) {
+            sim <- simulate_preemptive_by_patchsize(
+                p_true = p_true, adj = adj,
+                score_cell = score_cell,
+                patch_size = ps,
+                n_seeds = if (is.na(n_seeds)) 1 else n_seeds,
+                alpha = alpha, f = f, R = R, r = r,
+                eta = eta, nu = nu, kappa = kappa,
+                topup = topup,
+                seed = seeds[b]
+            )
+            costs[b] <- sim$total_cost
+            used_pre[b] <- sim$used_pre
+        }
 
-    costs <- numeric(n_mc)
-    used_pre <- numeric(n_mc)
+        data.frame(
+            patch_size = ps,
+            n_seeds = n_seeds,
+            mean_cost = mean(costs),
+            sd_cost = sd(costs),
+            mean_used_pre = mean(used_pre)
+        )
+    })
 
-    for (b in seq_len(n_mc)) {
-      sim <- simulate_preemptive_by_patchsize(
-        p_true = p_true, adj = adj,
-        score_cell = score_cell,
-        patch_size = ps,
-        n_seeds = if (is.na(n_seeds)) 1 else n_seeds,
-        alpha = alpha, f = f, R = R, r = r,
-        eta = eta, nu = nu, kappa = kappa,
-        topup = topup,
-        seed = seeds[b]
-      )
-      costs[b] <- sim$total_cost
-      used_pre[b] <- sim$used_pre
-    }
-
-    data.frame(
-      patch_size = ps,
-      n_seeds = n_seeds,
-      mean_cost = mean(costs),
-      sd_cost = sd(costs),
-      mean_used_pre = mean(used_pre)
-    )
-  })
-
-  do.call(rbind, res)
+    do.call(rbind, res)
 }
 
 ```
 
 Simulation across patch size
 ```{r}
-eta_score <- eta_val  # often set equal to true eta
+eta_score <- eta_val # often set equal to true eta
 
 p_aug <- augment_risk_spillover(p_true, adj, eta = eta_score)
 rank_out <- make_ranking(p_aug, rho_target = 0.7, seed = 1)
 score_spill <- rank_out$score
 
 df_ps <- estimate_cost_by_patchsize(
-  p_true = p_true, adj = adj, score_cell = score_spill,
-  patch_sizes = seq(1,60,2),
-  cover_mult = 2.0,
-  alpha = alpha_val, f = f_val, R = R_val, r = r_val,
-  eta = eta_val, nu = nu_val, kappa = kappa_val,
-  topup = TRUE,
-  n_mc = 2000, seed = 1
+    p_true = p_true, adj = adj, score_cell = score_spill,
+    patch_sizes = seq(1, 60, 2),
+    cover_mult = 2.0,
+    alpha = alpha_val, f = f_val, R = R_val, r = r_val,
+    eta = eta_val, nu = nu_val, kappa = kappa_val,
+    topup = TRUE,
+    n_mc = 2000, seed = 1
 )
 
 ggplot(df_ps, aes(x = patch_size, y = mean_cost)) +
-  geom_line() +
-  geom_point(size = 1.5) +
-  theme_minimal() +
-  labs(x = "Patch size (cells)", y = "Mean total cost")
+    geom_line() +
+    geom_point(size = 1.5) +
+    theme_minimal() +
+    labs(x = "Patch size (cells)", y = "Mean total cost")
 
 ```
 

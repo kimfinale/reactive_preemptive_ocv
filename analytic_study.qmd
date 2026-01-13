@@ -34,9 +34,9 @@ library(ggbrace)
 # source("R/utils.R")
 # Figure dimensions
 figure_size <- data.table(
-  journal = c("Lancet"),
-  single = c(85),
-  double = c(178)
+    journal = c("Lancet"),
+    single = c(85),
+    double = c(178)
 )
 fgw1 <- figure_size[journal == "Lancet", single]
 fgw2 <- figure_size[journal == "Lancet", double]
@@ -372,17 +372,17 @@ costly.
 ```{r}
 # Pre-emptive cost (normalized by C_V)
 cost_pre_one <- function(p, R, r) {
-  # p and r unused but kept for a consistent interface
-  1
+    # p and r unused but kept for a consistent interface
+    1
 }
 
 # Reactive cost (normalized by C_V)
 cost_react_one <- function(p, R, r) {
-  p * (1 + (1 - r) * R)
+    p * (1 + (1 - r) * R)
 }
 
 p_star_one <- function(R, r) {
-  1 / (1 + (1 - r) * R)
+    1 / (1 + (1 - r) * R)
 }
 ```
 
@@ -405,31 +405,32 @@ increase over time.
 
 ```{r}
 # --- Parameters for the illustration ---
-p_vals <- seq(0, 1, 0.01)       # mean outbreak probability
-R_vals <- c(5)           
-r_vals <-  c(0.3, 0.7)
+p_vals <- seq(0, 1, 0.01) # mean outbreak probability
+R_vals <- c(5)
+r_vals <- c(0.3, 0.7)
 
 df_cost <- expand.grid(
-    p = p_vals, 
-    r = r_vals, 
+    p = p_vals,
+    r = r_vals,
     R = R_vals
-  ) |>
-  dplyr::mutate(
-    c_pre   = cost_pre_one(p, R, r),
-    c_react = cost_react_one(p, R, r),
-    r_label = paste0("italic(r)==", r)) |>
-  tidyr::pivot_longer(
-    cols      = c(c_pre, c_react),
-    names_to  = "strategy",
-    values_to = "cost"
-  ) |>
-  dplyr::mutate(
-    strategy = factor(
-      strategy,
-      levels = c("c_pre", "c_react"),
-      labels = c("Pre-emptive", "Reactive")
+) |>
+    dplyr::mutate(
+        c_pre   = cost_pre_one(p, R, r),
+        c_react = cost_react_one(p, R, r),
+        r_label = paste0("italic(r)==", r)
+    ) |>
+    tidyr::pivot_longer(
+        cols      = c(c_pre, c_react),
+        names_to  = "strategy",
+        values_to = "cost"
+    ) |>
+    dplyr::mutate(
+        strategy = factor(
+            strategy,
+            levels = c("c_pre", "c_react"),
+            labels = c("Pre-emptive", "Reactive")
+        )
     )
-  )
 
 # threshold probability
 # df_pstar <- expand.grid(r = r_vals, R = R_vals) |>
@@ -438,97 +439,105 @@ df_cost <- expand.grid(
 #     r_label = paste0("r = ", r)
 #   )
 df_pstar <- expand.grid(r = r_vals, R = R_vals) |>
-  dplyr::mutate(
-    p_star  = p_star_one(R, r),
-    r_label = paste0("r = ", r),
-    
-    # [NEW] Create the dynamic label string here
-    # ~ adds a space, italic(r)==r adds the value
-    label_expr = paste0("italic(p)[thr]^(1) ~ (italic(r) == ", r, ")")
-  )
+    dplyr::mutate(
+        p_star = p_star_one(R, r),
+        r_label = paste0("r = ", r),
+
+        # [NEW] Create the dynamic label string here
+        # ~ adds a space, italic(r)==r adds the value
+        label_expr = paste0("italic(p)[thr]^(1) ~ (italic(r) == ", r, ")")
+    )
 
 # data for braces
 
 cost_react_max1 <- max(filter(df_cost, strategy == "Reactive", r_label == "italic(r)==0.7")$cost)
 cost_react_max2 <- max(filter(df_cost, strategy == "Reactive", r_label == "italic(r)==0.3")$cost)
-df_brace1 <- data.frame(x=c(0.96,1), y=c(1,cost_react_max1))
-df_brace2 <- data.frame(x=c(0.97,1), y=c(1,cost_react_max2))
-df_brace3 <- data.frame(x=c(0,0.03), y=c(0,1))
+df_brace1 <- data.frame(x = c(0.96, 1), y = c(1, cost_react_max1))
+df_brace2 <- data.frame(x = c(0.97, 1), y = c(1, cost_react_max2))
+df_brace3 <- data.frame(x = c(0, 0.03), y = c(0, 1))
 
 # convenient variables for the overhead-cost text position
-text_overhead_x <- max(df_brace3$x) + 0.01  # 0.04
-text_overhead_y <- mean(df_brace3$y) + 1    # 1.5
+text_overhead_x <- max(df_brace3$x) + 0.01 # 0.04
+text_overhead_y <- mean(df_brace3$y) + 1 # 1.5
 annot_text_size <- 4
 
-ggplot(df_cost, aes(x = p, y = cost, color = strategy, 
-                    linetype = r_label)) +
-  geom_line(linewidth = 1) +
-  geom_vline(
-    data = df_pstar,
-    aes(xintercept = p_star),
-    linetype = "dashed",
-    color = "firebrick"
-  )+
-  geom_text(
-    data = df_pstar,
-    aes(x = p_star, y = Inf, label = label_expr),
-    parse = TRUE,
-    inherit.aes = FALSE,
-    hjust = -0.03,
-    vjust = 1.1,
-    size  = 3
-  ) +
-  
-  ggbrace::stat_brace(
-    data = df_brace1,
-    mapping = aes(x, y),
-    outside = FALSE, rotate = 270, 
-    linewidth = 1, inherit.aes = FALSE
-  )+
-  annotate("text", x = min(df_brace1$x)-0.01, 
-           y = mean(df_brace1$y), 
-           label = "Cost of delayed\nresponse (r=0.7)", 
-           hjust = 1, size = annot_text_size, lineheight = 0.9) +
-  ggbrace::stat_brace(
-    data = df_brace2,
-    mapping = aes(x, y),
-    outside = FALSE, rotate = 270, 
-    linewidth = 1, inherit.aes = FALSE
-  )+
-  annotate("text", x = min(df_brace2$x)-0.01, y = mean(df_brace2$y), 
-           label =  "Cost of delayed\nresponse (r=0.3)", 
-           hjust = 1, size = annot_text_size, lineheight = 0.9) +
-  ggbrace::stat_brace(
-    data = df_brace3,
-    mapping = aes(x, y),
-    outside = FALSE, rotate = 90, 
-    linewidth = 1, inherit.aes = FALSE
-  )+
-  annotate("text", x = max(df_brace3$x)+0.01, 
-           y= mean(df_brace3$y)+1, 
-           label =  "Vaccination cost", 
-           hjust = 0, size = annot_text_size, lineheight = 0.9) +
-  annotate("segment", 
-             x = text_overhead_x + 0.03,  
-             y = text_overhead_y - 0.1, 
-             xend = 0.02,  yend = 0.75, 
-    arrow = arrow(length = grid::unit(0.15, "cm")),
-    colour = "black"
-  ) +
-  scale_color_manual("", values=c("firebrick","steelblue"))+
-  scale_linetype_discrete(labels = scales::label_parse())+
-  labs(
-    x = expression("Probability of an outbreak "~italic(p)),
-    y = expression("Normalized per-population expected cost  " ~ italic(c)[s]^'(1)'),
-    color = "",
-    linetype = "")+
-  theme_light() +
-  theme(legend.position = "top")+
-  guides(
-    linetype = guide_legend(
-      override.aes = list(color = "steelblue")
+ggplot(df_cost, aes(
+    x = p, y = cost, color = strategy,
+    linetype = r_label
+)) +
+    geom_line(linewidth = 1) +
+    geom_vline(
+        data = df_pstar,
+        aes(xintercept = p_star),
+        linetype = "dashed",
+        color = "firebrick"
+    ) +
+    geom_text(
+        data = df_pstar,
+        aes(x = p_star, y = Inf, label = label_expr),
+        parse = TRUE,
+        inherit.aes = FALSE,
+        hjust = -0.03,
+        vjust = 1.1,
+        size = 3
+    ) +
+    ggbrace::stat_brace(
+        data = df_brace1,
+        mapping = aes(x, y),
+        outside = FALSE, rotate = 270,
+        linewidth = 1, inherit.aes = FALSE
+    ) +
+    annotate("text",
+        x = min(df_brace1$x) - 0.01,
+        y = mean(df_brace1$y),
+        label = "Cost of delayed\nresponse (r=0.7)",
+        hjust = 1, size = annot_text_size, lineheight = 0.9
+    ) +
+    ggbrace::stat_brace(
+        data = df_brace2,
+        mapping = aes(x, y),
+        outside = FALSE, rotate = 270,
+        linewidth = 1, inherit.aes = FALSE
+    ) +
+    annotate("text",
+        x = min(df_brace2$x) - 0.01, y = mean(df_brace2$y),
+        label = "Cost of delayed\nresponse (r=0.3)",
+        hjust = 1, size = annot_text_size, lineheight = 0.9
+    ) +
+    ggbrace::stat_brace(
+        data = df_brace3,
+        mapping = aes(x, y),
+        outside = FALSE, rotate = 90,
+        linewidth = 1, inherit.aes = FALSE
+    ) +
+    annotate("text",
+        x = max(df_brace3$x) + 0.01,
+        y = mean(df_brace3$y) + 1,
+        label = "Vaccination cost",
+        hjust = 0, size = annot_text_size, lineheight = 0.9
+    ) +
+    annotate("segment",
+        x = text_overhead_x + 0.03,
+        y = text_overhead_y - 0.1,
+        xend = 0.02, yend = 0.75,
+        arrow = arrow(length = grid::unit(0.15, "cm")),
+        colour = "black"
+    ) +
+    scale_color_manual("", values = c("firebrick", "steelblue")) +
+    scale_linetype_discrete(labels = scales::label_parse()) +
+    labs(
+        x = expression("Probability of an outbreak " ~ italic(p)),
+        y = expression("Normalized per-population expected cost  " ~ italic(c)[s]^"(1)"),
+        color = "",
+        linetype = ""
+    ) +
+    theme_light() +
+    theme(legend.position = "top") +
+    guides(
+        linetype = guide_legend(
+            override.aes = list(color = "steelblue")
+        )
     )
-  )
 ```
 
 #### Phase diagram of $p$ vs $r$ for $R=1$.
@@ -538,68 +547,75 @@ r_vals <- seq(0.01, 0.99, by = 0.01)
 R_vals <- c(1, 10)
 
 data <- expand.grid(r = r_vals, R = R_vals) %>%
-  dplyr::mutate(
-    pstar = p_star_one(R = R, r = r),
-    R_label = factor(
-      R,
-      levels = c(1, 10),
-      labels = c("R = 1", "R = 10")
+    dplyr::mutate(
+        pstar = p_star_one(R = R, r = r),
+        R_label = factor(
+            R,
+            levels = c(1, 10),
+            labels = c("R = 1", "R = 10")
+        )
     )
-  )
 # LaTeX labels for xdvir::geom_latex()
 eq_labels <- c(
-    "$c_{\\text{pre}}^{(1)} < c_{\\text{react}}^{(1)}$", 
-    "$c_{\\text{pre}}^{(1)} > c_{\\text{react}}^{(1)}$")
+    "$c_{\\text{pre}}^{(1)} < c_{\\text{react}}^{(1)}$",
+    "$c_{\\text{pre}}^{(1)} > c_{\\text{react}}^{(1)}$"
+)
 
-pthr_labels <- c("$p_{\\text{thr}}^{(1)}(R=1)$",
-                "$p_{\\text{thr}}^{(1)}(R=10)$")
+pthr_labels <- c(
+    "$p_{\\text{thr}}^{(1)}(R=1)$",
+    "$p_{\\text{thr}}^{(1)}(R=10)$"
+)
 
 plt <- ggplot(data, aes(x = r, y = pstar, linetype = R_label)) +
-  geom_line()+
-  # geom_abline(
-  #   slope = 1, intercept = 0,
-  #   linetype = "dotted",
-  #   linewidth = 1,
-  #   color = "firebrick"
-  # ) +
-  labs(
-    x = expression("Reactive effectiveness " ~ italic(r)),
-    y = expression("Outbreak probability  " ~ italic(p))
-  ) +
-  theme_light() +
-  theme(legend.position = "top") +
-  # Existing text labels
-  annotate("text", size = 4, x = 0, y = 1,
-           hjust = 0, vjust = 1,
-           label = "Pre-emptive favored") +
-  annotate("text", size = 4, x = 1, y = 0,
-           hjust = 1, vjust = 0,
-           label = "Reactive favored") +
-  annotate(
-    "latex",
-    x = 0, y = 0.93,
-    label = eq_labels[1],
-    size = 4, hjust = 0, vjust = 1
-  ) +
-  annotate(
-    "latex",
-    x = 1, y = 0.07,
-    label = eq_labels[2],
-    size = 4, hjust = 1, vjust = 0
-  ) +
-  annotate(
-    "latex",
-    x = 0.62, y = 0.74,
-    label = pthr_labels[1],
-    size = 4, hjust = 1, vjust = 0
-  )  +
-  annotate(
-    "latex",
-    x = 0.62, y = 0.22,
-    label = pthr_labels[2],
-    size = 4, hjust = 1, vjust = 0
-  ) +
-  guides(linetype = "none")
+    geom_line() +
+    # geom_abline(
+    #   slope = 1, intercept = 0,
+    #   linetype = "dotted",
+    #   linewidth = 1,
+    #   color = "firebrick"
+    # ) +
+    labs(
+        x = expression("Reactive effectiveness " ~ italic(r)),
+        y = expression("Outbreak probability  " ~ italic(p))
+    ) +
+    theme_light() +
+    theme(legend.position = "top") +
+    # Existing text labels
+    annotate("text",
+        size = 4, x = 0, y = 1,
+        hjust = 0, vjust = 1,
+        label = "Pre-emptive favored"
+    ) +
+    annotate("text",
+        size = 4, x = 1, y = 0,
+        hjust = 1, vjust = 0,
+        label = "Reactive favored"
+    ) +
+    annotate(
+        "latex",
+        x = 0, y = 0.93,
+        label = eq_labels[1],
+        size = 4, hjust = 0, vjust = 1
+    ) +
+    annotate(
+        "latex",
+        x = 1, y = 0.07,
+        label = eq_labels[2],
+        size = 4, hjust = 1, vjust = 0
+    ) +
+    annotate(
+        "latex",
+        x = 0.62, y = 0.74,
+        label = pthr_labels[1],
+        size = 4, hjust = 1, vjust = 0
+    ) +
+    annotate(
+        "latex",
+        x = 0.62, y = 0.22,
+        label = pthr_labels[2],
+        size = 4, hjust = 1, vjust = 0
+    ) +
+    guides(linetype = "none")
 
 plt
 # ggsave("p_thr_1.pdf",
@@ -612,18 +628,20 @@ plt
 
 ```{r}
 r_vals <- c(0.3, 0.5, 0.7)
-R_vals <- seq(0.1, 50, by=0.1)
+R_vals <- seq(0.1, 50, by = 0.1)
 
 data <- expand.grid(r = r_vals, R = R_vals) %>%
-  dplyr::mutate(pstar = p_star_one(R=R, r=r))
+    dplyr::mutate(pstar = p_star_one(R = R, r = r))
 
 ggplot(data, aes(x = R, y = pstar, color = factor(r))) +
-  geom_line(linewidth = 1) +
-  labs(x = expression("Cost ratio "~italic(R)),
-       y = expression("Threshold outbreak probability  "~italic(p)[thr]^(1)), 
-       color = expression(italic(r)))+
-  theme_light()+
-  theme(legend.position = "top")
+    geom_line(linewidth = 1) +
+    labs(
+        x = expression("Cost ratio " ~ italic(R)),
+        y = expression("Threshold outbreak probability  " ~ italic(p)[thr]^(1)),
+        color = expression(italic(r))
+    ) +
+    theme_light() +
+    theme(legend.position = "top")
 ```
 
 #### $p_{\mathrm{thr}}^{(1)}$ as a function of $r$ for varying $R$'s
@@ -633,17 +651,21 @@ r_vals <- seq(0.01, 0.99, by = 0.01)
 R_vals <- c(0.1, 1, 10)
 
 data <- expand.grid(r = r_vals, R = R_vals) %>%
-  dplyr::mutate(pstar = p_star_one(r=r, R=R))
+    dplyr::mutate(pstar = p_star_one(r = r, R = R))
 
 ggplot(data, aes(x = r, y = pstar, color = factor(R))) +
-  geom_line(linewidth = 1) +
-  geom_abline(slope=1, intercept = 0, linetype="dotted", 
-              linewidth=1, color="firebrick")+
-  labs(x = expression("Reactive effectiveness "~italic(r)),
-       y = expression("Threshold outbreak probability  "~italic(p)[thr]^(1)),
-       color = expression(italic(R))) +
-  theme_light()+
-  theme(legend.position = "top")
+    geom_line(linewidth = 1) +
+    geom_abline(
+        slope = 1, intercept = 0, linetype = "dotted",
+        linewidth = 1, color = "firebrick"
+    ) +
+    labs(
+        x = expression("Reactive effectiveness " ~ italic(r)),
+        y = expression("Threshold outbreak probability  " ~ italic(p)[thr]^(1)),
+        color = expression(italic(R))
+    ) +
+    theme_light() +
+    theme(legend.position = "top")
 ```
 
 #### Heatmap of $p_{\mathrm{thr}}^{(1)}$ across $r$ and $R$
@@ -651,39 +673,41 @@ ggplot(data, aes(x = r, y = pstar, color = factor(R))) +
 ```{r}
 # Grid over r and R
 r_vals <- seq(0, 1, length.out = 100)
-R_vals <- 10 ^ seq(-2, 2, length.out = 100)
+R_vals <- 10^seq(-2, 2, length.out = 100)
 
 # --- 2. Create Tidy Data for ggplot ---
 # Instead of outer(), we use expand.grid() to get x, y, z columns
 df_heatmap <- expand.grid(R = R_vals, r = r_vals) %>%
-  mutate(p_val = p_star_one(R, r))
+    mutate(p_val = p_star_one(R, r))
 
 # --- 3. Create Label Data ---
 # Locations to label regions (Pre-emptive vs Reactive)
 df_labels <- data.frame(
-  R   = c(10, 0.1),  # R_pre, R_reac
-  r   = c(0.2, 0.9), # r_pre, r_reac
-  lab = c("Pre-emptive\nregion", "Reactive\nregion")
+    R   = c(10, 0.1), # R_pre, R_reac
+    r   = c(0.2, 0.9), # r_pre, r_reac
+    lab = c("Pre-emptive\nregion", "Reactive\nregion")
 )
 
 # Compute the curve p_thr^(1)=0.5 ---
 # For each r, find R such that p_star_one(R,r)=0.5
 df_boundary <- lapply(r_vals, function(rr) {
-  # Define function in R to solve
-  f_root <- function(R) p_star_one(R, rr) - 0.5
-  
-  # Solve in log10(R) space for stability
-  sol <- tryCatch(
-    uniroot(f_root, interval = c(0.01, 100)),
-    error = function(e) NULL
-  )
-  
-  if (is.null(sol)) return(NULL)
-  
-  data.frame(
-    r = rr,
-    R = sol$root
-  )
+    # Define function in R to solve
+    f_root <- function(R) p_star_one(R, rr) - 0.5
+
+    # Solve in log10(R) space for stability
+    sol <- tryCatch(
+        uniroot(f_root, interval = c(0.01, 100)),
+        error = function(e) NULL
+    )
+
+    if (is.null(sol)) {
+        return(NULL)
+    }
+
+    data.frame(
+        r = rr,
+        R = sol$root
+    )
 }) %>% bind_rows()
 
 # Pick a midpoint location for annotation
@@ -693,48 +717,51 @@ annot_r <- df_boundary$r[i_mid]
 
 # --- 4. Plotting ---
 ggplot(df_heatmap, aes(x = R, y = r)) +
-  # Use geom_raster for heatmaps (faster/smoother than geom_tile for dense grids)
-  geom_raster(aes(fill = p_val)) +
-  # Add red boundary line
-  geom_line(data = df_boundary, aes(x = R, y = r),
-            color = "firebrick", linewidth=1) +
+    # Use geom_raster for heatmaps (faster/smoother than geom_tile for dense grids)
+    geom_raster(aes(fill = p_val)) +
+    # Add red boundary line
+    geom_line(
+        data = df_boundary, aes(x = R, y = r),
+        color = "firebrick", linewidth = 1
+    ) +
     # Add annotation for p=0.5
-  annotate("text",
-           x = annot_R,
-           y = annot_r,
-           label = expression(italic(p) == 0.5),
-           color = "firebrick",
-           size = 4,
-           hjust = -0.2) +
-  # # Add text labels for the regions
-  # geom_text(data = df_labels, aes(label = lab), 
-  #           color = "white", size = 4) +
-  # Scales
-  scale_x_log10(
-    breaks = c(0.01, 0.1, 1, 10, 100),
-    labels = c("0.01", "0.1", "1", "10", "100"),
-    expand = c(0,0) # Removes whitespace at edges
-  ) +
-  scale_y_continuous(expand = c(0,0)) +
-  # Colors (Viridis matches your original Plotly choice)
-  scale_fill_viridis_c(
-    option = "viridis",
-    name = expression(italic(p)[thr]^(1)) # Mathematical expression for legend
-  ) +
-  # Labels and Theme
-  labs(
-    x = expression("Cost ratio "~italic(R) == italic(C)[I] / italic(C)[V]),
-    y = expression("Reactive effectiveness  "~italic(r))
-  ) +
-  theme_minimal() +
-  theme(
-    panel.grid = element_blank(), # Heatmaps usually look better without grids
-    axis.title = element_text(size = 14),
-    axis.text = element_text(size = 12),
-    legend.title = element_text(size = 14),
-    legend.text = element_text(size = 12),
-    legend.key.height = unit(1.5, "cm") # Make legend bar taller
-  )
+    annotate("text",
+        x = annot_R,
+        y = annot_r,
+        label = expression(italic(p) == 0.5),
+        color = "firebrick",
+        size = 4,
+        hjust = -0.2
+    ) +
+    # # Add text labels for the regions
+    # geom_text(data = df_labels, aes(label = lab),
+    #           color = "white", size = 4) +
+    # Scales
+    scale_x_log10(
+        breaks = c(0.01, 0.1, 1, 10, 100),
+        labels = c("0.01", "0.1", "1", "10", "100"),
+        expand = c(0, 0) # Removes whitespace at edges
+    ) +
+    scale_y_continuous(expand = c(0, 0)) +
+    # Colors (Viridis matches your original Plotly choice)
+    scale_fill_viridis_c(
+        option = "viridis",
+        name = expression(italic(p)[thr]^(1)) # Mathematical expression for legend
+    ) +
+    # Labels and Theme
+    labs(
+        x = expression("Cost ratio " ~ italic(R) == italic(C)[I] / italic(C)[V]),
+        y = expression("Reactive effectiveness  " ~ italic(r))
+    ) +
+    theme_minimal() +
+    theme(
+        panel.grid = element_blank(), # Heatmaps usually look better without grids
+        axis.title = element_text(size = 14),
+        axis.text = element_text(size = 12),
+        legend.title = element_text(size = 14),
+        legend.text = element_text(size = 12),
+        legend.key.height = unit(1.5, "cm") # Make legend bar taller
+    )
 ```
 
 ### Key Insight
@@ -2466,74 +2493,78 @@ equal-risk case.
 # ---- Utility: simulate Lambda and convert to P ----
 
 sim_lambda_P <- function(M, theta, seed = 1) {
- set.seed(seed)
- lambda <- rexp(M, rate = theta)         # Lambda ~ Exp(theta)
- P <- 1 - exp(-lambda)                   # P = 1 - exp(-Lambda)
- list(lambda = lambda, P = P)
+    set.seed(seed)
+    lambda <- rexp(M, rate = theta) # Lambda ~ Exp(theta)
+    P <- 1 - exp(-lambda) # P = 1 - exp(-Lambda)
+    list(lambda = lambda, P = P)
 }
 
 # ---- Given sigma, compute Spearman rank correlation between Lambda and S ----
 
 spearman_rho_given_sigma <- function(lambda, sigma, seed = 1) {
- set.seed(seed)
- S <- lambda + rnorm(length(lambda), mean = 0, sd = sigma)
- suppressWarnings(cor(lambda, S, method = "spearman"))
+    set.seed(seed)
+    S <- lambda + rnorm(length(lambda), mean = 0, sd = sigma)
+    suppressWarnings(cor(lambda, S, method = "spearman"))
 }
 
 # ---- Calibrate sigma so that Spearman cor(Lambda, S) ~= rho_target ----
 
-calibrate_sigma_for_rho <- function(lambda, rho_target,
-sigma_hi = 50, seed = 1) {
+calibrate_sigma_for_rho <- function(
+    lambda, rho_target,
+    sigma_hi = 50, seed = 1) {
+    # monotone: rho decreases as sigma increases
+    f_obj <- function(log_sigma) {
+        sigma <- exp(log_sigma)
+        rho_hat <- spearman_rho_given_sigma(lambda, sigma, seed = seed)
+        rho_hat - rho_target
+    }
 
- # monotone: rho decreases as sigma increases
- f_obj <- function(log_sigma) {
-  sigma <- exp(log_sigma)
-  rho_hat <- spearman_rho_given_sigma(lambda, sigma, seed = seed)
-  rho_hat - rho_target
- }
+    # bracket in log-space
 
- # bracket in log-space
-  
- lo <- log(1e-6)
- hi <- log(sigma_hi)
-  
- # ensure bracket contains root
-  
- f_lo <- f_obj(lo)
- f_hi <- f_obj(hi)
- if (f_lo < 0) return(0)        # already below target even at tiny sigma
- if (f_hi > 0) return(exp(hi))  # still above target even at huge sigma
-  
- uniroot(f_obj, lower = lo, upper = hi)$root |> exp()
+    lo <- log(1e-6)
+    hi <- log(sigma_hi)
+
+    # ensure bracket contains root
+
+    f_lo <- f_obj(lo)
+    f_hi <- f_obj(hi)
+    if (f_lo < 0) {
+        return(0)
+    } # already below target even at tiny sigma
+    if (f_hi > 0) {
+        return(exp(hi))
+    } # still above target even at huge sigma
+
+    uniroot(f_obj, lower = lo, upper = hi)$root |> exp()
 }
 
 # ---- Given q, compute score cutoff s_cut so that Pr(S >= s_cut) = q ----
 
 score_cutoff <- function(S, q) {
- # top q => (1-q) quantile
- as.numeric(stats::quantile(S, probs = 1 - q, names = FALSE, type = 7))
+    # top q => (1-q) quantile
+    as.numeric(stats::quantile(S, probs = 1 - q, names = FALSE, type = 7))
 }
 
 # ---- Estimate p_pre and p_rem by Monte Carlo under calibrated sigma ----
 
 estimate_pre_rem_means <- function(lambda, P, sigma, q, seed = 1) {
- set.seed(seed)
- S <- lambda + rnorm(length(lambda), mean = 0, sd = sigma)
-  
-  if (q <= 0) {
-    return(list(p_pre = NA_real_, p_rem = mean(P)))
-  }
-  if (q >= 1) {
-    return(list(p_pre = mean(P), p_rem = NA_real_))
-  }
-  
-  s_cut <- score_cutoff(S, q = q)
-  sel <- S >= s_cut
-  
-  p_pre <- mean(P[sel])
-  p_rem <- mean(P[!sel])
-  
-  list(p_pre = p_pre, p_rem = p_rem, s_cut = s_cut)
+    set.seed(seed)
+    S <- lambda + rnorm(length(lambda), mean = 0, sd = sigma)
+
+    if (q <= 0) {
+        return(list(p_pre = NA_real_, p_rem = mean(P)))
+    }
+    if (q >= 1) {
+        return(list(p_pre = mean(P), p_rem = NA_real_))
+    }
+
+    s_cut <- score_cutoff(S, q = q)
+    sel <- S >= s_cut
+
+    p_pre <- mean(P[sel])
+    p_rem <- mean(P[!sel])
+
+    list(p_pre = p_pre, p_rem = p_rem, s_cut = s_cut)
 }
 
 ```
@@ -2543,72 +2574,77 @@ estimate_pre_rem_means <- function(lambda, P, sigma, q, seed = 1) {
 ```{r}
 # ---- Mixed-strategy cost under Option 2 ----
 cost_mix_heterorisk <- function(alpha, f, r, R, theta, rho,
-                          lambda, P, seed_sigma = 1, seed_score = 2,
-                          sigma_cache = NULL) {
+                                lambda, P, seed_sigma = 1, seed_score = 2,
+                                sigma_cache = NULL) {
+    alpha <- max(0, min(1, alpha))
+    q <- alpha * f
 
-  alpha <- max(0, min(1, alpha))
-  q <- alpha * f
+    # calibrate sigma if not provided
 
-  # calibrate sigma if not provided
+    sigma <- if (is.null(sigma_cache)) {
+        calibrate_sigma_for_rho(lambda,
+            rho_target = rho,
+            seed = seed_sigma
+        )
+    } else {
+        sigma_cache
+    }
 
-  sigma <- if (is.null(sigma_cache)) {
-    calibrate_sigma_for_rho(lambda, rho_target = rho, 
-                            seed = seed_sigma)
-  } else {
-    sigma_cache
-  }
+    # estimate remaining mean risk p' = p_rem(q, rho)
 
-  # estimate remaining mean risk p' = p_rem(q, rho)
-  
-  pre_rem <- estimate_pre_rem_means(lambda, P, sigma = sigma, q = q, seed = seed_score)
-  p_prime <- pre_rem$p_rem
-  
-  # effective reactive capacity among remaining group
-  
-  frac_rem <- 1 - q
-  f_react <- (1 - alpha) * f
-  f_prime <- f_react / frac_rem
-  
-  # pre-emptive cost (normalized by C_V)
-  
-  c_pre <- q
+    pre_rem <- estimate_pre_rem_means(lambda, P, sigma = sigma, q = q, seed = seed_score)
+    p_prime <- pre_rem$p_rem
 
-  # remaining-group per-pop cost (same two regimes as equal-risk subproblem)
-  
-  if (f_prime < p_prime) {
-    c_rem_per <- f_prime + (p_prime - f_prime * r) * R
-  } else {
-    c_rem_per <- p_prime * (1 + (1 - r) * R)
-  }
-  
+    # effective reactive capacity among remaining group
+
+    frac_rem <- 1 - q
+    f_react <- (1 - alpha) * f
+    f_prime <- f_react / frac_rem
+
+    # pre-emptive cost (normalized by C_V)
+
+    c_pre <- q
+
+    # remaining-group per-pop cost (same two regimes as equal-risk subproblem)
+
+    if (f_prime < p_prime) {
+        c_rem_per <- f_prime + (p_prime - f_prime * r) * R
+    } else {
+        c_rem_per <- p_prime * (1 + (1 - r) * R)
+    }
+
     c_pre + frac_rem * c_rem_per
-  }
+}
 
 # ---- Grid-search for alpha* ----
 
-opt_alpha_heterorisk <- function(f, r, R, theta, rho,
-  lambda, P,
-  grid_len = 501,
-  seed_sigma = 1, seed_score = 2) {
-  
-  # calibrate sigma once per scenario for speed/consistency
-  
-  sigma <- calibrate_sigma_for_rho(lambda, rho_target = rho, seed = seed_sigma)
-  
-  alpha_grid <- seq(0, 1, length.out = grid_len)
-  cost_grid <- sapply(alpha_grid, function(a) {
-    cost_mix_heterorisk(a, f=f, r=r, R=R, theta=theta, rho=rho,
-                  lambda=lambda, P=P, seed_sigma = seed_sigma,
-                  seed_score = seed_score, sigma_cache = sigma)
-  })
-  
-  idx <- which.min(cost_grid)
-  
-  list(alpha_star = alpha_grid[idx],
-  cost_star  = cost_grid[idx],
-  alpha_grid = alpha_grid,
-  cost_grid  = cost_grid,
-  sigma      = sigma)
+opt_alpha_heterorisk <- function(
+    f, r, R, theta, rho,
+    lambda, P,
+    grid_len = 501,
+    seed_sigma = 1, seed_score = 2) {
+    # calibrate sigma once per scenario for speed/consistency
+
+    sigma <- calibrate_sigma_for_rho(lambda, rho_target = rho, seed = seed_sigma)
+
+    alpha_grid <- seq(0, 1, length.out = grid_len)
+    cost_grid <- sapply(alpha_grid, function(a) {
+        cost_mix_heterorisk(a,
+            f = f, r = r, R = R, theta = theta, rho = rho,
+            lambda = lambda, P = P, seed_sigma = seed_sigma,
+            seed_score = seed_score, sigma_cache = sigma
+        )
+    })
+
+    idx <- which.min(cost_grid)
+
+    list(
+        alpha_star = alpha_grid[idx],
+        cost_star = cost_grid[idx],
+        alpha_grid = alpha_grid,
+        cost_grid = cost_grid,
+        sigma = sigma
+    )
 }
 
 ```
@@ -2617,42 +2653,46 @@ Plot 1 — cost profile $c_{\mathrm{mix}}^{(n)}(\alpha)$ with $\alpha^*$
 
 ```{r}
 # ---- choose one scenario ----
-f_val    <- 0.5
-r_val    <- 0.4
-R_val    <- 5
-p_mean   <- 0.3
-theta    <- 1 / p_mean - 1
-rho_val  <- 0.6
+f_val <- 0.5
+r_val <- 0.4
+R_val <- 5
+p_mean <- 0.3
+theta <- 1 / p_mean - 1
+rho_val <- 0.6
 
 # ---- simulate latent risks once (large M helps smooth curves) ----
 M <- 1000
 # M <- 200000
 sim <- sim_lambda_P(M = M, theta = theta, seed = 1)
 lambda <- sim$lambda
-P      <- sim$P
+P <- sim$P
 
-opt <- opt_alpha_heterorisk(f=f_val, r=r_val, R=R_val, 
-                            theta=theta, rho=rho_val,
-                            lambda=lambda, P=P,
-                            grid_len = 401)
+opt <- opt_alpha_heterorisk(
+    f = f_val, r = r_val, R = R_val,
+    theta = theta, rho = rho_val,
+    lambda = lambda, P = P,
+    grid_len = 401
+)
 
 df <- data.frame(alpha = opt$alpha_grid, cost = opt$cost_grid)
 alpha_star <- opt$alpha_star
 
 ggplot(df, aes(x = alpha, y = cost)) +
-  geom_line(linewidth = 1) +
-  geom_vline(xintercept = alpha_star,
-  linetype = "dashed", color = "firebrick", linewidth = 0.9) +
-  labs(
-  title = bquote(italic(p)[mean]==.(p_mean)~","~
-    italic(r)==.(r_val)~","~
-    italic(R)==.(R_val)~","~
-    italic(f)==.(f_val)~","~
-    italic(rho)==.(rho_val)),
-  x = expression("Fraction of capacity pre-emptive " ~ italic(alpha)),
-  y = expression("Normalized per-population expected cost " ~ italic(c)[mix]^(italic(n)))
-) +
-theme_light()
+    geom_line(linewidth = 1) +
+    geom_vline(
+        xintercept = alpha_star,
+        linetype = "dashed", color = "firebrick", linewidth = 0.9
+    ) +
+    labs(
+        title = bquote(italic(p)[mean] == .(p_mean) ~ "," ~
+            italic(r) == .(r_val) ~ "," ~
+            italic(R) == .(R_val) ~ "," ~
+            italic(f) == .(f_val) ~ "," ~
+            italic(rho) == .(rho_val)),
+        x = expression("Fraction of capacity pre-emptive " ~ italic(alpha)),
+        y = expression("Normalized per-population expected cost " ~ italic(c)[mix]^(italic(n)))
+    ) +
+    theme_light()
 ```
 
 Plot 2 — $\alpha^*$ vs $r$ (fixed $R,f,p_{\mathrm{mean}},\rho$)
@@ -2661,113 +2701,121 @@ Plot 2 — $\alpha^*$ vs $r$ (fixed $R,f,p_{\mathrm{mean}},\rho$)
 r_grid <- seq(0, 1, by = 0.05)
 
 alpha_star_vec <- sapply(r_grid, function(r_i) {
-  opt_alpha_heterorisk(f=f_val, r=r_i, R=R_val,
-                    theta=theta, rho=rho_val,
-                    lambda=lambda, P=P,
-                    grid_len = 301)$alpha_star
+    opt_alpha_heterorisk(
+        f = f_val, r = r_i, R = R_val,
+        theta = theta, rho = rho_val,
+        lambda = lambda, P = P,
+        grid_len = 301
+    )$alpha_star
 })
 
 df_ar <- data.frame(r = r_grid, alpha_star = alpha_star_vec)
 
 ggplot(df_ar, aes(x = r, y = alpha_star)) +
-  geom_line(linewidth = 1) +
-  coord_cartesian(ylim = c(0, 1)) +
-  labs(
-    title = bquote(italic(p)[mean]==.(p_mean)~","~
-                     italic(R)==.(R_val)~","~
-                     italic(f)==.(f_val)~","~
-                     italic(rho)==.(rho_val)),
-    x = expression("Reactive effectiveness " ~ italic(r)),
-    y = expression("Optimal pre-emptive fraction " ~
-                     italic(alpha)^"*")) +
-  theme_light()
+    geom_line(linewidth = 1) +
+    coord_cartesian(ylim = c(0, 1)) +
+    labs(
+        title = bquote(italic(p)[mean] == .(p_mean) ~ "," ~
+            italic(R) == .(R_val) ~ "," ~
+            italic(f) == .(f_val) ~ "," ~
+            italic(rho) == .(rho_val)),
+        x = expression("Reactive effectiveness " ~ italic(r)),
+        y = expression("Optimal pre-emptive fraction " ~
+            italic(alpha)^"*")
+    ) +
+    theme_light()
 ```
 
 Plot 3 — Heatmap of $\alpha^*(R,r)$ (fixed $f,p_{\mathrm{mean}},\rho$)
 
 ```{r}
 r_vals <- seq(0, 1, length.out = 20)
-R_vals <- 10 ^ seq(-2, 2, length.out = 20)
+R_vals <- 10^seq(-2, 2, length.out = 20)
 
 grid <- expand.grid(r = r_vals, R = R_vals)
 
 grid$alpha_star <- mapply(function(r_i, R_i) {
-  opt_alpha_heterorisk(f=f_val, r=r_i, R=R_i,
-                     theta=theta, rho=rho_val,
-                     lambda=lambda, P=P,
-                     grid_len = 201)$alpha_star}, grid$R, grid$r)
+    opt_alpha_heterorisk(
+        f = f_val, r = r_i, R = R_i,
+        theta = theta, rho = rho_val,
+        lambda = lambda, P = P,
+        grid_len = 201
+    )$alpha_star
+}, grid$R, grid$r)
 
 ggplot(grid, aes(x = r, y = R, fill = alpha_star)) +
-  geom_tile() +
-  scale_y_log10() +
+    geom_tile() +
+    scale_y_log10() +
     # Colorbar
-  scale_fill_viridis_c(
-    option = "viridis",
-    name = expression(italic(alpha)^"*")
-  ) +
-  labs(
-    title = bquote(italic(p)[mean]==.(p_mean)~","~
-      italic(f)==.(f_val)~","~
-      italic(rho)==.(rho_val)),
-    x = expression(italic(r)),
-    y = expression(italic(R)),
-    fill = expression(italic(alpha)^"*")
-  ) +
-  theme_light()
+    scale_fill_viridis_c(
+        option = "viridis",
+        name = expression(italic(alpha)^"*")
+    ) +
+    labs(
+        title = bquote(italic(p)[mean] == .(p_mean) ~ "," ~
+            italic(f) == .(f_val) ~ "," ~
+            italic(rho) == .(rho_val)),
+        x = expression(italic(r)),
+        y = expression(italic(R)),
+        fill = expression(italic(alpha)^"*")
+    ) +
+    theme_light()
 
 ```
 
 Plot 4 — $\alpha^*$ vs $\rho$
 
 ```{r}
-f_val    <- 0.5
-r_val    <- 0.6
-R_val    <- 20
-p_mean   <- 0.3
-theta    <- 1 / p_mean - 1
+f_val <- 0.5
+r_val <- 0.6
+R_val <- 20
+p_mean <- 0.3
+theta <- 1 / p_mean - 1
 
 # ---- Simulate latent risks once ----
 # M <- 200000
 M <- 1000
 sim <- sim_lambda_P(M = M, theta = theta, seed = 1)
 lambda <- sim$lambda
-P      <- sim$P
+P <- sim$P
 
 # ---- Compute alpha* across rho ----
 rho_grid <- seq(0, 1, by = 0.05)
 
 alpha_star_vec <- sapply(rho_grid, function(rho_i) {
-  opt_alpha_heterorisk(f=f_val, r=r_val, R=R_val, theta=theta,
-                       rho=rho_i, lambda=lambda, P=P, 
-                       grid_len = 401)$alpha_star
+    opt_alpha_heterorisk(
+        f = f_val, r = r_val, R = R_val, theta = theta,
+        rho = rho_i, lambda = lambda, P = P,
+        grid_len = 401
+    )$alpha_star
 })
 
 df_rho <- data.frame(rho = rho_grid, alpha_star = alpha_star_vec)
 
 # ---- Plot ----
 ggplot(df_rho, aes(x = rho, y = alpha_star)) +
-  geom_line(linewidth = 1) +
-  coord_cartesian(ylim = c(0, 1)) +
-  labs(
-    title = bquote(italic(p)[mean]==.(p_mean)~","~
-                   italic(r)==.(r_val)~","~
-                   italic(R)==.(R_val)~","~
-                   italic(f)==.(f_val)),
-    x = expression("Targeting accuracy (Spearman rank correlation) " ~ italic(rho)),
-    y = expression("Optimal pre-emptive fraction " ~ italic(alpha)^"*")
-  ) +
-  theme_light()
+    geom_line(linewidth = 1) +
+    coord_cartesian(ylim = c(0, 1)) +
+    labs(
+        title = bquote(italic(p)[mean] == .(p_mean) ~ "," ~
+            italic(r) == .(r_val) ~ "," ~
+            italic(R) == .(R_val) ~ "," ~
+            italic(f) == .(f_val)),
+        x = expression("Targeting accuracy (Spearman rank correlation) " ~ italic(rho)),
+        y = expression("Optimal pre-emptive fraction " ~ italic(alpha)^"*")
+    ) +
+    theme_light()
 ```
 
 Plot 5 — $c_{\mathrm{mix}}^{(n)}$, $\alpha^*$ vs $\rho$
 
 ```{r}
-f_val    <- 0.5
-r_val    <- 0.4
-R_val    <- 5
-p_mean   <- 0.3
-theta    <- 1 / p_mean - 1
-rho_vals <- c(0.2, 0.6, 1.0)   # <- three facets (edit as you like)
+f_val <- 0.5
+r_val <- 0.4
+R_val <- 5
+p_mean <- 0.3
+theta <- 1 / p_mean - 1
+rho_vals <- c(0.2, 0.6, 1.0) # <- three facets (edit as you like)
 
 # ---- simulate latent risks once (keep fixed across rho for fair comparison) ----
 
@@ -2775,76 +2823,75 @@ M <- 1000
 # M <- 200000
 sim <- sim_lambda_P(M = M, theta = theta, seed = 1)
 lambda <- sim$lambda
-P      <- sim$P
+P <- sim$P
 
 # ---- compute cost profile for each rho ----
 
 df_all <- purrr::map_dfr(rho_vals, function(rho_val) {
+    opt <- opt_alpha_heterorisk(
+        f = f_val,
+        r = r_val,
+        R = R_val,
+        theta = theta,
+        rho = rho_val,
+        lambda = lambda,
+        P = P,
+        grid_len = 401
+    )
 
-  opt <- opt_alpha_heterorisk(
-    f      = f_val,
-    r      = r_val,
-    R      = R_val,
-    theta  = theta,
-    rho    = rho_val,
-    lambda = lambda,
-    P      = P,
-    grid_len = 401
-  )
-
-  data.frame(
-    alpha      = opt$alpha_grid,
-    cost       = opt$cost_grid,
-    rho        = rho_val,
-    alpha_star = opt$alpha_star
+    data.frame(
+        alpha      = opt$alpha_grid,
+        cost       = opt$cost_grid,
+        rho        = rho_val,
+        alpha_star = opt$alpha_star
     )
 })
 
 # ---- one vline per facet ----
 
 df_vline <- df_all |>
-  distinct(rho, alpha_star) |>
-  mutate(
-    rho_lab = factor(
-      rho,
-      levels = rho_vals,
-      labels = paste0("italic(rho)==", rho_vals)
+    distinct(rho, alpha_star) |>
+    mutate(
+        rho_lab = factor(
+            rho,
+            levels = rho_vals,
+            labels = paste0("italic(rho)==", rho_vals)
+        )
     )
-  )
 
 # ---- facet labels ----
 df_all <- df_all |>
-  mutate(
-    rho_lab = factor(
-      rho,
-      levels = rho_vals,
-      labels = paste0("italic(rho)==", rho_vals)
+    mutate(
+        rho_lab = factor(
+            rho,
+            levels = rho_vals,
+            labels = paste0("italic(rho)==", rho_vals)
+        )
     )
-  )
 
 # ---- plot ----
 ggplot(df_all, aes(x = alpha, y = cost)) +
-  geom_line(linewidth = 1) +
-  geom_vline(
-    data = df_vline,
-    aes(xintercept = alpha_star),
-    linetype = "dashed",
-    color = "firebrick",
-    linewidth = 0.9
-  ) +
-  facet_wrap(~ rho_lab, labeller = label_parsed) +
-  labs(
-    title = bquote(
-      italic(p)[mean]==.(p_mean)~","~
-      italic(r)==.(r_val)~","~
-      italic(R)==.(R_val)~","~
-      italic(f)==.(f_val)
-    ),
-    x = expression("Fraction of capacity pre-emptive " ~ italic(alpha)),
-    y = expression("Normalized per-population expected cost " ~ 
-                     italic(c)[mix]^(italic(n)))
-  ) +
-  theme_light()
+    geom_line(linewidth = 1) +
+    geom_vline(
+        data = df_vline,
+        aes(xintercept = alpha_star),
+        linetype = "dashed",
+        color = "firebrick",
+        linewidth = 0.9
+    ) +
+    facet_wrap(~rho_lab, labeller = label_parsed) +
+    labs(
+        title = bquote(
+            italic(p)[mean] == .(p_mean) ~ "," ~
+                italic(r) == .(r_val) ~ "," ~
+                italic(R) == .(R_val) ~ "," ~
+                italic(f) == .(f_val)
+        ),
+        x = expression("Fraction of capacity pre-emptive " ~ italic(alpha)),
+        y = expression("Normalized per-population expected cost " ~
+            italic(c)[mix]^(italic(n)))
+    ) +
+    theme_light()
 
 ```
 

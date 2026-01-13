@@ -1,0 +1,161 @@
+---
+title: "Cholera Outbreak Simulation: Exponential Model & ORI Impact"
+author: "Jong-Hoon Kim"
+date: "`r Sys.Date()`"
+format:
+  html:
+    toc: true
+    code-fold: true
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(tidyverse)
+library(data.table)
+library(fitdistrplus)
+library(patchwork)
+
+# Source project functions
+source("R/load_all.R")
+
+# Load summary data for parameters
+outbreak_summary <- read.csv("data/outbreak_files_Oct2024/outbreak_summary.csv")
+```
+
+## Introduction
+
+This document demonstrates a simulation of cholera outbreaks using an **Exponential Growth and Decay** model, which was found to better describe outbreak dynamics than a linear model in our previous analysis. We also simulate the impact of Outbreak Response Immunization (ORI).
+
+## Methods
+
+### 1. Exponential Growth and Decay Model
+
+We model the daily incidence $I(t)$ as:
+
+$$
+I(t) = 
+\begin{cases} 
+I_{peak} \cdot e^{r_{growth} (t - t_{peak})} & t \le t_{peak} \\
+I_{peak} \cdot e^{-r_{decay} (t - t_{peak})} & t > t_{peak} 
+\end{cases}
+$$
+
+Where:
+- $I_{peak}$ is the peak incidence.
+- $t_{peak}$ is the time of the peak.
+- $r_{growth}$ and $r_{decay}$ are determined by the duration and peak timing.
+
+## Simulation
+
+We generate outbreaks by sampling parameters from the real-world dataset.
+
+### Parameters
+- **Duration**: Sampled from empirical data (converted to days).
+- **Peak Incidence**: Sampled from empirical data.
+- **Peak Timing**: Calculated using `peak_time_fraction` * `duration`.
+- **ORI Delay**: Randomly sampled between 2 to 8 weeks (14 to 56 days).
+- **ORI Coverage**: Randomly sampled between 50% and 90%.
+
+```{r simulation-loop}
+set.seed(123)
+n_sims <- 50
+results <- list()
+
+# Filter valid data
+valid_params <- outbreak_summary %>%
+  filter(!is.na(Duration_weeks), !is.na(peak_week_incidence), Duration_weeks > 0)
+
+for (i in 1:n_sims) {
+  # 1. Sample Parameters
+  row <- valid_params[sample(nrow(valid_params), 1), ]
+  
+  # empirical durations are often in weeks, let's assume so and convert to days
+  duration_days <- row$Duration_weeks * 7
+  peak_inc <- row$peak_week_incidence / 7 # approximated daily peak
+  
+  # Peak timing (if not explicit, assume random fraction 0.3-0.5 or sample if available)
+  # Using a placeholder normal around 0.4 for now or column if exists
+  peak_frac <- runif(1, 0.3, 0.6)
+  peak_time <- duration_days * peak_frac
+  
+  # Time vector
+  t_vec <- 0:ceiling(duration_days)
+  
+  # 2. Generate Outbreak
+  curve_novax <- generate_exponential_curve(duration_days, peak_time, peak_inc, t_vec)
+  
+  # 3. Simulate ORI
+  ori_delay <- round(runif(1, 14, 56)) # 2-8 weeks
+  ori_cov <- runif(1, 0.5, 0.9)
+  
+  res <- apply_ori(curve_novax, ori_delay, ori_cov)
+  
+  # Store
+  results[[i]] <- data.frame(
+    sim_id = i,
+    duration = duration_days,
+    peak_inc = peak_inc,
+    ori_delay = ori_delay,
+    ori_coverage = ori_cov,
+    cases_novax = sum(curve_novax),
+    cases_vax = sum(res$curve_vax),
+    cases_averted = res$cases_averted,
+    fraction_averted = res$fraction_averted
+  )
+  
+  # Save curve for the first few sims for plotting
+  if (i <= 4) {
+    if (i == 1) example_curves <- list()
+    df_curve <- data.frame(
+      time = t_vec,
+      No_Vax = curve_novax,
+      With_Vax = res$curve_vax,
+      sim_id = i
+    )
+    example_curves[[i]] <- df_curve
+  }
+}
+
+results_df <- do.call(rbind, results)
+```
+
+## Results
+
+### Example Trajectories
+
+```{r plot-examples, fig.width=10, fig.height=8}
+plot_list <- list()
+for (i in 1:4) {
+  df <- example_curves[[i]] %>%
+    pivot_longer(cols = c(No_Vax, With_Vax), names_to = "Scenario", values_to = "Incidence")
+  
+  p <- ggplot(df, aes(x = time, y = Incidence, color = Scenario, linetype = Scenario)) +
+    geom_line(size = 1) +
+    labs(title = paste("Simulation", i), subtitle = paste("Delay:", results_df$ori_delay[i], "days")) +
+    theme_minimal()
+  plot_list[[i]] <- p
+}
+
+wrap_plots(plot_list, ncol = 2)
+```
+
+### Impact Assessment
+
+```{r plot-impact}
+ggplot(results_df, aes(x = fraction_averted)) +
+  geom_histogram(fill = "steelblue", color = "white", bins = 15) +
+  labs(
+    title = "Distribution of Fraction of Cases Averted",
+    x = "Fraction Averted",
+    y = "Count"
+  ) +
+  theme_minimal()
+
+summary(results_df$fraction_averted)
+```
+
+## Conclusion
+
+The simulation shows that using an exponential growth/decay model, combined with realistic delays in vaccination response (2-8 weeks), results in varying degrees of impact. The effectiveness of ORI is highly sensitive to the timing relative to the outbreak peak.

@@ -8,6 +8,7 @@
 # 3. Inside R/ and data/, track everything
 !R/**
 !data/**
+!.qmd
 
 # 4. Ignore R / IDE / session artifacts everywhere
 .Rproj.user/
@@ -17,3 +18,5 @@
 
 # 5. Ignore rendered outputs
 *.html
+
+!*.qmd
