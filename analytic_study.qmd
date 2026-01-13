@@ -41,6 +41,7 @@ figure_size <- data.table(
 fgw1 <- figure_size[journal == "Lancet", single]
 fgw2 <- figure_size[journal == "Lancet", double]
 save_plot <- FALSE
+source("R/analytic_utils.R")
 ```
 
 # Background
@@ -227,8 +228,7 @@ $$
 C_{\text{vaccination}} = C_{\text{V}} =N_{\text{people}}\times (c_{\text{dose}} + c_{\text{delivery}}),
 $$
 
-where $c_{\text{dose}}$ = vaccine cost per dose, $c_{\text{delivery}}$ =
-delivery cost per dose.
+where $c_{\text{dose}}$ and $c_{\text{delivery}}$ denote vaccine cost per dose and delivery cost per dose, respectively.
 
 # Scenarios
 
@@ -364,27 +364,6 @@ effectiveness $r$ decreases or the outbreak cost ratio $R$ increases.
 Thus, pre-emptive vaccination becomes more favorable when reactive
 vaccination is less effective or when outbreaks are relatively more
 costly.
-
-### Visualization
-
-#### Functions
-
-```{r}
-# Pre-emptive cost (normalized by C_V)
-cost_pre_one <- function(p, R, r) {
-    # p and r unused but kept for a consistent interface
-    1
-}
-
-# Reactive cost (normalized by C_V)
-cost_react_one <- function(p, R, r) {
-    p * (1 + (1 - r) * R)
-}
-
-p_star_one <- function(R, r) {
-    1 / (1 + (1 - r) * R)
-}
-```
 
 #### Normalized per-population costs across $p$ for varying $r$.
 
@@ -615,7 +594,7 @@ plt <- ggplot(data, aes(x = r, y = pstar, linetype = R_label)) +
         label = pthr_labels[2],
         size = 4, hjust = 1, vjust = 0
     ) +
-    guides(linetype = "none")
+    scale_linetype_discrete("")
 
 plt
 # ggsave("p_thr_1.pdf",
@@ -901,73 +880,10 @@ $$
 
 #### Functions
 
-```{r}
-cost_pre_multi <- function(p, R, r, f) {
-  f + (1 - f) * p * R
-}
+#### Functions
 
-cost_react_multi <- function(p, R, r, f) {
-  ifelse(
-    f < p,
-    # reactive-limited
-    f + (p - f * r) * R,
-    # reactive-rich
-    p * (1 + (1 - r) * R)
-  )
-}
+Functions `cost_pre_multi`, `cost_react_multi`, `cost_diff_multi`, and `p_star_multi` are defined in `R/analytic_utils.R`.
 
-cost_diff_multi <- function(p, R, r, f) {
-  c_pre <- cost_pre_multi(p, R, r, f)
-  c_react <- cost_react_multi(p, R, r, f)
-  c_pre - c_react
-}
-
-p_star_multi <- function(R, r, f, tol = 1e-10) {
-  # Candidate 1: reactive-limited regime (p > f): p* = r
-  p_star_RL <- r
-  valid_RL <- (p_star_RL > f) && (p_star_RL >= 0) && (p_star_RL <= 1)
-  if (valid_RL) {
-    diff_val <- cost_diff_multi(p_star_RL, R = R, r = r, f = f)
-    if (abs(diff_val) < 1e-6) {
-      return(p_star_RL)
-    }
-  }
-
-  # Candidate 2: reactive-rich regime (p <= f)
-  denom <- R * (r - f) - 1
-  if (abs(denom) < tol) {
-    p_star_RR <- NA_real_
-  } else {
-    p_star_RR <- -f / denom
-  }
-
-  valid_RR <- !is.na(p_star_RR) &&
-    (p_star_RR >= 0) && (p_star_RR <= f) && (p_star_RR <= 1)
-
-  if (valid_RR) {
-    diff_val <- cost_diff_multi(p_star_RR, R = R, r = r, f = f)
-    if (abs(diff_val) < 1e-6) {
-      return(p_star_RR)
-    }
-  }
-
-  # Fallback: numeric search
-  p_grid <- seq(1e-6, 1 - 1e-6, length.out = 2001)
-  vals <- cost_diff_multi(p_grid, R = R, r = r, f = f)
-  idx <- which(vals[-1] * vals[-length(vals)] <= 0)
-  if (length(idx) == 0) {
-    return(NA_real_)
-  }
-
-  i <- idx[1]
-  lower <- p_grid[i]
-  upper <- p_grid[i + 1]
-
-  uniroot(cost_diff_multi,
-          lower = lower, upper = upper,
-          R = R, r = r, f = f, tol = tol)$root
-}
-```
 
 #### $c_{\mathrm{pre}}^{(n)}$ and $c_{\mathrm{react}}^{(n)}$
 
@@ -1532,7 +1448,7 @@ $$
 ```{r econ-demo-data, echo=FALSE}
 # Load life expectancy and GDP data
 life_exp_data <- 
-  as.data.frame(fread("C:/Users/jonghoon.kim/Workspace/myblog/data/cholera_cost/wpp_life_expectancy_20241022.csv"))
+  as.data.frame(fread("data/wpp_life_expectancy_20241022.csv"))
 # life expectancy at age 25 during 2010-2020, mean age for cholera
 life_exp_data %>% 
   filter(Year >= 2010, Year <= 2020, 
@@ -1543,21 +1459,21 @@ life_exp_data %>%
 # Load population by age data 
 # prop of under 5 during 2010-2020
 age_dist <- 
-  as.data.frame(fread("C:/Users/jonghoon.kim/Workspace/myblog/data/cholera_cost/wpp_pop_by_age_20241022.csv"))
+  as.data.frame(fread("data/wpp_pop_by_age_20241022.csv"))
 age_dist %>% 
   filter(Year >= 2010, Year <= 2020,
          `Region, subregion, country or area *` == "Sub-Saharan Africa") %>% 
   pull(prop_u5) -> prop_U5
 
 # gdp data from World Bank during 2010-2020
-gdp_data <- read_xls("C:/Users/jonghoon.kim/Workspace/myblog/data/cholera_cost/GDP_WorldBank.xls")
+gdp_data <- read_xls("data/GDP_WorldBank.xls")
 gdp_data %>% 
   filter(`Country Name` == "Sub-Saharan Africa (IDA & IBRD countries)") %>%
   select(c(`2010`:`2020`)) |> 
   as.numeric() -> gdp_ssa
 
 # workforce data
-workforce_data <- read_xls("C:/Users/jonghoon.kim/Workspace/myblog/data/cholera_cost/Workforce_Worldbank.xls")
+workforce_data <- read_xls("data/Workforce_Worldbank.xls")
 workforce_data %>% 
   filter(`Country Name` == "Sub-Saharan Africa (excluding high income)")%>%
   select(c(`2010`:`2020`)) |> 
@@ -1565,7 +1481,7 @@ workforce_data %>%
 
 ## Cost-effectiveness parameters
 
-parm <- fread("C:/Users/jonghoon.kim/Workspace/myblog/data/cholera_cost/parameters.csv")
+parm <- fread("data/parameters.csv")
 parm <- parm[Disease == "Cholera"]
 # GBD data deleted and replaced with Mbewe (2025) Open Forum Infect Dis data
 # it is assumed that moderate and severe cases are reported 
@@ -2489,165 +2405,17 @@ equal-risk case.
 
 #### Core simulation utilities
 
-```{r}
-# ---- Utility: simulate Lambda and convert to P ----
+#### Core simulation utilities
 
-sim_lambda_P <- function(M, theta, seed = 1) {
-    set.seed(seed)
-    lambda <- rexp(M, rate = theta) # Lambda ~ Exp(theta)
-    P <- 1 - exp(-lambda) # P = 1 - exp(-Lambda)
-    list(lambda = lambda, P = P)
-}
+Functions `sim_lambda_P`, `spearman_rho_given_sigma`, `calibrate_sigma_for_rho`, `score_cutoff`, and `estimate_pre_rem_means` are defined in `R/analytic_utils.R`.
 
-# ---- Given sigma, compute Spearman rank correlation between Lambda and S ----
-
-spearman_rho_given_sigma <- function(lambda, sigma, seed = 1) {
-    set.seed(seed)
-    S <- lambda + rnorm(length(lambda), mean = 0, sd = sigma)
-    suppressWarnings(cor(lambda, S, method = "spearman"))
-}
-
-# ---- Calibrate sigma so that Spearman cor(Lambda, S) ~= rho_target ----
-
-calibrate_sigma_for_rho <- function(
-    lambda, rho_target,
-    sigma_hi = 50, seed = 1) {
-    # monotone: rho decreases as sigma increases
-    f_obj <- function(log_sigma) {
-        sigma <- exp(log_sigma)
-        rho_hat <- spearman_rho_given_sigma(lambda, sigma, seed = seed)
-        rho_hat - rho_target
-    }
-
-    # bracket in log-space
-
-    lo <- log(1e-6)
-    hi <- log(sigma_hi)
-
-    # ensure bracket contains root
-
-    f_lo <- f_obj(lo)
-    f_hi <- f_obj(hi)
-    if (f_lo < 0) {
-        return(0)
-    } # already below target even at tiny sigma
-    if (f_hi > 0) {
-        return(exp(hi))
-    } # still above target even at huge sigma
-
-    uniroot(f_obj, lower = lo, upper = hi)$root |> exp()
-}
-
-# ---- Given q, compute score cutoff s_cut so that Pr(S >= s_cut) = q ----
-
-score_cutoff <- function(S, q) {
-    # top q => (1-q) quantile
-    as.numeric(stats::quantile(S, probs = 1 - q, names = FALSE, type = 7))
-}
-
-# ---- Estimate p_pre and p_rem by Monte Carlo under calibrated sigma ----
-
-estimate_pre_rem_means <- function(lambda, P, sigma, q, seed = 1) {
-    set.seed(seed)
-    S <- lambda + rnorm(length(lambda), mean = 0, sd = sigma)
-
-    if (q <= 0) {
-        return(list(p_pre = NA_real_, p_rem = mean(P)))
-    }
-    if (q >= 1) {
-        return(list(p_pre = mean(P), p_rem = NA_real_))
-    }
-
-    s_cut <- score_cutoff(S, q = q)
-    sel <- S >= s_cut
-
-    p_pre <- mean(P[sel])
-    p_rem <- mean(P[!sel])
-
-    list(p_pre = p_pre, p_rem = p_rem, s_cut = s_cut)
-}
-
-```
 
 #### Mixed cost and optimization over $\alpha$
 
-```{r}
-# ---- Mixed-strategy cost under Option 2 ----
-cost_mix_heterorisk <- function(alpha, f, r, R, theta, rho,
-                                lambda, P, seed_sigma = 1, seed_score = 2,
-                                sigma_cache = NULL) {
-    alpha <- max(0, min(1, alpha))
-    q <- alpha * f
+#### Mixed cost and optimization over $\alpha$
 
-    # calibrate sigma if not provided
+Functions `cost_mix_heterorisk` and `opt_alpha_heterorisk` are defined in `R/analytic_utils.R`.
 
-    sigma <- if (is.null(sigma_cache)) {
-        calibrate_sigma_for_rho(lambda,
-            rho_target = rho,
-            seed = seed_sigma
-        )
-    } else {
-        sigma_cache
-    }
-
-    # estimate remaining mean risk p' = p_rem(q, rho)
-
-    pre_rem <- estimate_pre_rem_means(lambda, P, sigma = sigma, q = q, seed = seed_score)
-    p_prime <- pre_rem$p_rem
-
-    # effective reactive capacity among remaining group
-
-    frac_rem <- 1 - q
-    f_react <- (1 - alpha) * f
-    f_prime <- f_react / frac_rem
-
-    # pre-emptive cost (normalized by C_V)
-
-    c_pre <- q
-
-    # remaining-group per-pop cost (same two regimes as equal-risk subproblem)
-
-    if (f_prime < p_prime) {
-        c_rem_per <- f_prime + (p_prime - f_prime * r) * R
-    } else {
-        c_rem_per <- p_prime * (1 + (1 - r) * R)
-    }
-
-    c_pre + frac_rem * c_rem_per
-}
-
-# ---- Grid-search for alpha* ----
-
-opt_alpha_heterorisk <- function(
-    f, r, R, theta, rho,
-    lambda, P,
-    grid_len = 501,
-    seed_sigma = 1, seed_score = 2) {
-    # calibrate sigma once per scenario for speed/consistency
-
-    sigma <- calibrate_sigma_for_rho(lambda, rho_target = rho, seed = seed_sigma)
-
-    alpha_grid <- seq(0, 1, length.out = grid_len)
-    cost_grid <- sapply(alpha_grid, function(a) {
-        cost_mix_heterorisk(a,
-            f = f, r = r, R = R, theta = theta, rho = rho,
-            lambda = lambda, P = P, seed_sigma = seed_sigma,
-            seed_score = seed_score, sigma_cache = sigma
-        )
-    })
-
-    idx <- which.min(cost_grid)
-
-    list(
-        alpha_star = alpha_grid[idx],
-        cost_star = cost_grid[idx],
-        alpha_grid = alpha_grid,
-        cost_grid = cost_grid,
-        sigma = sigma
-    )
-}
-
-```
 
 Plot 1 — cost profile $c_{\mathrm{mix}}^{(n)}(\alpha)$ with $\alpha^*$
 

@@ -19,4 +19,3 @@
 # 5. Ignore rendered outputs
 *.html
 
-!*.qmd
