@@ -1,0 +1,120 @@
+---
+title: "manuscript_outline"
+author: "Jong-Hoon Kim"
+date: "`r Sys.Date()`"
+format: html
+editor_options: 
+  chunk_output_type: console
+bibliography: references.bib
+---
+
+# Manuscript Outline: Optimizing Cholera Vaccination Strategies
+
+**Title:** To Wait or To Act? Optimizing Reactive vs. Pre-emptive Vaccination Strategies
+
+## Introduction
+
+-   **Background & Problem Statement:**
+    -   Cholera remains a global threat with limited vaccine stockpiles.
+    -   The core dilemma: Should we vaccinate now (pre-emptive) based on risk prediction, or wait and respond (reactive) once an outbreak is confirmed?
+    -   Current allocation is often "pro-rata" or ad-hoc due to uncertainty in outbreak timing and severity.
+-   **Gap in Knowledge:**
+    -   Existing models often evaluate strategies *conditional* on an outbreak occurring.
+    -   They rarely account for the *probability* of an outbreak (uncertainty) and the *economic trade-offs* between wasted vaccines (if no outbreak) vs. delayed response (if outbreak occurs).
+    -   Need for a framework that minimizes *total expected societal cost*.
+-   **Study Objective:**
+    -   Develop a general analytical framework to identify optimal vaccination strategies (pre-emptive, reactive, or mixed).
+    -   Integrate limited supply, heterogeneous risk, targeting effectiveness, and economic constraints.
+
+## Methods
+
+### Analytical Framework
+
+-   **Cost Model:**
+    -   Define Total Expected Cost = Expected Vaccination Cost + Expected Outbreak Cost.
+    -   $C_{\text{outbreak}}$: Includes direct medical costs, productivity loss (illness & death), and VSL (Value of Statistical Life).
+    -   $C_{\text{vaccination}}$: Vaccine procurement + delivery costs.
+-   **Strategies:**
+    -   **Pre-emptive:** Vaccinate before outbreaks. Deterministic cost. Zero outbreak risk (perfect vaccine assumption for simplicity, or reduced by vaccine efficacy).
+    -   **Reactive:** Vaccinate after detection. Stochastic cost (zero if no outbreak). Reduced effectiveness ($r$) due to delay.
+    -   **Mixed:** Allocate fraction $\alpha$ of supply pre-emptively, reserve $(1-\alpha)$ for reactive.
+
+### Scenarios Analyzed
+
+1.  **Single Population:** Baseline trade-off between risk probability ($p$) and cost ratio ($R = C_I/C_V$).
+2.  **Multi-Population (Equal Risk):** $n$ populations with identical $p$. Limited global capacity ($f$).
+3.  **Multi-Population (Heterogeneous Risk):** Populations have latent hazard $\Lambda_i \sim Exp(\theta)$.
+    -   **Targeting:** prioritizing high-risk populations.
+    -   **Imperfect Targeting:** Ranking based on noisy score $S = \Lambda + \epsilon$ (Spearman's $\rho$).
+
+### Data & Parameters
+
+-   **Economic Parameters:** Sourced from Sub-Saharan Africa data (GDP, life expectancy) to estimate $C_I$ and $C_V$.
+-   **Outbreak Characteristics:** Based on analysis of 1,192 historical outbreaks (duration, peak incidence).
+
+## Results
+
+### 1. Empirical Characterization of Outbreaks
+
+-   *Reference to `outbreak_analysis.qmd`*
+-   Analysis of 1,192 outbreaks confirms that outbreak duration and peak incidence differ significantly from simple assumptions.
+-   **Key Finding:** Outbreak properties follow Log-normal distributions; dynamics are best described by exponential growth/decay models (supporting the use of $R_0$-based models over linear ones).
+
+### 2. The Economics of "Wait vs. Act" (Single Population)
+
+-   *Reference to `analytic_study.qmd` Single Population Phase Diagrams.*
+-   Define the **Threshold Probability (**$p_{thr}$): The outbreak probability above which pre-emptive vaccination becomes cheaper than reactive.
+-   $p_{thr}$ decreases as:
+    -   Reactive effectiveness ($r$) decreases (slower response).
+    -   Cost ratio ($R$) increases (outbreaks become more expensive).
+-   **Figure Recommendation:** Phase diagram of $p$ vs. $r$, identifying regions where Pre-emptive vs. Reactive is optimal.
+
+### 3. Optimal Allocation with Limited Supply (Multi-Population)
+
+-   *Reference to `analytic_study.qmd` Multi-Population Analysis.*
+-   **Equal Risk Case:**
+    -   Optimal strategy is often "all-or-nothing" (bang-bang solution) or a specific mixed strategy at the "regime switch" point.
+    -   We identify a **tipping point** where the strategy flips from preserving capacity for reactive response to committing to pre-emptive vaccination.
+-   **Heterogeneous Risk & Targeting:**
+    -   **Perfect Targeting:** Prioritizing high-risk groups dramatically lowers the cost of pre-emptive strategies, effectively lowering $p_{thr}$.
+    -   **Imperfect Targeting:** As targeting accuracy ($\rho$) drops, the "effective" risk of the vaccinated group drops, making pre-emptive less attractive.
+    -   **Figure Recommendation:** Heatmaps showing optimal pre-emptive fraction $\alpha^*$ as a function of targeting accuracy $\rho$ and capacity $f$.
+
+### 4. Schematic Visualization
+
+-   *Reference to `Schematics.qmd`.*
+-   Visual comparison of "Outbreak without vaccination" (dashed line) vs "With Vaccination" (solid line) to illustrate the concept of averted burden.
+-   Visualizing the cost intersection (Tipping Point) to make the economic argument intuitive.
+
+## Discussion
+
+### Key Findings
+
+-   Reactive strategies are preferred when outbreak risk is low and response is fast ($r$ is high).
+-   Pre-emptive strategies become optimal as:
+    1.  Outbreak costs rise relative to vaccine costs (high $R$).
+    2.  Targeting accuracy improves (high $\rho$).
+    3.  Reactive response becomes sluggish (low $r$).
+-   The "Mixed" strategy is relevant primarily when capacity is intermediate—enough to cover high-risk groups pre-emptively but reserving some stock for unexpected outbreaks in lower-risk areas.
+
+### Policy Implications
+
+-   "Wait and See" is not free; it carries the risk of delayed response cost.
+-   Investments in **Targeting (Surveillance)** can be as valuable as increasing vaccine supply, as it makes pre-emptive vaccination viable at lower supply levels.
+
+### Limitations
+
+-   Simplified transmission dynamics (static attack rates vs dynamic SIR).
+-   Assumes independent outbreaks (no spatial spread between populations).
+-   Economic parameters are static averages.
+
+## Suggestions for Additional Analyses (Critical Review)
+
+1.  **Sensitivity to "Wastage" Aversion:** The current model assumes minimizing *expected cost*. Policymakers might be "risk-averse" or "waste-averse" (political cost of vaccinating where no outbreak occurs). **Suggestion:** Add a penalty term for "wasted" vaccines in the pre-emptive cost function to see how it shifts $p_{thr}$.
+2.  **Dynamic Response Delay:** Currently, "reactive effectiveness" ($r$) is a fixed parameter. **Suggestion:** Model $r$ as a function of detection functioning (e.g., time to detection). This links surveillance quality directly to $r$.
+3.  **Correlated Risks:** The multi-population model assumes independent risks. In reality, outbreaks cluster spatially. **Suggestion:** Run a scenario where if Population A has an outbreak, Population B's risk increases. This would likely favor "Reactive" strategies (ring vaccination) or "Pre-emptive" (regional firewalling) depending on the coupling strength.
+4.  **Cost of "Stockout":** What if the reactive demand exceeds supply? The current model implies a linear penalty. **Suggestion:** Explicitly model the catastrophe cost of running out of vaccines during a major epidemic wave.
+
+## References
+
+-   *References will be pulled from `references.bib`*
