@@ -188,7 +188,7 @@ plt_tradeoff <- ggplot(d_tradeoff, aes(x = week, y = `No vacc`)) +
     labs(x = xlabel, y = ylabel) +
     scale_y_continuous(limits = c(0, arrow_y_2 + 30)) +
     theme_classic(base_size = 18) +
-    theme(plot.margin = margin(1, 1, 1, 1, "cm"))
+    theme(plot.margin = margin(5, 5, 5, 5))
 
 print(plt_tradeoff)
 
@@ -662,7 +662,7 @@ plt_cost_single <- ggplot(df_cost_sloped, aes(x = Probability, y = Cost, color =
     theme(
         legend.position = "none",
         plot.title = element_text(hjust = 0.5, face = "bold"),
-        plot.margin = margin(1, 1, 1, 1, "cm")
+        plot.margin = margin(5, 5, 5, 5)
     )
 
 print(plt_cost_single)
@@ -675,3 +675,26 @@ print(plt_cost_single)
 #         units = "mm")
 ```
 
+# Master 4-Panel Schematic
+```{r, fig.width=14, fig.height=12}
+# Combine all 4 major schematics into one figure
+# A: Trade-off (Top Left)
+# B: Combined Epidemic Curve (Top Right)
+# C: Vaccination Area (Bottom Left)
+# D: Cost (Bottom Right)
+
+# wrap_elements is needed to treat the combined patchwork objects as single plotting units
+plt_4panel <- (plt_tradeoff | wrap_elements(plt_combined)) /
+    (wrap_elements(plt_area_combined) | plt_cost_single) +
+    plot_annotation(tag_levels = "A") +
+    plot_layout(widths = c(1, 1), heights = c(1, 1))
+
+print(plt_4panel)
+
+# ggsave(paste0("plots/schematic_4panel_", tstamp(), ".pdf"),
+#         plt_4panel,
+#         device = cairo_pdf,
+#         width=fgw2*2,  # Double width for clarity
+#         height=fgw2*1.5,
+#         units = "mm")
+```
