@@ -40,6 +40,34 @@ figure_size <- data.table(
 fgw1 <- figure_size[journal == "Lancet", single]
 fgw2 <- figure_size[journal == "Lancet", double]
 save_plot <- FALSE
+
+theme_tight <- function() {
+    theme(
+        legend.box.spacing = unit(0, "pt"),
+        legend.margin = margin(0, 0, 0, 0),
+        legend.position = "top",
+        plot.margin = margin(2, 2, 2, 6),
+        legend.key.size = unit(0.5, "cm"),
+        legend.key.spacing = unit(0.1, "cm")
+    )
+}
+
+theme_x_blank <- function() {
+    theme(
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.x = element_blank()
+    )
+}
+
+theme_y_blank <- function() {
+    theme(
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.title.y = element_blank()
+    )
+}
+
 ```
 
 # Data
@@ -148,15 +176,19 @@ df_wide <- df %>%
 ```{r}
 # Reuse the data 'd' for the underlying curve shape
 # Add 15 weeks of zeros to represent pre-outbreak period
+set.seed(42)
 d_tradeoff <- bind_rows(
-    tibble(week = -15:-1, `No vacc` = 0),
+    tibble(week = -15:-1, `No vacc` = round(rnorm(15, 0, 3))),
     d
 )
+d_tradeoff$`No vacc` <- pmax(0, d_tradeoff$`No vacc`)
 
 max_cases <- max(d_tradeoff$`No vacc`)
 arrow_y_1 <- max_cases * 1.3
-arrow_y_2 <- max_cases * 1.6
+arrow_y_2 <- max_cases * 1.5
 text_x <- median(d_tradeoff$week)
+text_size <- 4.5
+text_v_shift <- 7
 
 plt_tradeoff <- ggplot(d_tradeoff, aes(x = week, y = `No vacc`)) +
     # Background curve
@@ -165,39 +197,49 @@ plt_tradeoff <- ggplot(d_tradeoff, aes(x = week, y = `No vacc`)) +
     # Rightward arrow: Impact decreases
     geom_segment(
         aes(x = -12, xend = 20, y = arrow_y_1, yend = arrow_y_1),
-        arrow = arrow(length = unit(0.5, "cm"), type = "closed"),
-        color = "firebrick", linewidth = 1.2
+        arrow = arrow(length = unit(0.2, "cm"), type = "open"),
+        color = "firebrick", linewidth = 1
     ) +
     annotate("text",
-        x = text_x, y = arrow_y_1 + 10,
-        label = "Impact of vaccination decreases",
-        vjust = 0, size = 5, color = "firebrick"
+        x = text_x, y = arrow_y_1 + text_v_shift, vjust = 0,
+        label = "Impact of vaccination decreases", size = text_size * 1.2, color = "firebrick"
     ) +
 
     # Leftward arrow: Certainty decreases
     geom_segment(
-        aes(x = 20, xend = -12, y = arrow_y_2, yend = arrow_y_2),
-        arrow = arrow(length = unit(0.5, "cm"), type = "closed"),
-        color = "steelblue", linewidth = 1.2
+        aes(x = -12, xend = 20, y = arrow_y_2, yend = arrow_y_2),
+        arrow = arrow(length = unit(0.2, "cm"), type = "open"),
+        color = "steelblue", linewidth = 1
     ) +
     annotate("text",
-        x = text_x, y = arrow_y_2 + 10,
-        label = "Certainty of an outbreak decreases",
-        vjust = 0, size = 5, color = "steelblue"
+        x = text_x, y = arrow_y_2 + text_v_shift, vjust = 0,
+        label = "Certainty of an outbreak increases",
+        size = text_size * 1.2, color = "steelblue"
+    ) +
+    # --- Foreshadowing Intervention Windows ---
+    # Pre-emptive window
+    geom_segment(aes(x = -5, xend = -5, y = 0, yend = arrow_y_1 - 20), linetype = "dotted", color = "darkred", linewidth = 1) +
+    annotate("text", x = -5.5, y = arrow_y_1 - 20, label = "Pre-emptive\nWindow", hjust = 1, size = text_size, color = "darkred") +
+    # Reactive window
+    geom_segment(aes(x = 5, xend = 5, y = 0, yend = arrow_y_1 - 20), linetype = "dotted", color = "steelblue", linewidth = 1) +
+    annotate("text",
+        x = 5.5, y = arrow_y_1 - 20, label = "Reactive\nWindow",
+        hjust = 0, size = text_size, color = "steelblue"
     ) +
     labs(x = xlabel, y = ylabel) +
-    scale_y_continuous(limits = c(0, arrow_y_2 + 30)) +
-    theme_classic(base_size = 18) +
-    theme(plot.margin = margin(0, 0, 0, 0))
+    scale_y_continuous(limits = c(0, arrow_y_2 + text_v_shift + 20)) +
+    theme_classic(base_size = 14) +
+    theme_tight()
 
 print(plt_tradeoff)
 
-# ggsave(paste0("plots/schematic_tradeoff_", tstamp(), ".pdf"),
-#         plt_tradeoff,
-#         device = cairo_pdf,
-#         width=fgw2,
-#         height=fgw2*0.6,
-#         units = "mm")
+fac <- 1.6
+ggsave(paste0("plots/schematic_tradeoff_", tstamp(), ".pdf"), plt_tradeoff,
+    device = cairo_pdf,
+    width = fgw1 * fac,
+    height = fgw1 * fac,
+    units = "mm"
+)
 ```
 
 
@@ -698,3 +740,5 @@ print(plt_4panel)
 #         height=fgw2*1.5,
 #         units = "mm")
 ```
+
+
