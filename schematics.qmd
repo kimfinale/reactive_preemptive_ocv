@@ -46,7 +46,7 @@ theme_tight <- function() {
         legend.box.spacing = unit(0, "pt"),
         legend.margin = margin(0, 0, 0, 0),
         legend.position = "top",
-        plot.margin = margin(2, 2, 2, 6),
+        plot.margin = margin(0, 0, 0, 0),
         legend.key.size = unit(0.5, "cm"),
         legend.key.spacing = unit(0.1, "cm")
     )
@@ -73,7 +73,8 @@ theme_y_blank <- function() {
 # Data
 ```{r}
 # Global parameters ----------------------------------------------------
-text_size <- 5 # Default text size for annotations
+theme_base_size <- 18
+annot_text_size <- 6 # Default text size for annotations
 line_height <- 0.95 # Line spacing for text annotation
 
 step_linewidth <- 0.7 # Width of step lines
@@ -184,10 +185,10 @@ d_tradeoff <- bind_rows(
 d_tradeoff$`No vacc` <- pmax(0, d_tradeoff$`No vacc`)
 
 max_cases <- max(d_tradeoff$`No vacc`)
-arrow_y_1 <- max_cases * 1.3
-arrow_y_2 <- max_cases * 1.5
+arrow_y_1 <- max_cases * 1.6
+arrow_y_2 <- max_cases * 1.8
 text_x <- median(d_tradeoff$week)
-text_size <- 4.5
+
 text_v_shift <- 7
 
 plt_tradeoff <- ggplot(d_tradeoff, aes(x = week, y = `No vacc`)) +
@@ -202,7 +203,7 @@ plt_tradeoff <- ggplot(d_tradeoff, aes(x = week, y = `No vacc`)) +
     ) +
     annotate("text",
         x = text_x, y = arrow_y_1 + text_v_shift, vjust = 0,
-        label = "Impact of vaccination decreases", size = text_size * 1.2, color = "firebrick"
+        label = "impact of vaccination decreases", size = annot_text_size * 1.2, color = "firebrick"
     ) +
 
     # Leftward arrow: Certainty decreases
@@ -213,22 +214,22 @@ plt_tradeoff <- ggplot(d_tradeoff, aes(x = week, y = `No vacc`)) +
     ) +
     annotate("text",
         x = text_x, y = arrow_y_2 + text_v_shift, vjust = 0,
-        label = "Certainty of an outbreak increases",
-        size = text_size * 1.2, color = "steelblue"
+        label = "certainty of an outbreak increases",
+        size = annot_text_size * 1.2, color = "steelblue"
     ) +
     # --- Foreshadowing Intervention Windows ---
     # Pre-emptive window
-    geom_segment(aes(x = -5, xend = -5, y = 0, yend = arrow_y_1 - 20), linetype = "dotted", color = "darkred", linewidth = 1) +
-    annotate("text", x = -5.5, y = arrow_y_1 - 20, label = "Pre-emptive\nWindow", hjust = 1, size = text_size, color = "darkred") +
+    geom_segment(aes(x = -5, xend = -5, y = 0, yend = arrow_y_1 - 10), linetype = "dotted", color = "darkred", linewidth = 1) +
+    annotate("text", x = -5.5, y = arrow_y_1 - 30, label = "pre-emptive\nwindow", hjust = 1, size = annot_text_size, color = "darkred") +
     # Reactive window
-    geom_segment(aes(x = 5, xend = 5, y = 0, yend = arrow_y_1 - 20), linetype = "dotted", color = "steelblue", linewidth = 1) +
+    geom_segment(aes(x = 5, xend = 5, y = 0, yend = arrow_y_1 - 10), linetype = "dotted", color = "steelblue", linewidth = 1) +
     annotate("text",
-        x = 5.5, y = arrow_y_1 - 20, label = "Reactive\nWindow",
-        hjust = 0, size = text_size, color = "steelblue"
+        x = 5.5, y = arrow_y_1 - 30, label = "reactive\nwindow",
+        hjust = 0, size = annot_text_size, color = "steelblue"
     ) +
     labs(x = xlabel, y = ylabel) +
     scale_y_continuous(limits = c(0, arrow_y_2 + text_v_shift + 20)) +
-    theme_classic(base_size = 14) +
+    theme_classic(base_size = theme_base_size) +
     theme_tight()
 
 print(plt_tradeoff)
@@ -284,25 +285,25 @@ plt_pre <-
         "text",
         x = -4, y = 30,
         label = "pre-emptive\ncampaign", hjust = 0,
-        size = text_size, lineheight = line_height
+        size = annot_text_size, lineheight = line_height
     ) +
     annotate(
         "text",
         x = 12, y = 100,
         label = "without\nvaccination", hjust = 0,
-        size = text_size, lineheight = line_height
+        size = annot_text_size, lineheight = line_height
     ) +
     annotate(
         "text",
         x = 6.5, y = 12, # Moved down significantly
         label = "with\nvaccination", hjust = 0,
-        size = text_size, lineheight = line_height
+        size = annot_text_size, lineheight = line_height
     ) +
     scale_x_continuous(limits = c(-4, 25)) +
     scale_linetype_manual(values = c("No vacc" = "dashed", "Vacc" = "solid")) +
     scale_x_continuous(limits = c(-4, 25)) +
     labs(x = xlabel, y = ylabel, title = "") +
-    theme_classic(base_size = 18) +
+    theme_classic(base_size = theme_base_size) +
     theme(legend.position = "none")
 
 # Display the plot
@@ -345,7 +346,7 @@ plt_react <- ggplot(dlong, aes(week, value, linetype = name, shape = name, group
     #     "text",
     #     x = week_or - 0.5, y = 38,
     #     label = "outbreak\nresponse triggered",
-    #     hjust = 0.5, size = text_size, lineheight = line_height
+    #     hjust = 0.5, size = annot_text_size, lineheight = line_height
     # ) +
 
     # Vaccination started arrow and label
@@ -358,7 +359,7 @@ plt_react <- ggplot(dlong, aes(week, value, linetype = name, shape = name, group
         "text",
         x = week_vax, y = 60,
         label = "reactive\ncampaign", hjust = 1,
-        size = text_size, lineheight = line_height
+        size = annot_text_size, lineheight = line_height
     ) +
 
     # Vaccine takes effect arrow and label
@@ -379,19 +380,19 @@ plt_react <- ggplot(dlong, aes(week, value, linetype = name, shape = name, group
         "text",
         x = 12, y = 100,
         label = "without\nvaccination", hjust = 0,
-        size = text_size, lineheight = line_height
+        size = annot_text_size, lineheight = line_height
     ) +
     annotate(
         "text",
         x = 6.5, y = 12,
         label = "with\nvaccination", hjust = 0,
-        size = text_size, lineheight = line_height
+        size = annot_text_size, lineheight = line_height
     ) +
     scale_x_continuous(limits = c(0, 25)) +
     scale_linetype_manual(values = c("No vacc" = "dashed", "Vacc" = "solid")) +
     scale_x_continuous(limits = c(0, 25)) +
     labs(x = xlabel, y = ylabel) +
-    theme_classic(base_size = 18) +
+    theme_classic(base_size = theme_base_size) +
     theme(legend.position = "none")
 
 plt_react
@@ -412,37 +413,33 @@ scale_x_common <- scale_x_continuous(limits = c(-4, 25), breaks = seq(0, 25, 5))
 # Prepare Left Plot (Pre-emptive)
 p_pre <- plt_pre +
     scale_x_common +
-    theme(axis.title.x = element_blank())
+    guides(linetype = "none") +
+    theme_tight()
 
 # Prepare Right Plot (Reactive) - remove y axis stuff
 p_react <- plt_react +
     scale_x_common +
+    guides(linetype = "none") +
+    theme_tight() +
     theme(
-        axis.title.x = element_blank(),
         axis.title.y = element_blank(),
         axis.text.y = element_blank(),
         axis.ticks.y = element_blank()
     )
 
 # Combine
-plt_combined <- p_pre + p_react +
-    plot_annotation(
-        caption = xlabel, # Use caption as shared x-axis label
-        theme = theme(
-            plot.caption = element_text(hjust = 0.5, size = 16, margin = margin(t = 10))
-        )
-    )
+plt_combined <- p_pre + p_react + plot_layout(axis_titles = "collect")
 
 print(plt_combined)
 
-# ggsave(paste0("plots/schematic_combined_", tstamp(), ".pdf"),
-#         plt_combined,
-#         device = cairo_pdf,
-#         width=fgw2,
-#         height=fgw2*0.6,
-#         units = "mm")
+ggsave(paste0("plots/epi_curve_combined_", tstamp(), ".pdf"),
+    plt_combined,
+    device = cairo_pdf,
+    width = fgw2 * 1.2,
+    height = fgw1 * 1.6,
+    units = "mm"
+)
 ```
-
 
 # Vaccination area
 
@@ -473,49 +470,51 @@ plot_districts <- function(strategy_name, vaccinated_ids, vacc_col = "firebrick"
         geom_text(
             data = subset(districts, risk == "Outbreak"),
             aes(label = "*"),
-            size = 20, fontface = "bold", vjust = 0.7,
+            size = 18, fontface = "bold", vjust = 0.7,
             color = "black"
         ) +
         scale_fill_manual(values = c(
             "No" = "grey90",
             "Yes" = alpha(vacc_col, 0.4)
         )) +
-        theme_void() +
-        labs(title = strategy_name) +
+        guides(fill = "none") +
+        theme_void(base_size = theme_base_size) +
+        # labs(title = strategy_name) +
+        theme_tight() +
         theme(
-            legend.position = "none",
-            plot.title = element_text(hjust = 0.5, size = 22, face = "bold", margin = margin(b = 10))
+            legend.position = "none"
         )
 }
 
+annot_y <- 3.9
 # Pre-emptive: Target specific zone + Legend Items
 p_area_pre <- plot_districts("Pre-emptive", pre_vax_ids, "firebrick") +
     # Legend: Outbreaks
-    annotate("text", x = 0.8, y = 4.2, label = "*", size = 15, fontface = "bold") +
-    annotate("text", x = 1.1, y = 4.2, label = "Outbreaks", hjust = 0, size = 5) +
+    annotate("text", x = 0.8, y = annot_y, label = "*", size = 16, vjust = 0.8) +
+    annotate("text", x = 0.95, y = annot_y, label = "outbreaks", hjust = 0, size = annot_text_size) +
     # Legend: Targeted
-    annotate("tile", x = 2.2, y = 4.2, fill = alpha("firebrick", 0.4), height = 0.3, width = 0.3) +
-    annotate("text", x = 2.6, y = 4.2, label = "Targeted by\nPre-emptive", hjust = 0, size = 5, lineheight = 0.8) +
-    coord_fixed(ylim = c(0.5, 5), clip = "off")
-
+    annotate("tile", x = 2.2, y = annot_y, fill = alpha("firebrick", 0.4), height = 0.3, width = 0.3) +
+    annotate("text", x = 2.45, y = annot_y, label = "pre-emptive\nvaccination", hjust = 0, size = annot_text_size, lineheight = 0.9, vjust = 0.5) +
+    coord_fixed(ylim = c(0.6, 3.6), clip = "off")
 # Reactive: Target Outbreaks only + Legend Item
 p_area_react <- plot_districts("Reactive", outbreak_ids, "steelblue") +
     # Legend: Targeted
-    annotate("tile", x = 1.0, y = 4.2, fill = alpha("steelblue", 0.4), height = 0.3, width = 0.3) +
-    annotate("text", x = 1.4, y = 4.2, label = "Targeted by\nReactive", hjust = 0, size = 5, lineheight = 0.8) +
-    coord_fixed(ylim = c(0.5, 5), clip = "off")
+    annotate("tile", x = 1.0, y = annot_y, fill = alpha("steelblue", 0.4), height = 0.3, width = 0.3) +
+    annotate("text", x = 1.25, y = annot_y, label = "reactive\nvaccination", hjust = 0, size = annot_text_size, lineheight = 0.9) +
+    coord_fixed(ylim = c(0.6, 3.6), clip = "off")
 
 # Combine plots
-plt_area_combined <- p_area_pre + p_area_react
+plt_area_combined <- p_area_pre + p_area_react + theme_tight()
 
 print(plt_area_combined)
 
-# ggsave(paste0("plots/vacc_area_combined_", tstamp(), ".pdf"),
-#         plt_area_combined,
-#         device = cairo_pdf,
-#         width=fgw2,
-#         height=fgw2*0.5,
-#         units = "mm")
+ggsave(paste0("plots/vacc_area_combined_", tstamp(), ".pdf"),
+    plt_area_combined,
+    device = cairo_pdf,
+    width = fgw2,
+    height = fgw2 * 0.6,
+    units = "mm"
+)
 ```
 
 
@@ -551,11 +550,11 @@ plt_cost <- ggplot(df_cost, aes(x = Probability, y = Cost, color = Strategy)) +
 
     annotate("text",
         x = 0.1, y = 57, label = "Preemptive Cost:\nFixed Upfront",
-        color = "firebrick", hjust = 0, size = 5.5
+        color = "firebrick", hjust = 0, size = annot_text_size
     ) +
     annotate("text",
         x = 0.7, y = 100, label = "Reactive Cost:\nScale with Risk",
-        color = "steelblue", hjust = 0.5, size = 5.5
+        color = "steelblue", hjust = 0.5, size = annot_text_size
     ) +
     theme_minimal(base_size = 18) +
     labs(
@@ -598,9 +597,9 @@ plt_cost_pre <- ggplot(
     scale_y_continuous(limits = c(0, 120)) +
     annotate("text",
         x = 0.1, y = 60, label = "Preemptive Cost:\nFixed Upfront",
-        color = "firebrick", hjust = 0, size = 5.5
+        color = "firebrick", hjust = 0, size = annot_text_size
     ) +
-    theme_classic(base_size = 18) +
+    theme_classic(base_size = theme_base_size) +
     labs(
         title = "",
         subtitle = "",
@@ -641,9 +640,9 @@ plt_cost_react <- ggplot(
     scale_y_continuous(limits = c(0, 120)) +
     annotate("text",
         x = 0.7, y = 100, label = "Reactive Cost:\nScale with Risk",
-        color = "steelblue", hjust = 0.5, size = 5.5
+        color = "steelblue", hjust = 0.5, size = annot_text_size
     ) +
-    theme_classic(base_size = 18) +
+    theme_classic(base_size = theme_base_size) +
     labs(
         title = "",
         subtitle = "",
@@ -692,29 +691,29 @@ plt_cost_single <- ggplot(df_cost_sloped, aes(x = Probability, y = Cost, color =
 
     # Annotations directly on the plot
     annotate("text",
-        x = 0.1, y = 60, label = "Pre-emptive Cost",
-        color = "firebrick", hjust = 0, size = 6, fontface = "bold"
+        x = 0.1, y = 65, label = "pre-emptive",
+        color = "firebrick", hjust = 0, size = annot_text_size
     ) +
     annotate("text",
-        x = 0.8, y = 130, label = "Reactive Cost",
-        color = "steelblue", hjust = 0.5, size = 6, fontface = "bold"
+        x = 0.74, y = 100, label = "reactive",
+        color = "steelblue", hjust = 0.5, size = annot_text_size
     ) +
-    theme_classic(base_size = 18) +
-    labs(x = "Probability of Outbreak", y = "Total Expected Cost", title = "") +
+    theme_classic(base_size = theme_base_size) +
+    labs(x = "probability of outbreak", y = "total expected cost") +
+    theme_tight() +
     theme(
-        legend.position = "none",
-        plot.title = element_text(hjust = 0.5, face = "bold"),
-        plot.margin = margin(0, 0, 0, 0)
+        legend.position = "none"
     )
 
 print(plt_cost_single)
 
-# ggsave(paste0("plots/cost_single_", tstamp(), ".pdf"),
-#         plt_cost_single,
-#         device = cairo_pdf,
-#         width=fgw2,
-#         height=fgw2*0.6,
-#         units = "mm")
+ggsave(paste0("plots/cost_", tstamp(), ".pdf"),
+    plt_cost_single,
+    device = cairo_pdf,
+    width = fgw1 * 1.3,
+    height = fgw1 * 1.3,
+    units = "mm"
+)
 ```
 
 # Master 4-Panel Schematic
@@ -726,19 +725,27 @@ print(plt_cost_single)
 # D: Cost (Bottom Right)
 
 # wrap_elements is needed to treat the combined patchwork objects as single plotting units
-plt_4panel <- (plt_tradeoff | wrap_elements(plt_combined)) /
-    (wrap_elements(plt_area_combined) | plt_cost_single) +
-    plot_annotation(tag_levels = "A") +
+# Manually Add Tags for unified labeling
+p_tradeoff_tagged <- plt_tradeoff + labs(tag = "A")
+plt_combined[[1]] <- plt_combined[[1]] + labs(tag = "B")
+plt_area_combined[[1]] <- plt_area_combined[[1]] + labs(tag = "C")
+p_cost_tagged <- plt_cost_single + labs(tag = "D")
+
+plt_4panel <- (p_tradeoff_tagged | plt_combined) /
+    (plt_area_combined | p_cost_tagged) +
     plot_layout(widths = c(1, 1), heights = c(1, 1))
 
 print(plt_4panel)
 
-# ggsave(paste0("plots/schematic_4panel_", tstamp(), ".pdf"),
-#         plt_4panel,
-#         device = cairo_pdf,
-#         width=fgw2*2,  # Double width for clarity
-#         height=fgw2*1.5,
-#         units = "mm")
+ggsave(paste0("plots/schematic_4panel_", tstamp(), ".pdf"),
+    plt_4panel,
+    device = cairo_pdf,
+    width = fgw2 * 2.2, # Double width for clarity
+    height = fgw2 * 2.2,
+    units = "mm"
+)
 ```
 
-
+```{r}
+1 + 1
+```
