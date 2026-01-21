@@ -60,6 +60,7 @@ theme_x_blank <- function() {
     )
 }
 
+
 theme_y_blank <- function() {
     theme(
         axis.text.y = element_blank(),
@@ -68,6 +69,9 @@ theme_y_blank <- function() {
     )
 }
 
+tstamp <- function() {
+    format(Sys.time(), "%Y%m%d_%H%M%S")
+}
 ```
 
 # Data
@@ -104,92 +108,103 @@ theme_upper_panel <- function() {
 }
 
 # Data preparation ----------------------------------------------------
-# Create synthetic example of an outbreak trajectory with and without vaccination
-d <- data.frame(
-    date = seq(as.Date("2010-06-15"), by = "week", length.out = 24),
-    week = 0:23,
-    # No vaccination scenario
-    s_ch = c(
-        2, 2, 3, 4, 10, 12, 29, 100, 120, 150, 140,
-        75, 68, 47, 24, 5, 12, 5, 3, 2, 4, 1, 0, 0
-    )
+# Parameters
+delay_weeks <- 3
+week_pre_vax <- -10
+week_pre_eff <- week_pre_vax + delay_weeks # -3
+
+week_react_vax <- 6.5
+week_react_eff <- week_react_vax + delay_weeks # 13.5
+
+# Define weeks range
+weeks <- seq(-15, 25, by = 1)
+
+
+# Function to generate baseline outbreak curve
+get_base_curve <- function(w) {
+    # Peak around week 10-12, start rising around 0
+    # Using the previous manual values as a guide but smoothing/fitting
+    # Manual values from previous d_core$s_ch approx:
+    # 2, 2, 3, 4, 10, 12, 29, 100, 120, 150, 140, 75, 68...
+    # Let's use a simpler parametric form or the manual values mapped to 0-23
+
+    # Map input week to index (0 -> 1)
+    val <- numeric(length(w))
+
+    # Pre-outbreak noise
+    is_noise <- w < 0
+    val[is_noise] <- pmax(0, rnorm(sum(is_noise), mean = 0, sd = 2))
+
+    # Outbreak part
+    # We can stick to the manual values for 0-23 for consistency with previous plots
+    base_vals <- c(2, 2, 3, 4, 10, 12, 29, 100, 120, 150, 140, 75, 68, 47, 24, 5, 12, 5, 3, 2, 4, 1, 0, 0)
+
+    is_outbreak <- w >= 0 & w < 24
+    # Map w to index 1..24
+    indices <- w[is_outbreak] + 1
+    val[is_outbreak] <- base_vals[indices]
+
+    # Post outbreak (week >= 24)
+    val[w >= 24] <- 0
+
+    return(round(val))
+}
+
+set.seed(42)
+no_vacc_cases <- get_base_curve(weeks)
+
+# Pre-emptive Strategy
+# Effect starts at week -3.
+# Assume significantly reduced transmission/cases.
+# Let's say it caps the outbreak or reduces it by constant factor?
+# Previous code used: `Vacc` = round(`No vacc` * 0.025) which is massive reduction.
+pre_vacc_cases <- no_vacc_cases
+mask_pre <- weeks >= week_pre_eff
+pre_vacc_cases[mask_pre] <- round(pre_vacc_cases[mask_pre] * 0.05) # 95% reduction
+
+# Reactive Strategy
+# Effect starts at week 13.5 (so week 14 effectively for integer steps)
+# Previous code used 0.4 * cases
+react_vacc_cases <- no_vacc_cases
+mask_react <- weeks >= week_react_eff
+react_vacc_cases[mask_react] <- round(react_vacc_cases[mask_react] * 0.05) # 95% reduction (same as pre-emptive)
+
+# Create Master Dataframe
+d <- tibble(
+    week = weeks,
+    `No vacc` = no_vacc_cases,
+    `Pre-emptive` = pre_vacc_cases,
+    `Reactive` = react_vacc_cases
 )
 
-# Add vaccination scenario (40% of cases after vaccine takes effect)
-d$s_ch_vacc <- c(
-    2, 2, 3, 4, 10, 12, 29, 100, 120,
-    round(0.4 * c(150, 140, 75, 68, 47, 24, 5, 12, 5, 3, 2, 4, 1, 0, 0))
-)
-d$s_ch_cumul <- cumsum(d$s_ch)
+# Reshape for plotting (generic long form)
+dlong_all <- pivot_longer(d, cols = c("No vacc", "Pre-emptive", "Reactive"))
 
-# Rename columns for clarity
-names(d) <- c("date", "week", "No vacc", "Vacc", "No vacc cumulative")
+# Common scales
+max_cases <- max(d$`No vacc`)
+common_ylim <- c(0, max_cases * 1.5 + 10)
+common_xlim <- c(-18, 25)
 
-# Reshape data for plotting
-dlong <- pivot_longer(d, cols = c("No vacc", "Vacc"))
-
-# Define time weeks for additional scenarios
-weeks <- 0:25
-
-# Generate additional outbreak scenarios
-# Smallest outbreak (ended before vaccination)
-smallest_no_vax <- rpois(length(weeks), lambda = 30 * exp(-0.1 * (weeks - 2)^2))
-smallest_no_vax[(week_vax - 1):length(smallest_no_vax)] <- 0
-
-# Smaller outbreak (ended at vaccine takes effect)
-smaller_no_vax <- rpois(length(weeks), lambda = 50 * exp(-0.1 * (weeks - 3)^2))
-smaller_no_vax[week_vax_eff:length(smaller_no_vax)] <- 0
-
-# Small outbreak (peak at week 8)
-small_no_vax <- rpois(length(weeks), lambda = 70 * exp(-0.08 * (weeks - 8)^2))
-small_with_vax <- small_no_vax
-small_with_vax[weeks > week_vax_eff] <- round(small_with_vax[weeks > week_vax_eff] * 0.5) # 50% reduction
-
-# Large outbreak (peak at week 12)
-large_no_vax <- rpois(length(weeks), lambda = 120 * exp(-0.04 * (weeks - 12)^2))
-large_with_vax <- large_no_vax
-large_with_vax[weeks > week_vax_eff] <- round(large_with_vax[weeks > week_vax_eff] * 0.5) # 50% reduction
-
-# Combine into a data frame
-df <- tibble(
-    week = rep(weeks, 6),
-    cases = c(
-        smallest_no_vax, smaller_no_vax, small_no_vax, small_with_vax,
-        large_no_vax, large_with_vax
-    ),
-    outbreak = rep(c("Smallest", "Smaller", "Small", "Small", "Large", "Large"),
-        each = length(weeks)
-    ),
-    scenario = c(
-        rep("No Vaccine", 2 * length(weeks)),
-        rep(c("No Vaccine", "With Vaccine"), times = 2, each = length(weeks))
-    )
-)
-
-# Create wide version of the data
-df_wide <- df %>%
-    pivot_wider(names_from = scenario, values_from = cases) %>%
-    mutate(reduction = `No Vaccine` - `With Vaccine`)
+# --- Additional Scenarios for grid (just keeping them for completeness if needed later,
+# but effectively we are focusing on the main d now) ---
+# We can skip the 'df' / 'df_wide' parts if they are not used in the main schematics
+# or recreate them if they are needed for other panels not mentioned.
+# Based on the file, 'df' seemed to be used for something else or illustrative purposes?
+# The task focuses on p_tradeoff, p_pre, p_react which use d/dlong.
 ```
 
-# Conceptual Trade-off Schematic
+# Conceptual trade-off schematic
 
 ```{r}
-# Reuse the data 'd' for the underlying curve shape
-# Add 15 weeks of zeros to represent pre-outbreak period
-set.seed(42)
-d_tradeoff <- bind_rows(
-    tibble(week = -15:-1, `No vacc` = round(rnorm(15, 0, 3))),
-    d
-)
-d_tradeoff$`No vacc` <- pmax(0, d_tradeoff$`No vacc`)
+# Reuse d
+d_tradeoff <- d
 
 max_cases <- max(d_tradeoff$`No vacc`)
-arrow_y_1 <- max_cases * 1.6
-arrow_y_2 <- max_cases * 1.8
+arrow_y_1 <- max_cases * 1.35
+arrow_y_2 <- max_cases * 1.5
 text_x <- median(d_tradeoff$week)
 
-text_v_shift <- 7
+text_v_shift <- 6
 
 plt_tradeoff <- ggplot(d_tradeoff, aes(x = week, y = `No vacc`)) +
     # Background curve
@@ -197,66 +212,60 @@ plt_tradeoff <- ggplot(d_tradeoff, aes(x = week, y = `No vacc`)) +
 
     # Rightward arrow: Impact decreases
     geom_segment(
-        aes(x = -12, xend = 20, y = arrow_y_1, yend = arrow_y_1),
+        aes(x = -14, xend = 24, y = arrow_y_1, yend = arrow_y_1),
         arrow = arrow(length = unit(0.2, "cm"), type = "open"),
         color = "firebrick", linewidth = 1
     ) +
     annotate("text",
         x = text_x, y = arrow_y_1 + text_v_shift, vjust = 0,
-        label = "impact of vaccination decreases", size = annot_text_size * 1.2, color = "firebrick"
+        label = "potential impact of vaccination decreases", size = annot_text_size, color = "firebrick"
     ) +
 
     # Leftward arrow: Certainty decreases
     geom_segment(
-        aes(x = -12, xend = 20, y = arrow_y_2, yend = arrow_y_2),
+        aes(x = -14, xend = 24, y = arrow_y_2, yend = arrow_y_2),
         arrow = arrow(length = unit(0.2, "cm"), type = "open"),
         color = "steelblue", linewidth = 1
     ) +
     annotate("text",
         x = text_x, y = arrow_y_2 + text_v_shift, vjust = 0,
         label = "certainty of an outbreak increases",
-        size = annot_text_size * 1.2, color = "steelblue"
+        size = annot_text_size, color = "steelblue"
     ) +
     # --- Foreshadowing Intervention Windows ---
-    # Pre-emptive window
-    geom_segment(aes(x = -5, xend = -5, y = 0, yend = arrow_y_1 - 10), linetype = "dotted", color = "darkred", linewidth = 1) +
-    annotate("text", x = -5.5, y = arrow_y_1 - 30, label = "pre-emptive\nwindow", hjust = 1, size = annot_text_size, color = "darkred") +
+    # Pre-emptive window (Moved to x = -10)
+    geom_segment(aes(x = -4.5, xend = -5, y = 0, yend = arrow_y_1 - 10), linetype = "dotted", color = "darkred", linewidth = 1) +
+    annotate("text", x = -5.5, y = arrow_y_1 - 20, label = "pre-emptive\nwindow", hjust = 1, size = annot_text_size, color = "darkred") +
     # Reactive window
-    geom_segment(aes(x = 5, xend = 5, y = 0, yend = arrow_y_1 - 10), linetype = "dotted", color = "steelblue", linewidth = 1) +
+    geom_segment(aes(x = 7, xend = 7, y = 0, yend = arrow_y_1 - 10), linetype = "dotted", color = "steelblue", linewidth = 1) +
     annotate("text",
-        x = 5.5, y = arrow_y_1 - 30, label = "reactive\nwindow",
+        x = 8, y = arrow_y_1 - 20, label = "reactive\nwindow",
         hjust = 0, size = annot_text_size, color = "steelblue"
     ) +
     labs(x = xlabel, y = ylabel) +
-    scale_y_continuous(limits = c(0, arrow_y_2 + text_v_shift + 20)) +
+    scale_y_continuous(limits = common_ylim) +
+    scale_x_continuous(limits = common_xlim) +
     theme_classic(base_size = theme_base_size) +
     theme_tight()
 
 print(plt_tradeoff)
 
-fac <- 1.6
-ggsave(paste0("plots/schematic_tradeoff_", tstamp(), ".pdf"), plt_tradeoff,
-    device = cairo_pdf,
-    width = fgw1 * fac,
-    height = fgw1 * fac,
-    units = "mm"
-)
+# fac <- 1.9
+# ggsave(paste0("plots/schematic_tradeoff_", tstamp(), ".pdf"), plt_tradeoff,
+#     device = "pdf",
+#     width = fgw1 * fac,
+#     height = fgw1 * fac,
+#     units = "mm"
+# )
 ```
 
 
 # pre-emptive, epidemic curve
 ```{r}
 # Data preparation for Pre-emptive Scenario ---------------------------
-# We reuse the 'd' dataframe structure but modify the vaccine column
-d_pre <- d %>%
-    select(week, `No vacc`) %>%
-    mutate(
-        # Pre-emptive scenario:
-        # Immunity exists at t=0. Curve is flattened by ~75% from the start.
-        `Vacc` = round(`No vacc` * 0.025)
-    )
-
-dlong_pre <- pivot_longer(d_pre, cols = c("No vacc", "Vacc"))
+# Filter for No vacc and Pre-emptive columns
+dlong_pre <- dlong_all %>%
+    filter(name %in% c("No vacc", "Pre-emptive"))
 
 # Plotting the Pre-emptive Figure -------------------------------------
 plt_pre <-
@@ -264,12 +273,13 @@ plt_pre <-
         dlong_pre,
         aes(week, value,
             linetype = name,
-            shape = name, group = name
+            shape = name, group = name,
+            color = name
         )
     ) +
     geom_rect(
-        data = d_pre,
-        aes(xmin = week, xmax = lead(week), ymin = `Vacc`, ymax = `No vacc`),
+        data = d,
+        aes(xmin = week, xmax = lead(week), ymin = `Pre-emptive`, ymax = `No vacc`),
         fill = "firebrick",
         alpha = 0.2,
         color = NA,
@@ -277,40 +287,50 @@ plt_pre <-
     ) +
     geom_step(linewidth = step_linewidth) +
     geom_segment(
-        x = -3, y = arrow_vertical_len, xend = -3, yend = 0,
+        x = -10, y = arrow_vertical_len + 5, xend = -10, yend = 5,
         arrow = arrow(type = "closed", angle = 10, length = unit(3, "mm")),
         inherit.aes = FALSE
     ) +
     annotate(
         "text",
-        x = -4, y = 30,
-        label = "pre-emptive\ncampaign", hjust = 0,
+        x = -10, y = arrow_vertical_len + 5 + 10, vjust = 0,
+        label = "pre-emptive\ncampaign",
         size = annot_text_size, lineheight = line_height
     ) +
-    annotate(
-        "text",
-        x = 12, y = 100,
-        label = "without\nvaccination", hjust = 0,
-        size = annot_text_size, lineheight = line_height
+    # Custom Legend
+    # Line 1: No vaccination (dotted)
+    annotate("segment",
+        x = -15, xend = -11, y = arrow_y_2 + text_v_shift, yend = arrow_y_2 + text_v_shift, linetype = "dotted", color = "black",
+        linewidth = 1
     ) +
-    annotate(
-        "text",
-        x = 6.5, y = 12, # Moved down significantly
-        label = "with\nvaccination", hjust = 0,
-        size = annot_text_size, lineheight = line_height
-    ) +
-    scale_x_continuous(limits = c(-4, 25)) +
-    scale_linetype_manual(values = c("No vacc" = "dashed", "Vacc" = "solid")) +
-    scale_x_continuous(limits = c(-4, 25)) +
+    annotate("text", x = -9.5, y = arrow_y_2 + text_v_shift, label = "no vaccination", hjust = 0, size = annot_text_size) +
+    # Line 2: With vaccination (solid)
+    annotate("segment", x = -15, xend = -11, y = arrow_y_2 - text_v_shift, yend = arrow_y_2 - text_v_shift, linetype = "solid", linewidth = 1, color = "firebrick") +
+    annotate("text", x = -9.5, y = arrow_y_2 - text_v_shift, label = "pre-emptive campaign", hjust = 0, size = annot_text_size) +
+    # Box: Cases reduced
+    annotate("tile", x = -13, y = arrow_y_2 - 3 * text_v_shift, fill = "firebrick", height = 10, width = 5, alpha = 0.5) +
+    annotate("text", x = -9.5, y = arrow_y_2 - 3 * text_v_shift, label = "more cases reduced", hjust = 0, size = annot_text_size) +
+    scale_y_continuous(limits = common_ylim) +
+    scale_x_continuous(limits = common_xlim, breaks = c(-10, 0, 10, 20)) +
+    scale_linetype_manual(values = c("No vacc" = "dotted", "Pre-emptive" = "solid")) +
+    scale_color_manual(values = c("No vacc" = "black", "Pre-emptive" = "firebrick")) +
+    guides(linetype = "none", color = "none") +
+    # guide_legend(
+    #     override.aes = list(
+    #         shape = c("No vacc", "Pre-emptive"),
+    #         linetype = c("dotted", "solid"),
+    #         color = c("black", "firebrick")
+    #     ), linetype = "none"
+    # ) +
     labs(x = xlabel, y = ylabel, title = "") +
     theme_classic(base_size = theme_base_size) +
-    theme(legend.position = "none")
+    theme(legend.position = "top")
 
 # Display the plot
 print(plt_pre)
 # ggsave(paste0("plots/schematic_plt_pre_", tstamp(), ".pdf"),
 #         plt_pre,
-#         device = cairo_pdf,
+#         device = "pdf",
 #         width=1.2*fgw2,
 #         height=1.2*fgw2,
 #         units = "mm")
@@ -321,12 +341,16 @@ print(plt_pre)
 ```{r}
 # Create plots --------------------------------------------
 # Panel 1: Main example with vaccine effect
-plt_react <- ggplot(dlong, aes(week, value, linetype = name, shape = name, group = name)) +
+# Filter dlong_all for Reactive
+dlong_react <- dlong_all %>%
+    filter(name %in% c("No vacc", "Reactive"))
+
+plt_react <- ggplot(dlong_react, aes(week, value, linetype = name, shape = name, group = name, color = name)) +
 
     # Vaccination impact rectangle
     geom_rect(
         data = d,
-        aes(xmin = week, xmax = lead(week), ymin = `Vacc`, ymax = `No vacc`),
+        aes(xmin = week, xmax = lead(week), ymin = `Reactive`, ymax = `No vacc`),
         fill = "steelblue",
         alpha = 0.3,
         color = NA,
@@ -336,61 +360,36 @@ plt_react <- ggplot(dlong, aes(week, value, linetype = name, shape = name, group
     # Step lines for clarity
     geom_step(linewidth = step_linewidth) +
 
-    # Outbreak response triggered arrow and label
-    # geom_segment(
-    #     x = week_or, y = 10 + arrow_vertical_len, xend = week_or, yend = 10,
-    #     arrow = arrow(type = "closed", angle = 10, length = unit(3, "mm")),
-    #     inherit.aes = FALSE
-    # ) +
-    # annotate(
-    #     "text",
-    #     x = week_or - 0.5, y = 38,
-    #     label = "outbreak\nresponse triggered",
-    #     hjust = 0.5, size = annot_text_size, lineheight = line_height
-    # ) +
-
     # Vaccination started arrow and label
     geom_segment(
-        x = week_vax, y = 32 + arrow_vertical_len, xend = week_vax, yend = 32,
+        x = week_react_vax, y = 32 + arrow_vertical_len, xend = week_react_vax, yend = 32,
         arrow = arrow(type = "closed", angle = 10, length = unit(3, "mm")),
         inherit.aes = FALSE
     ) +
     annotate(
         "text",
-        x = week_vax, y = 60,
-        label = "reactive\ncampaign", hjust = 1,
+        x = week_react_vax, y = 32 + arrow_vertical_len + 10,
+        label = "reactive\ncampaign", hjust = 1, vjust = 0,
         size = annot_text_size, lineheight = line_height
     ) +
-
-    # Vaccine takes effect arrow and label
-    # geom_segment(
-    #     x = week_vax_eff, y = 122 + arrow_vertical_len, xend = week_vax_eff, yend = 122,
-    #     arrow = arrow(type = "closed", angle = 10, length = unit(3, "mm")),
-    #     inherit.aes = FALSE
-    # ) +
-    # annotate(
-    #     "text",
-    #     x = week_vax_eff, y = 147,
-    #     label = "vaccine\ntakes effect", hjust = 1,
-    #     size = text_size, lineheight = line_height
-    # ) +
-
-    # Scenario labels
-    annotate(
-        "text",
-        x = 12, y = 100,
-        label = "without\nvaccination", hjust = 0,
-        size = annot_text_size, lineheight = line_height
+    # Custom Legend
+    # Line 1: No vaccination (dotted)
+    annotate("segment",
+        x = -15, xend = -11, y = arrow_y_2 + text_v_shift, yend = arrow_y_2 + text_v_shift, linetype = "dotted", color = "black",
+        linewidth = 1
     ) +
-    annotate(
-        "text",
-        x = 6.5, y = 12,
-        label = "with\nvaccination", hjust = 0,
-        size = annot_text_size, lineheight = line_height
-    ) +
-    scale_x_continuous(limits = c(0, 25)) +
-    scale_linetype_manual(values = c("No vacc" = "dashed", "Vacc" = "solid")) +
-    scale_x_continuous(limits = c(0, 25)) +
+    annotate("text", x = -9.5, y = arrow_y_2 + text_v_shift, label = "no vaccination", hjust = 0, size = annot_text_size) +
+    # Line 2: With vaccination (solid)
+    annotate("segment", x = -15, xend = -11, y = arrow_y_2 - text_v_shift, yend = arrow_y_2 - text_v_shift, linetype = "solid", linewidth = 1, color = "steelblue") +
+    annotate("text", x = -9.5, y = arrow_y_2 - text_v_shift, label = "reactive campaign", hjust = 0, size = annot_text_size) +
+    # Box: Cases reduced
+    annotate("tile", x = -13, y = arrow_y_2 - 3 * text_v_shift, fill = "steelblue", height = 10, width = 5, alpha = 0.5) +
+    annotate("text", x = -9.5, y = arrow_y_2 - 3 * text_v_shift, label = "fewer cases reduced", hjust = 0, size = annot_text_size) +
+    scale_y_continuous(limits = common_ylim) +
+    scale_x_continuous(limits = common_xlim, breaks = c(-10, 0, 10, 20)) +
+    scale_linetype_manual(values = c("No vacc" = "dotted", "Reactive" = "solid")) +
+    scale_color_manual(values = c("No vacc" = "black", "Reactive" = "steelblue")) +
+    guides(linetype = "none", color = "none") +
     labs(x = xlabel, y = ylabel) +
     theme_classic(base_size = theme_base_size) +
     theme(legend.position = "none")
@@ -399,7 +398,7 @@ plt_react
 
 # ggsave(paste0("plots/schematic_plt_react_", tstamp(), ".pdf"),
 #         plt_react,
-#         device = cairo_pdf,
+#         device = "pdf",
 #         width=1.2*fgw2,
 #         height=1.2*fgw2,
 #         units = "mm")
@@ -408,17 +407,37 @@ plt_react
 # Combined Pre-emptive and Reactive Schematic
 ```{r}
 # Standardize x-axis scale
-scale_x_common <- scale_x_continuous(limits = c(-4, 25), breaks = seq(0, 25, 5))
+scale_x_common <- scale_x_continuous(limits = common_xlim, breaks = c(-10, 0, 10, 20))
 
 # Prepare Left Plot (Pre-emptive)
 p_pre <- plt_pre +
     scale_x_common +
+    # annotate("text",
+    #     x = -10, y = 30,
+    #     label = "pre-emptive\nvaccination starts", hjust = 0,
+    #     size = annot_text_size, lineheight = line_height
+    # ) +
+    # annotate("text",
+    #     x = 5, y = 80,
+    #     label = "large number of\ncases averted", color = "firebrick",
+    #     hjust = 0, size = annot_text_size, fontface = "italic"
+    # ) +
     guides(linetype = "none") +
     theme_tight()
 
 # Prepare Right Plot (Reactive) - remove y axis stuff
 p_react <- plt_react +
     scale_x_common +
+    # annotate("text",
+    #     x = week_react_vax, y = 60,
+    #     label = "reactive\ncampaign starts", hjust = 1,
+    #     size = annot_text_size, lineheight = line_height
+    # ) +
+    # annotate("text",
+    #     x = 11, y = 80,
+    #     label = "fewer cases\naverted", color = "steelblue",
+    #     hjust = 0, size = annot_text_size, fontface = "italic"
+    # ) +
     guides(linetype = "none") +
     theme_tight() +
     theme(
@@ -432,39 +451,51 @@ plt_combined <- p_pre + p_react + plot_layout(axis_titles = "collect")
 
 print(plt_combined)
 
-ggsave(paste0("plots/epi_curve_combined_", tstamp(), ".pdf"),
-    plt_combined,
-    device = cairo_pdf,
-    width = fgw2 * 1.2,
-    height = fgw1 * 1.6,
-    units = "mm"
-)
+# ggsave(paste0("plots/epi_curve_combined_", tstamp(), ".pdf"),
+#     plt_combined,
+#     device = "pdf",
+#     width = fgw2 * 1.2,
+#     height = fgw1 * 1.6,
+#     units = "mm"
+# )
 ```
 
 # Vaccination area
 
 ```{r}
-# Create a dummy grid for 9 districts (3x3)
-districts <- expand.grid(x = 1:3, y = 1:3)
-districts$ID <- 1:9
+# Create a grid for 8 districts (2 cols x 4 rows)
+districts <- expand.grid(x = 1:2, y = 1:4)
+districts$ID <- 1:nrow(districts)
 districts$risk <- "safe"
 
-# Outbreaks at diagonal elements: (1,1), (2,2), (3,3)
-# These correspond to IDs where x == y
-outbreak_ids <- districts$ID[districts$x == districts$y]
+# Outbreaks at: (1,1), (2,2), (3,1), (4,2) in matrix notation
+# Mapping Matrix rows to Cartesian y (assuming Row 1 = Top = y=4):
+# (1,1) -> x=1, y=4
+# (2,2) -> x=2, y=3
+# (3,1) -> x=1, y=2
+# (4,2) -> x=2, y=1
+target_coords <- tibble(
+    x = c(1, 2, 1, 2),
+    y = c(4, 3, 2, 1)
+)
+
+outbreak_ids <- districts %>%
+    inner_join(target_coords, by = c("x", "y")) %>%
+    pull(ID)
+
 districts$risk[districts$ID %in% outbreak_ids] <- "Outbreak"
 
 # Define Pre-emptive Vaccination Zone:
-# "first two rows belong to the first two columns"
-# x in 1:2 AND y in 1:2
-pre_vax_ids <- districts$ID[districts$x <= 2 & districts$y <= 2]
+# "Pre-emptive vaccination targets the bottom 4 cells" (Row 3 & Row 4) -> y=1, y=2
+pre_vax_ids <- districts$ID[districts$y <= 2]
 
 # Plotting function
 plot_districts <- function(strategy_name, vaccinated_ids, vacc_col = "firebrick") {
     districts$vaccinated <- ifelse(districts$ID %in% vaccinated_ids, "Yes", "No")
 
     ggplot(districts, aes(x = x, y = y)) +
-        geom_tile(aes(fill = vaccinated), color = "white", linewidth = 2) +
+        # Reduce grid line thickness (linewidth=0.5)
+        geom_tile(aes(fill = vaccinated), color = "white", linewidth = 0.5) +
 
         # Outbreak markers - Bold Asterisk
         geom_text(
@@ -475,46 +506,47 @@ plot_districts <- function(strategy_name, vaccinated_ids, vacc_col = "firebrick"
         ) +
         scale_fill_manual(values = c(
             "No" = "grey90",
-            "Yes" = alpha(vacc_col, 0.4)
+            # Ensure color consistency with other panels
+            "Yes" = vacc_col
         )) +
         guides(fill = "none") +
         theme_void(base_size = theme_base_size) +
-        # labs(title = strategy_name) +
         theme_tight() +
         theme(
             legend.position = "none"
         )
 }
 
-annot_y <- 3.9
+annot_y <- 0.0
 # Pre-emptive: Target specific zone + Legend Items
 p_area_pre <- plot_districts("Pre-emptive", pre_vax_ids, "firebrick") +
     # Legend: Outbreaks
-    annotate("text", x = 0.8, y = annot_y, label = "*", size = 16, vjust = 0.8) +
-    annotate("text", x = 0.95, y = annot_y, label = "outbreaks", hjust = 0, size = annot_text_size) +
+    annotate("text", x = 0.5, y = annot_y, label = "*", size = 16, vjust = 0.8) +
+    annotate("text", x = 0.65, y = annot_y, label = "outbreaks", hjust = 0, size = annot_text_size) +
     # Legend: Targeted
-    annotate("tile", x = 2.2, y = annot_y, fill = alpha("firebrick", 0.4), height = 0.3, width = 0.3) +
-    annotate("text", x = 2.45, y = annot_y, label = "pre-emptive\nvaccination", hjust = 0, size = annot_text_size, lineheight = 0.9, vjust = 0.5) +
-    coord_fixed(ylim = c(0.6, 3.6), clip = "off")
+    annotate("tile", x = 1.8, y = annot_y, fill = "firebrick", height = 0.3, width = 0.3) +
+    annotate("text", x = 2.1, y = annot_y, label = "pre-emptive\ncampaign", hjust = 0, size = annot_text_size, lineheight = 0.9, vjust = 0.5) +
+    coord_fixed(ylim = c(0, 4.6), xlim = c(0.4, 2.6), clip = "off")
+
 # Reactive: Target Outbreaks only + Legend Item
 p_area_react <- plot_districts("Reactive", outbreak_ids, "steelblue") +
     # Legend: Targeted
-    annotate("tile", x = 1.0, y = annot_y, fill = alpha("steelblue", 0.4), height = 0.3, width = 0.3) +
-    annotate("text", x = 1.25, y = annot_y, label = "reactive\nvaccination", hjust = 0, size = annot_text_size, lineheight = 0.9) +
-    coord_fixed(ylim = c(0.6, 3.6), clip = "off")
+    annotate("tile", x = 1, y = annot_y, fill = "steelblue", height = 0.3, width = 0.3) +
+    annotate("text", x = 1.3, y = annot_y, label = "reactive\ncampaign", hjust = 0, size = annot_text_size, lineheight = 0.9) +
+    coord_fixed(ylim = c(0, 4.6), xlim = c(0.4, 2.6), clip = "off")
 
 # Combine plots
 plt_area_combined <- p_area_pre + p_area_react + theme_tight()
 
 print(plt_area_combined)
 
-ggsave(paste0("plots/vacc_area_combined_", tstamp(), ".pdf"),
-    plt_area_combined,
-    device = cairo_pdf,
-    width = fgw2,
-    height = fgw2 * 0.6,
-    units = "mm"
-)
+# ggsave(paste0("plots/vacc_area_combined_", tstamp(), ".pdf"),
+#     plt_area_combined,
+#     device = "pdf",
+#     width = fgw2,
+#     height = fgw2,
+#     units = "mm"
+# )
 ```
 
 
@@ -549,11 +581,11 @@ plt_cost <- ggplot(df_cost, aes(x = Probability, y = Cost, color = Strategy)) +
     # annotate("text", x = tipping_point + 0.02, y = 10, label = "Tipping\nPoint", hjust=0, color="grey30") +
 
     annotate("text",
-        x = 0.1, y = 57, label = "Preemptive Cost:\nFixed Upfront",
+        x = 0.1, y = 57, label = "pre-emptive cost:\nhigh upfront cost",
         color = "firebrick", hjust = 0, size = annot_text_size
     ) +
     annotate("text",
-        x = 0.7, y = 100, label = "Reactive Cost:\nScale with Risk",
+        x = 0.7, y = 110, label = "reactive cost:\nscales with risk",
         color = "steelblue", hjust = 0.5, size = annot_text_size
     ) +
     theme_minimal(base_size = 18) +
@@ -581,98 +613,12 @@ plt_cost <- ggplot(df_cost, aes(x = Probability, y = Cost, color = Strategy)) +
 
 # ggsave(paste0("plots/cost_pre_react_", tstamp(), ".pdf"),
 #         plt_cost,
-#         device = cairo_pdf,
+#         device = "pdf",
 #         width=fgw2,
 #         height=fgw2,
 #         units = "mm")
 ```
 
-
-```{r}
-plt_cost_pre <- ggplot(
-    subset(df_cost, Strategy == "Preemptive"),
-    aes(x = Probability, y = Cost)
-) +
-    geom_line(size = 1.5, color = "firebrick") +
-    scale_y_continuous(limits = c(0, 120)) +
-    annotate("text",
-        x = 0.1, y = 60, label = "Preemptive Cost:\nFixed Upfront",
-        color = "firebrick", hjust = 0, size = annot_text_size
-    ) +
-    theme_classic(base_size = theme_base_size) +
-    labs(
-        title = "",
-        subtitle = "",
-        x = "Probability of Outbreak",
-        y = "Total Expected Cost"
-    ) +
-    theme(
-        legend.position = "none",
-        panel.grid.minor = element_blank()
-    ) +
-    theme(
-        # Size of the labels ("outbreak", "No", "Yes")
-        legend.text = element_text(size = 18),
-        # Size of the title ("vaccinated?")
-        legend.title = element_text(size = 18),
-        # Size of the square boxes (for Yes/No)
-        legend.key.size = unit(1, "cm"),
-
-        # Spacing between the two legends
-        legend.spacing.x = unit(1, "cm")
-    )
-print(plt_cost_pre)
-
-# ggsave(paste0("plots/cost_pre_", tstamp(), ".pdf"),
-#         plt_cost_pre,
-#         device = cairo_pdf,
-#         width=fgw2,
-#         height=fgw2,
-#         units = "mm")
-```
-
-```{r}
-plt_cost_react <- ggplot(
-    subset(df_cost, Strategy == "Reactive"),
-    aes(x = Probability, y = Cost)
-) +
-    geom_line(size = 1.5, color = "steelblue") +
-    scale_y_continuous(limits = c(0, 120)) +
-    annotate("text",
-        x = 0.7, y = 100, label = "Reactive Cost:\nScale with Risk",
-        color = "steelblue", hjust = 0.5, size = annot_text_size
-    ) +
-    theme_classic(base_size = theme_base_size) +
-    labs(
-        title = "",
-        subtitle = "",
-        x = "Probability of Outbreak",
-        y = "Total Expected Cost"
-    ) +
-    theme(
-        legend.position = "none",
-        panel.grid.minor = element_blank()
-    ) +
-    theme(
-        # Size of the labels ("outbreak", "No", "Yes")
-        legend.text = element_text(size = 18),
-        # Size of the title ("vaccinated?")
-        legend.title = element_text(size = 18),
-        # Size of the square boxes (for Yes/No)
-        legend.key.size = unit(1, "cm"),
-
-        # Spacing between the two legends
-        legend.spacing.x = unit(1, "cm")
-    )
-print(plt_cost_react)
-
-# ggsave(paste0("plots/cost_react_", tstamp(), ".pdf"),
-#         plt_cost_react,
-#         device = cairo_pdf,
-#         width=fgw2,
-#         height=fgw2,
-#         units = "mm")
-```
 
 # Combined Cost Schematic
 ```{r}
@@ -683,20 +629,47 @@ cost_pre_sloped <- cost_vaccine + (prob * slope_pre)
 df_cost_sloped <- data.frame(Probability = prob, Preemptive = cost_pre_sloped, Reactive = cost_react) %>%
     pivot_longer(cols = -Probability, names_to = "Strategy", values_to = "Cost")
 
+# Find intersection
+# We need to find where cost_pre_sloped approx cost_react.
+# cost_vaccine + prob*slope_pre = prob*(cost_vaccine + 0.4*cost_outbreak_impact)
+# 50 + 20p = p(50 + 60) = 110p
+# 50 = 90p -> p = 50/90 = 0.555
+intersection_x <- 50 / 90
+
 # Single Plot with both lines
 plt_cost_single <- ggplot(df_cost_sloped, aes(x = Probability, y = Cost, color = Strategy)) +
+    # Add shaded zones
+    annotate("rect",
+        xmin = 0, xmax = intersection_x, ymin = 0, ymax = Inf,
+        fill = "steelblue", alpha = 0.1
+    ) +
+    annotate("rect",
+        xmin = intersection_x, xmax = 1, ymin = 0, ymax = Inf,
+        fill = "firebrick", alpha = 0.1
+    ) +
+    annotate("text",
+        x = intersection_x / 2, y = 140,
+        label = "reactive optimal", color = "steelblue", fontface = "bold", size = annot_text_size
+    ) +
+    annotate("text",
+        x = intersection_x + (1 - intersection_x) / 2, y = 140,
+        label = "pre-emptive optimal", color = "firebrick", fontface = "bold", size = annot_text_size
+    ) +
+
+    # Threshold line
+    geom_vline(xintercept = intersection_x, linetype = "dotted", color = "grey30", linewidth = 1) +
     geom_line(linewidth = 1.5) +
     scale_color_manual(values = c("Preemptive" = "firebrick", "Reactive" = "steelblue")) +
     scale_y_continuous(limits = c(0, 150)) +
 
     # Annotations directly on the plot
     annotate("text",
-        x = 0.1, y = 65, label = "pre-emptive",
-        color = "firebrick", hjust = 0, size = annot_text_size
+        x = 0.1, y = 70, label = "pre-emptive:\nhigh upfront cost",
+        color = "firebrick", hjust = 0, size = annot_text_size, lineheight = line_height
     ) +
     annotate("text",
-        x = 0.74, y = 100, label = "reactive",
-        color = "steelblue", hjust = 0.5, size = annot_text_size
+        x = 0.74, y = 110, label = "reactive:\nscales with risk",
+        color = "steelblue", hjust = 0.5, size = annot_text_size, lineheight = line_height
     ) +
     theme_classic(base_size = theme_base_size) +
     labs(x = "probability of outbreak", y = "total expected cost") +
@@ -707,13 +680,13 @@ plt_cost_single <- ggplot(df_cost_sloped, aes(x = Probability, y = Cost, color =
 
 print(plt_cost_single)
 
-ggsave(paste0("plots/cost_", tstamp(), ".pdf"),
-    plt_cost_single,
-    device = cairo_pdf,
-    width = fgw1 * 1.3,
-    height = fgw1 * 1.3,
-    units = "mm"
-)
+# ggsave(paste0("plots/cost_", tstamp(), ".pdf"),
+#     plt_cost_single,
+#     device = "pdf",
+#     width = fgw1 * 1.3,
+#     height = fgw1 * 1.3,
+#     units = "mm"
+# )
 ```
 
 # Master 4-Panel Schematic
@@ -739,7 +712,7 @@ print(plt_4panel)
 
 ggsave(paste0("plots/schematic_4panel_", tstamp(), ".pdf"),
     plt_4panel,
-    device = cairo_pdf,
+    device = "pdf",
     width = fgw2 * 2.2, # Double width for clarity
     height = fgw2 * 2.2,
     units = "mm"
@@ -747,5 +720,5 @@ ggsave(paste0("plots/schematic_4panel_", tstamp(), ".pdf"),
 ```
 
 ```{r}
-1 + 1
+2 + 2
 ```
