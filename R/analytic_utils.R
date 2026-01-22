@@ -8,7 +8,7 @@ cost_pre_one <- function(p, R, r, nu = 1) {
 
 #' Reactive cost (normalized by C_V)
 #' @export
-cost_react_one <- function(p, R, r) {
+cost_react_one <- function(p, R, r, nu = 1) {
     p * (1 + (1 - r) * R)
 }
 
@@ -34,7 +34,7 @@ cost_pre_multi <- function(p, R, r, f, nu = 1) {
 
 #' Multi-population reactive cost
 #' @export
-cost_react_multi <- function(p, R, r, f) {
+cost_react_multi <- function(p, R, r, f, nu = 1) {
     ifelse(
         f < p,
         # reactive-limited
