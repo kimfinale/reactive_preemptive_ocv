@@ -21,6 +21,758 @@ library(ggplot2)
 source("R/load_all.R")
 ```
 
+
+## Multiple Populations with Heterogeneous Outbreak Risk
+
+We extend the equal-risk $n$-population model to allow heterogeneous
+outbreak probabilities across populations and to incorporate targeting
+accuracy for pre-emptive vaccination.
+
+The pre-emptive and reactive fractions satisfy 
+$$
+f_{\mathrm{pre}} + f_{\mathrm{react}} = f.
+$$
+
+### Exponential hazard model
+
+Assume each population has a latent outbreak hazard
+
+$$
+\Lambda_i \sim \mathrm{Exponential}(\theta), \qquad \theta > 0.
+$$
+
+The outbreak probability for population $i$ is 
+
+$$
+p_i = 1 - e^{-\Lambda_i}, \qquad p_i \in (0,1).
+$$
+
+Using the transformation $p = 1 - e^{-\lambda}$, we obtain the density
+$$
+f_P(p) = \theta (1-p)^{\theta - 1}, \qquad 0 < p < 1,
+$$ 
+
+so the outbreak-probability random variable 
+
+$$
+P \sim \mathrm{Beta}(1,\theta).
+$$
+
+Key properties:
+
+-   Mean outbreak probability $$
+    p_{\mathrm{mean}} = \mathbb{E}[P] = \frac{1}{1+\theta}.
+    $$
+
+-   If $\theta < 1$: mass is concentrated near $p = 1$ (many high-risk
+    populations).
+
+-   If $\theta = 1$: $P \sim \mathrm{Uniform}(0,1)$.
+
+-   If $\theta > 1$: risks are skewed toward 0.
+
+We treat $p_i$ as i.i.d. draws from $\mathrm{Beta}(1,\theta)$.
+
+### Tail selection under perfect targeting ($\rho=1$)
+
+Under perfect ranking, populations can be ordered by their outbreak
+probabilities $p_i$ from highest to lowest.
+
+Suppose a fraction $$
+q = f_{\mathrm{pre}} = \alpha f
+$$ of populations is vaccinated pre-emptively. This corresponds to
+vaccinating the top $q$ fraction of the risk distribution.
+
+### Risk cutoff associated with vaccinating fraction $q$
+
+Define the cutoff $p_{\mathrm{cut}}(q)$ as the unique value satisfying
+$$
+\Pr(P \ge p_{\mathrm{cut}}(q)) = q.
+$$ $p_{\mathrm{cut}}(q)$ is the minimum outbreak probability required to
+be included among the top $q$ populations. It is a deterministic
+function of $q$.
+
+For $P \sim \mathrm{Beta}(1,\theta)$,
+
+$$
+\Pr(P \ge t) = (1-t)^\theta.
+$$
+
+Thus, 
+$$
+q = (1 - p_{\mathrm{cut}}(q))^\theta
+\quad\Longrightarrow\quad
+p_{\mathrm{cut}}(q) = 1 - q^{1/\theta}.
+$$
+
+### Mean outbreak probability in the pre-emptive (top-risk) group
+
+Define 
+$$
+p_{\mathrm{pre}}(q) = \mathbb{E}[P \mid P \ge p_{\mathrm{cut}}(q)].
+$$
+
+Direct calculation yields 
+
+$$
+p_{\mathrm{pre}}(q)
+= 1 - \frac{\theta}{\theta + 1}\, q^{1/\theta},
+\qquad 0 < q \le 1.
+$$
+
+Checks:
+
+-   If $q = 1$: $$
+    p_{\mathrm{pre}}(1) = \frac{1}{1+\theta} = p_{\mathrm{mean}}.
+    $$
+
+-   As $q \to 0$: $$
+    p_{\mathrm{pre}}(q) \to 1.
+    $$
+
+### Mean outbreak probability in the remaining group
+
+Let 
+
+$$
+p_{\mathrm{rem}}(q) = \mathbb{E}[P \mid P < p_{\mathrm{cut}}(q)].
+$$
+
+Using the law of total expectation: 
+$$
+p_{\mathrm{mean}}
+= q\,p_{\mathrm{pre}}(q)
++ (1-q)\,p_{\mathrm{rem}}(q),
+$$ 
+
+so
+
+$$
+p_{\mathrm{rem}}(q)
+= \frac{p_{\mathrm{mean}} - q\,p_{\mathrm{pre}}(q)}{1-q}.
+$$
+
+Substituting $p_{\mathrm{mean}} = 1/(\theta+1)$ and the expression above
+for $p_{\mathrm{pre}}(q)$ gives
+
+$$
+p_{\mathrm{rem}}(q)
+= 
+\frac{
+\dfrac{1}{\theta+1}
+- q 
++ \dfrac{\theta}{\theta+1} q^{1 + 1/\theta}
+}{1 - q}.
+$$
+
+Using $q = f_{\mathrm{pre}} = \alpha f$, we write 
+$$
+p_{\mathrm{pre}}(\alpha f)
+= 1 - \frac{\theta}{\theta+1}(\alpha f)^{1/\theta},
+$$
+
+$$
+p_{\mathrm{rem}}(\alpha f)
+=
+\frac{
+\dfrac{1}{\theta+1}
+- \alpha f
++ \dfrac{\theta}{\theta+1} (\alpha f)^{1 + 1/\theta}
+}
+{1 - \alpha f}.
+$$
+
+### Mixed-strategy cost
+
+#### Pre-emptive group
+
+Normalized expected cost:
+
+$$
+c_{\mathrm{pre}}^{(n)}(\alpha) = \alpha f [1 + p_{\mathrm{pre}}(\alpha f)(1-\nu)R].
+$$
+
+#### Remaining group
+
+Fraction:
+
+$$
+1 - f_{\mathrm{pre}} = 1 - \alpha f.
+$$
+
+Mean outbreak probability:
+
+$$
+p' = p_{\mathrm{rem}}(\alpha f).
+$$
+
+Reactive capacity: 
+$$
+f_{\mathrm{react}} = (1-\alpha)f.
+$$
+
+Effective capacity per remaining population: 
+
+$$
+f' = \frac{f_{\mathrm{react}}}{1 - f_{\mathrm{pre}}}
+= \frac{(1-\alpha)f}{1 - \alpha f}.
+$$
+
+### Reactive-limited remaining group ($f' < p'$)
+
+$$
+c_{\mathrm{rem}}^{(n)}(p',f')
+= f' + \bigl(p' - fr' \bigr)R.
+$$
+
+Total cost: 
+$$
+c_{\mathrm{mixed}}^{(n)}(\alpha)
+= f + R\Bigl[(1-\alpha f)p' - (1-\alpha)f r \Bigr].
+$$
+
+### Reactive-rich remaining group ($f' \ge p'$)
+
+$$
+c_{\mathrm{rem}}^{(n)}(p',f')
+= p'\,\bigl[1 + (1-r)R\bigr].
+$$
+
+$$
+c_{\mathrm{mixed}}^{(n)}(\alpha)
+= 
+\alpha f
++ (1-\alpha f)\,p'\,\bigl[1 + (1-r)R\bigr].
+$$
+
+Unlike the equal-risk case, $p'$ is nonlinear, so
+$c_{\mathrm{mixed}}^{(n)}(\alpha)$ is not piecewise-linear, and no
+closed-form optimal $\alpha^*$ exists.
+
+We therefore compute $\alpha^*$ by 1D minimization: $$
+\alpha^* = 
+\arg\min_{\alpha\in[0,1]} c_{\mathrm{mixed}}^{(n)}(\alpha).
+$$
+
+## Imperfect Targeting
+
+We model imperfect targeting using a noisy prioritization score, such
+that the targeting parameter $\rho$ retains its literal interpretation
+as a rank correlation between true outbreak risk and the score used for
+prioritization. We allocate a fraction $q=\alpha f$ of total capacity to
+pre-emptive vaccination and reserve the remainder $(1-\alpha)f$ for
+reactive campaigns. Under heterogeneous risk and imperfect targeting,
+the pre-emptively vaccinated set is defined by ranking populations by a
+noisy score $S=\Lambda+\varepsilon$ that has Spearman's rank correlation
+$\rho$ with the true hazard $\Lambda$. This induces an
+$\alpha$-dependent remaining-group mean outbreak probability
+$p' = p_{\mathrm{rem}}(\alpha f,\rho)$, which is generally nonlinear in
+$\alpha$. Conditional on $p'$, the remaining group behaves like an
+equal-risk subproblem with effective reactive capacity
+$f'=(1-\alpha)f/(1-\alpha f)$, yielding reactive-rich and
+reactive-limited regimes depending on whether $f'\ge p'$ or $f'<p'$.
+Because $p'$ varies with $\alpha$, the mixed-strategy cost
+$c_{\mathrm{mix}}^{(n)}(\alpha)$ is not affine, so $\alpha^*$ is
+obtained by one-dimensional numerical minimization.
+
+### Latent outbreak risk
+
+Each population $i$ has a latent outbreak hazard
+
+$$
+\Lambda_i \sim \mathrm{Exponential}(\theta), \qquad \theta > 0.
+$$
+
+The outbreak probability for population $i$ is
+
+$$
+P_i = 1 - e^{-\Lambda_i}, \qquad P_i \in (0,1).
+$$
+
+Marginally,
+
+$$
+P \sim \mathrm{Beta}(1,\theta),
+$$
+
+with mean outbreak probability
+
+$$
+p_{\mathrm{mean}} = \mathbb{E}[P] = \frac{1}{1+\theta}.
+$$
+
+Because $P$ is a strictly increasing function of $\Lambda$, ranking
+populations by $P$ or by $\Lambda$ is equivalent.
+
+### Noisy prioritization score and definition of $\rho$
+
+True outbreak risk is not directly observed. Instead, populations are
+ranked according to a noisy score
+
+$$
+S_i = \Lambda_i + \varepsilon_i,
+$$
+
+where
+
+$$
+\varepsilon_i \stackrel{i.i.d.}{\sim} \mathcal{N}(0,\sigma^2),
+\qquad
+\varepsilon_i \perp \Lambda_i.
+$$ Targeting accuracy is defined as the rank correlation
+
+$$
+\rho \equiv \mathrm{corr}_{\mathrm{rank}}(\Lambda, S),
+$$
+
+where $\mathrm{corr}_{\mathrm{rank}}(\cdot,\cdot)$ denotes Spearman’s
+rank correlation.
+
+-   $\sigma = 0$ implies $\rho = 1$ (perfect ranking).
+-   $\sigma \to \infty$ implies $\rho = 0$ (random ranking).
+
+For exponential $\Lambda$ and additive Gaussian noise, the mapping
+$\sigma \mapsto \rho$ is monotone but does not admit a closed-form
+expression. In practice, $\sigma(\rho)$ is obtained numerically and
+treated as known.
+
+### Selection rule for pre-emptive vaccination
+
+Let
+
+$$
+q = f_{\mathrm{pre}} = \alpha f
+$$
+
+denote the fraction of populations vaccinated pre-emptively.
+
+Populations are ranked by the score $S$, and the pre-emptive group
+consists of those satisfying
+
+$$
+S \ge s_{\mathrm{cut}}(q),
+$$
+
+where the score cutoff $s_{\mathrm{cut}}(q)$ is defined implicitly by
+
+$$
+\Pr(S \ge s_{\mathrm{cut}}(q)) = q.
+$$
+
+Since $S = \Lambda + \varepsilon$, we have
+
+$$
+\Pr(S \ge s)
+=
+\mathbb{E}\!\left[
+1 - \Phi\!\left(\frac{s-\Lambda}{\sigma}\right)
+\right],
+\qquad
+\Lambda \sim \mathrm{Exponential}(\theta),
+$$
+
+where $\Phi(\cdot)$ denotes the standard normal CDF. The cutoff
+$s_{\mathrm{cut}}(q)$ is obtained by solving this equation for a given
+$q$.
+
+### Mean outbreak probability in the pre-emptive group
+
+The mean outbreak probability among pre-emptively vaccinated populations
+is
+
+$$
+p_{\mathrm{pre}}(q,\sigma)
+=
+\mathbb{E}[P \mid S \ge s_{\mathrm{cut}}(q)]
+=
+\mathbb{E}[1 - e^{-\Lambda} \mid S \ge s_{\mathrm{cut}}(q)].
+$$
+
+Using Bayes’ rule, this can be written as
+
+$$
+p_{\mathrm{pre}}(q,\sigma)
+=
+\frac{
+\mathbb{E}\!\left[
+(1 - e^{-\Lambda})
+\left\{
+1 - \Phi\!\left(\frac{s_{\mathrm{cut}}(q)-\Lambda}{\sigma}\right)
+\right\}
+\right]
+}{
+\mathbb{E}\!\left[
+1 - \Phi\!\left(\frac{s_{\mathrm{cut}}(q)-\Lambda}{\sigma}\right)
+\right]
+}.
+$$
+
+By construction, the denominator equals $q$, so
+
+$$
+p_{\mathrm{pre}}(q,\sigma)
+=
+\frac{1}{q}
+\mathbb{E}\!\left[
+(1 - e^{-\Lambda})
+\left\{
+1 - \Phi\!\left(\frac{s_{\mathrm{cut}}(q)-\Lambda}{\sigma}\right)
+\right\}
+\right].
+$$
+
+### Mean outbreak probability in the remaining group
+
+The mean outbreak probability among the remaining populations is
+
+$$
+p_{\mathrm{rem}}(q,\sigma)
+=
+\mathbb{E}[P \mid S < s_{\mathrm{cut}}(q)].
+$$
+
+Equivalently,
+
+$$
+p_{\mathrm{rem}}(q,\sigma)
+=
+\frac{1}{1-q}
+\mathbb{E}\!\left[
+(1 - e^{-\Lambda})
+\Phi\!\left(\frac{s_{\mathrm{cut}}(q)-\Lambda}{\sigma}\right)
+\right].
+$$
+
+By construction, the overall mean is preserved:
+
+$$
+q\,p_{\mathrm{pre}}(q,\sigma)
++
+(1-q)\,p_{\mathrm{rem}}(q,\sigma)
+=
+p_{\mathrm{mean}}.
+$$
+
+#### Effective Reactive Capacity
+
+Among the remaining fraction $1-q = 1-\alpha f$ of populations:
+
+$$
+f_{\mathrm{react}} = (1-\alpha)f,
+\qquad
+f' = \frac{f_{\mathrm{react}}}{1-q}
+= \frac{(1-\alpha)f}{1-\alpha f}.
+$$
+
+The remaining group behaves like an equal-risk subproblem with outbreak
+probability $p'$ and effective capacity $f'$.
+
+## Step 5: Remaining-Group Cost Regimes
+
+Two regimes arise:
+
+### Reactive-rich remaining group ($f' \ge p'$)
+
+$$
+c_{\mathrm{rem,per}} = p'\,[1 + (1-r)R].
+$$
+
+### Reactive-limited remaining group ($f' < p'$)
+
+$$
+c_{\mathrm{rem,per}} = f' + (p' - f'r)R.
+$$
+
+#### Total Mixed-Strategy Cost
+
+The normalized expected cost per population is $$
+c_{\mathrm{mix}}^{(n)}(\alpha)
+= q [1 + p_{\mathrm{pre}}(q)(1-\nu)R] + (1-q)\,c_{\mathrm{rem,per}},
+$$ where $q = \alpha f$.
+
+Because $p'$ varies with $\alpha$, the function
+$c_{\mathrm{mix}}^{(n)}(\alpha)$ is generally **nonlinear**, unlike the
+piecewise-linear form in the equal-risk model.
+
+#### Determination of the Optimal Pre-emptive Fraction
+
+The optimal allocation is obtained by one-dimensional minimization: $$
+\alpha^*
+=
+\arg\min_{\alpha \in [0,1]}
+c_{\mathrm{mix}}^{(n)}(\alpha).
+$$
+
+This replaces the closed-form corner/kink solution available in the
+equal-risk case.
+
+### Visualization
+
+#### Core simulation utilities
+
+#### Core simulation utilities
+
+Functions `sim_lambda_P`, `spearman_rho_given_sigma`, `calibrate_sigma_for_rho`, `score_cutoff`, and `estimate_pre_rem_means` are defined in `R/analytic_utils.R`.
+
+
+#### Mixed cost and optimization over $\alpha$
+
+#### Mixed cost and optimization over $\alpha$
+
+Functions `cost_mix_heterorisk` and `opt_alpha_heterorisk` are defined in `R/analytic_utils.R`.
+
+
+Plot 1 — cost profile $c_{\mathrm{mix}}^{(n)}(\alpha)$ with $\alpha^*$
+
+```{r}
+# ---- choose one scenario ----
+f_val <- 0.5
+r_val <- 0.4
+R_val <- 5
+p_mean <- 0.3
+theta <- 1 / p_mean - 1
+rho_val <- 0.6
+
+# ---- simulate latent risks once (large M helps smooth curves) ----
+M <- 1000
+# M <- 200000
+sim <- sim_lambda_P(M = M, theta = theta, seed = 1)
+lambda <- sim$lambda
+P <- sim$P
+
+opt <- opt_alpha_heterorisk(
+    f = f_val, r = r_val, R = R_val,
+    theta = theta, rho = rho_val,
+    lambda = lambda, P = P,
+    nu = 1,
+    grid_len = 401
+)
+
+df <- data.frame(alpha = opt$alpha_grid, cost = opt$cost_grid)
+alpha_star <- opt$alpha_star
+
+ggplot(df, aes(x = alpha, y = cost)) +
+    geom_line(linewidth = 1) +
+    geom_vline(
+        xintercept = alpha_star,
+        linetype = "dashed", color = "firebrick", linewidth = 0.9
+    ) +
+    labs(
+        title = bquote(italic(p)[mean] == .(p_mean) ~ "," ~
+            italic(r) == .(r_val) ~ "," ~
+            italic(R) == .(R_val) ~ "," ~
+            italic(f) == .(f_val) ~ "," ~
+            italic(rho) == .(rho_val)),
+        x = expression("Fraction of capacity pre-emptive " ~ italic(alpha)),
+        y = expression("Normalized per-population expected cost " ~ italic(c)[mix]^(italic(n)))
+    ) +
+    theme_light()
+```
+
+Plot 2 — $\alpha^*$ vs $r$ (fixed $R,f,p_{\mathrm{mean}},\rho$)
+
+```{r}
+r_grid <- seq(0, 1, by = 0.05)
+
+alpha_star_vec <- sapply(r_grid, function(r_i) {
+    opt_alpha_heterorisk(
+        f = f_val, r = r_i, R = R_val,
+        theta = theta, rho = rho_val,
+        lambda = lambda, P = P,
+        nu = 1,
+        grid_len = 301
+    )$alpha_star
+})
+
+df_ar <- data.frame(r = r_grid, alpha_star = alpha_star_vec)
+
+ggplot(df_ar, aes(x = r, y = alpha_star)) +
+    geom_line(linewidth = 1) +
+    coord_cartesian(ylim = c(0, 1)) +
+    labs(
+        title = bquote(italic(p)[mean] == .(p_mean) ~ "," ~
+            italic(R) == .(R_val) ~ "," ~
+            italic(f) == .(f_val) ~ "," ~
+            italic(rho) == .(rho_val)),
+        x = expression("Reactive effectiveness " ~ italic(r)),
+        y = expression("Optimal pre-emptive fraction " ~
+            italic(alpha)^"*")
+    ) +
+    theme_light()
+```
+
+Plot 3 — Heatmap of $\alpha^*(R,r)$ (fixed $f,p_{\mathrm{mean}},\rho$)
+
+```{r}
+r_vals <- seq(0, 1, length.out = 20)
+R_vals <- 10^seq(-2, 2, length.out = 20)
+
+grid <- expand.grid(r = r_vals, R = R_vals)
+
+grid$alpha_star <- mapply(function(r_i, R_i) {
+    opt_alpha_heterorisk(
+        f = f_val, r = r_i, R = R_i,
+        theta = theta, rho = rho_val,
+        lambda = lambda, P = P,
+        nu = 1,
+        grid_len = 201
+    )$alpha_star
+}, grid$R, grid$r)
+
+ggplot(grid, aes(x = r, y = R, fill = alpha_star)) +
+    geom_tile() +
+    scale_y_log10() +
+    # Colorbar
+    scale_fill_viridis_c(
+        option = "viridis",
+        name = expression(italic(alpha)^"*")
+    ) +
+    labs(
+        title = bquote(italic(p)[mean] == .(p_mean) ~ "," ~
+            italic(f) == .(f_val) ~ "," ~
+            italic(rho) == .(rho_val)),
+        x = expression(italic(r)),
+        y = expression(italic(R)),
+        fill = expression(italic(alpha)^"*")
+    ) +
+    theme_light()
+
+```
+
+Plot 4 — $\alpha^*$ vs $\rho$
+
+```{r}
+f_val <- 0.5
+r_val <- 0.6
+R_val <- 20
+p_mean <- 0.3
+theta <- 1 / p_mean - 1
+
+# ---- Simulate latent risks once ----
+# M <- 200000
+M <- 1000
+sim <- sim_lambda_P(M = M, theta = theta, seed = 1)
+lambda <- sim$lambda
+P <- sim$P
+
+# ---- Compute alpha* across rho ----
+rho_grid <- seq(0, 1, by = 0.05)
+
+alpha_star_vec <- sapply(rho_grid, function(rho_i) {
+    opt_alpha_heterorisk(
+        f = f_val, r = r_val, R = R_val, theta = theta,
+        rho = rho_i, lambda = lambda, P = P,
+        nu = 1,
+        grid_len = 401
+    )$alpha_star
+})
+
+df_rho <- data.frame(rho = rho_grid, alpha_star = alpha_star_vec)
+
+# ---- Plot ----
+ggplot(df_rho, aes(x = rho, y = alpha_star)) +
+    geom_line(linewidth = 1) +
+    coord_cartesian(ylim = c(0, 1)) +
+    labs(
+        title = bquote(italic(p)[mean] == .(p_mean) ~ "," ~
+            italic(r) == .(r_val) ~ "," ~
+            italic(R) == .(R_val) ~ "," ~
+            italic(f) == .(f_val)),
+        x = expression("Targeting accuracy (Spearman rank correlation) " ~ italic(rho)),
+        y = expression("Optimal pre-emptive fraction " ~ italic(alpha)^"*")
+    ) +
+    theme_light()
+```
+
+Plot 5 — $c_{\mathrm{mix}}^{(n)}$, $\alpha^*$ vs $\rho$
+
+```{r}
+f_val <- 0.5
+r_val <- 0.4
+R_val <- 5
+p_mean <- 0.3
+theta <- 1 / p_mean - 1
+rho_vals <- c(0.2, 0.6, 1.0) # <- three facets (edit as you like)
+
+# ---- simulate latent risks once (keep fixed across rho for fair comparison) ----
+
+M <- 1000
+# M <- 200000
+sim <- sim_lambda_P(M = M, theta = theta, seed = 1)
+lambda <- sim$lambda
+P <- sim$P
+
+# ---- compute cost profile for each rho ----
+
+df_all <- purrr::map_dfr(rho_vals, function(rho_val) {
+    opt <- opt_alpha_heterorisk(
+        f = f_val,
+        r = r_val,
+        R = R_val,
+        theta = theta,
+        rho = rho_val,
+        lambda = lambda,
+        P = P,
+        nu = 1,
+        grid_len = 401
+    )
+
+    data.frame(
+        alpha      = opt$alpha_grid,
+        cost       = opt$cost_grid,
+        rho        = rho_val,
+        alpha_star = opt$alpha_star
+    )
+})
+
+# ---- one vline per facet ----
+
+df_vline <- df_all |>
+    distinct(rho, alpha_star) |>
+    mutate(
+        rho_lab = factor(
+            rho,
+            levels = rho_vals,
+            labels = paste0("italic(rho)==", rho_vals)
+        )
+    )
+
+# ---- facet labels ----
+df_all <- df_all |>
+    mutate(
+        rho_lab = factor(
+            rho,
+            levels = rho_vals,
+            labels = paste0("italic(rho)==", rho_vals)
+        )
+    )
+
+# ---- plot ----
+ggplot(df_all, aes(x = alpha, y = cost)) +
+    geom_line(linewidth = 1) +
+    geom_vline(
+        data = df_vline,
+        aes(xintercept = alpha_star),
+        linetype = "dashed",
+        color = "firebrick",
+        linewidth = 0.9
+    ) +
+    facet_wrap(~rho_lab, labeller = label_parsed) +
+    labs(
+        title = bquote(
+            italic(p)[mean] == .(p_mean) ~ "," ~
+                italic(r) == .(r_val) ~ "," ~
+                italic(R) == .(R_val) ~ "," ~
+                italic(f) == .(f_val)
+        ),
+        x = expression("Fraction of capacity pre-emptive " ~ italic(alpha)),
+        y = expression("Normalized per-population expected cost " ~
+            italic(c)[mix]^(italic(n)))
+    ) +
+    theme_light()
+
+```
+
 # Spatially correlated outbreak risks and spillover
 
 This section presents a description of the outbreak and vaccination model. The exposition is organized to move from baseline risk, to spillover, to vaccination, and finally to expected costs. The framework is static (one-year) and designed to balance realism with analytical transparency.
@@ -1152,32 +1904,44 @@ This section explores how the proportional reduction parameter $r$ varies as a f
 
 We model the dynamics of Susceptible ($S$), Infectious ($I$), Recovered ($R$), and Vaccinated ($V$) individuals. The vaccination campaign is implemented as a flow from $S$ to $V$ at a daily rate $\rho$ during the campaign window $[t_{\text{start}}, t_{\text{start}} + t_{\text{dur}}]$.
 
+To achieve a target vaccine coverage proportion $C$ over a campaign duration $D$, the required daily rate $\rho$ (applied to the remaining eligible population) is determined by:
+$$
+\rho = -\frac{\ln(1 - C)}{D}
+$$
+
 The proportional reduction $r$ is defined as:
 $$
-r = 1 - \frac{\text{Cumulative Cases (Vaccination)}}{\text{Cumulative Cases (Baseline)}}
+r = 1 - \frac{\text{Cumulative cases (vaccination)}}{\text{Cumulative cases (baseline)}}
 $$
 
 ```{r}
-# Example Simulation
+# Example simulation
+
+# Calculate required vaccination rate for 90% coverage in 14 days
+target_coverage <- 0.9
+vacc_duration <- 14
+rho_calc <- -log(1 - target_coverage) / vacc_duration
+
 params <- list(
     N = 100000,
     I0 = 10,
     R0 = 2.5,
     gamma = 0.2,
     ve = 0.8,
-    rho = 0.05
+    rho = rho_calc,
+    vacc_duration = vacc_duration
 )
 
-# Baseline (No vaccination)
+# Baseline (no vaccination)
 sim_novax <- run_sir_vaccination(
     N = params$N, I0 = params$I0, R0 = params$R0, gamma = params$gamma,
     rho = 0, vacc_start = 0, vacc_duration = 0, ve = 0
 )
 
-# With Vaccination (starting at day 30 for 10 days)
+# With vaccination (starting at day 30)
 sim_vax <- run_sir_vaccination(
     N = params$N, I0 = params$I0, R0 = params$R0, gamma = params$gamma,
-    rho = params$rho, vacc_start = 30, vacc_duration = 10, ve = params$ve
+    rho = params$rho, vacc_start = 30, vacc_duration = params$vacc_duration, ve = params$ve
 )
 
 # Calculate r
