@@ -402,7 +402,7 @@ df_cost <- expand.grid(
         strategy = factor(
             strategy,
             levels = c("c_pre", "c_react"),
-            labels = c("Pre-emptive (nu=1)", "Reactive")
+            labels = c("Pre-emptive (\u03bd=1)", "Reactive")
         )
     )
 
@@ -1030,7 +1030,7 @@ ggplot(df_multi, aes(x = r, y = p_star, color = factor(R))) +
            label = expression(italic(f)))
 ```
 
-#### 3d surface of $p_{\mathrm{crit}}^{(n)}$ across $R$ and $r$
+#### 3D surface of $p_{\mathrm{crit}}^{(n)}$ across $R$ and $r$
 
 ```{r}
 f_val <- 0.3
@@ -1087,18 +1087,18 @@ fig_pstar_multi <-
       )
     )
   ) %>%
-  add_trace(
-    data = df_labels_n,
-    x = ~R,
-    y = ~r,
-    z = ~p,
-    type = "scatter3d",
-    mode = "text",
-    text = ~lab,
-    textposition = "middle center",
-    textfont = list(size = titlefontsize, color = "black"),
-    showlegend = FALSE
-  ) %>%
+  # add_trace(
+  #   data = df_labels_n,
+  #   x = ~R,
+  #   y = ~r,
+  #   z = ~p,
+  #   type = "scatter3d",
+  #   mode = "text",
+  #   text = ~lab,
+  #   textposition = "middle center",
+  #   textfont = list(size = titlefontsize, color = "black"),
+  #   showlegend = FALSE
+  # ) %>%
   add_surface(
     x = R_vals,
     y = r_vals,
@@ -1108,16 +1108,16 @@ fig_pstar_multi <-
     colorscale = list(c(0, "grey50"), c(1, "grey50")),
     name = "p=f"
   ) %>%
-  add_trace(
-    x = 100,
-    y = 1,
-    z = f_val,
-    type = "scatter3d",
-    mode = "text",
-    text = "<i>p</i> = <i>f</i>",
-    textfont = list(size = titlefontsize, color = "black"),
-    showlegend = FALSE
-  ) %>% 
+  # add_trace(
+  #   x = 100,
+  #   y = 1,
+  #   z = f_val,
+  #   type = "scatter3d",
+  #   mode = "text",
+  #   text = "<i>p</i> = <i>f</i>",
+  #   textfont = list(size = titlefontsize, color = "black"),
+  #   showlegend = FALSE
+  # ) %>% 
   layout(
     scene = list(
       camera = camera,
@@ -1126,7 +1126,7 @@ fig_pstar_multi <-
         titlefont = list(size = titlefontsize),
         tickfont = list(size = tickfontsize)),
       xaxis = list(
-        title = "<i>R</i> =C<sub>I</sub>/C<sub>V</sub>",
+        title = "<i>R</i>",
         type  = "log",
         tickvals = c(0.01, 0.1, 1, 10, 100),
         ticktext = c("0.01", "0.1", "1", "10", "100"),
@@ -1134,7 +1134,7 @@ fig_pstar_multi <-
         tickfont = list(size = tickfontsize)
       ),
       zaxis = list(
-        title = "<i>p<sub>*</sub></i>", 
+        title = "<i>p</i>", 
         titlefont = list(size = titlefontsize),
         tickfont = list(size = tickfontsize))
     )
@@ -1167,7 +1167,7 @@ df_heatmap_n <- expand.grid(R = R_vals, r = r_vals) %>%
   )
 
 # --- 2. Multiple boundary curves for p_crit^(n) ---
-p_levels <- seq(0.2, 0.7, by = 0.1)
+p_levels <- seq(0.2, 0.8, by = 0.3)
 
 df_boundary_n <- lapply(p_levels, function(p_target) {
   tmp <- lapply(R_vals, function(RR) {
@@ -1200,15 +1200,15 @@ df_boundary_labels <- df_boundary_n %>%
   )
 
 # --- 4. Region labels (optional) ---
-R_pre  <- 10
-r_pre  <- 0.2
-R_reac <- 10
-r_reac <- 0.8
+R_pre  <- 12
+r_pre  <- 0.15
+R_reac <- 12
+r_reac <- 0.85
 
 df_labels_n <- data.frame(
   R   = c(R_pre,        R_reac),
   r   = c(r_pre,        r_reac),
-  lab = c("pre-emptive", "reactive")
+  lab = c("pre-emptive favored", "reactive favored")
 )
 
 # --- 5. Heatmap with multiple boundary lines (all same style) ---
@@ -1282,31 +1282,40 @@ $p_{\mathrm{crit}}^{(n)}$ also has a piecewise form.
 
 Here the equality occurs in the **reactive-limited regime**, so we set
 $$
-c_{\mathrm{pre}}^{(n)} = f + (1-f)pR, \qquad
+c_{\mathrm{pre}}^{(n)} = f + (1-f\nu)pR, \qquad
 c_{\mathrm{react}}^{(n)} = f + (p - fr)R.
 $$
 
-Setting them equal and simplifying: $$
-p_{\mathrm{crit}}^{(n)} = r.
-$$ In this regime, the critical probability, $p_{\mathrm{crit}}^{(n)}$ , is
-independent of $R$: only the relative size of $f$ and $p$ matters.
+Setting them equal and simplifying:
+$$
+(1-f\nu)pR = (p-fr)R \implies p - f\nu p = p - fr \implies f\nu p = fr \implies p = \frac{r}{\nu}.
+$$
+Thus,
+$$
+p_{\mathrm{crit}}^{(n)} = \frac{r}{\nu}.
+$$
+In this regime, the critical probability is independent of $R$ but depends on the pre-emptive effectiveness $\nu$ and the reactive effectiveness $r$. This regime applies when $p_{\mathrm{crit}}^{(n)} \ge f \iff r/\nu \ge f$.
 
 #### Case 2: capacity abundant ($f \ge p$)
 
 Here the equality occurs in the **reactive-rich** regime, so we set $$
-c_{\mathrm{pre}}^{(n)} = f + (1-f)pR, \qquad
+c_{\mathrm{pre}}^{(n)} = f + (1-f\nu)pR, \qquad
 c_{\mathrm{react}}^{(n)} = p\bigl[1 + (1-r)R\bigr].
 $$
 
 Equating and solving for $p$:
-
 $$
-p_{\mathrm{crit}}^{(n)} = \frac{f}{1 + R(f - r)}.
+f + pR - f\nu pR = p + pR - prR \\
+f = p[1 + R(1 - r) - R(1 - f\nu)] \\
+f = p[1 + R(f\nu - r)]
+$$
+So,
+$$
+p_{\mathrm{crit}}^{(n)} = \frac{f}{1 + R(f\nu - r)}.
 $$
 
 Consistency with the reactive-rich regime requires
-$p_{\mathrm{crit}}^{(n)} \le f$, which holds whenever $f \ge r$ and
-$R > 0$.
+$p_{\mathrm{crit}}^{(n)} \le f$, which holds whenever $1 + R(f\nu - r) \ge 1 \iff R(f\nu - r) \ge 0 \iff f\nu \ge r$.
 
 ### Summary
 
@@ -1314,25 +1323,24 @@ Putting the two regimes together: $$
 p_{\mathrm{crit}}^{(n)}(f,r,R)
 =
 \begin{cases}
-r, & f \le r,\\[8pt]
-\dfrac{f}{1 + R(f - r)}, & f > r.
+\dfrac{r}{\nu}, & f \le \dfrac{r}{\nu},\\[8pt]
+\dfrac{f}{1 + R(f\nu - r)}, & f > \dfrac{r}{\nu}.
 \end{cases}
 $$
 
 **Interpretation:**
 
--   If $f \le r$, the critical outbreak probability,
-    $p_{\mathrm{crit}}^{(n)}$, does not depend on $R$ and is simply $r$.
--   If $f > r$, the critical probability depends on the outbreak–to–vaccination
+-   If $f\nu \le r$ (or $f \le r/\nu$), the critical outbreak probability is simply $r/\nu$.
+-   If $f\nu > r$, the critical probability depends on the outbreak–to–vaccination
     cost ratio, $R$:
     -   larger $R$ (more costly outbreaks) $\Rightarrow$ smaller
         $p_{\mathrm{crit}}^{(n)}$,
-    -   larger $f$ (more capacity) $\Rightarrow$ larger
+    -   larger $f\nu$ (more effective capacity) $\Rightarrow$ larger
         $p_{\mathrm{crit}}^{(n)}$, for fixed $R$ and $r$.
 
 ### Costs
 
-```{r econ-demo-data, echo=FALSE}
+```{r econ-demo-data}
 # Load life expectancy and GDP data
 life_exp_data <- 
   as.data.frame(fread("data/wpp_life_expectancy_20241022.csv"))
@@ -1533,13 +1541,18 @@ is $(1-\alpha)f$. Two regimes arise:
 Every outbreak among the non-pre-emptive group receives a reactive
 campaign. For any non-pre-emptive population, the expected cost is
 
--   outbreak w.p. $p$: $C_{\mathrm{V}} + (1-r)C_{\mathrm{I}}$
+-   outbreak w.p. $p$: $C_V + (1-r)C_I$
 -   no outbreak w.p. $1-p$: $0$
 
-Hence $$
+Hence 
+$$
 C_{\mathrm{react}}^{(n)}(\alpha)
-= (1-\alpha f)\,p\left(C_{\mathrm{V}} + (1-r)C_{\mathrm{I}}\right),
-$$ and the total normalized cost is $$
+= (1-\alpha f)\,p\left(C_V + (1-r)C_I\right),
+$$
+
+and the total normalized cost is 
+
+$$
 c_{\mathrm{mixed}}^{(n)}(\alpha)
 = \alpha f [1 + p(1-\nu)R] + (1-\alpha f)\,p\left[1 + (1-r)R\right],
 \qquad \text{if } (1-\alpha)f \ge p(1-\alpha f).
@@ -1549,24 +1562,31 @@ $$
 
 Only a fraction of outbreaks among the non-pre-emptive group can be
 reactively vaccinated. The fraction of outbreaks that receive a reactive
-campaign is $$
+campaign is 
+
+$$
 q(\alpha) = \frac{(1-\alpha)f}{p(1-\alpha f)} \in (0,1).
 $$
 
 Conditioning on an outbreak in the non-pre-emptive group: - with
-probability $q(\alpha)$: pay $C_{\mathrm{V}} + (1-r)C_{\mathrm{I}}$, -
-with probability $1-q(\alpha)$: pay $C_{\mathrm{I}}$.
+probability $q(\alpha)$: pay $C_V + (1-r)C_I$, -
+with probability $1-q(\alpha)$: pay $C_I$.
 
-A convenient simplification yields $$
+A convenient simplification yields 
+$$
 C_{\mathrm{react}}^{(n)}(\alpha)
-= f_{\mathrm{react}} C_{\mathrm{V}}
-+ \left[(1-f_{\mathrm{pre}})p - f_{\mathrm{react}}r\right] C_{\mathrm{I}},
-$$ so total normalized cost becomes $$
+= f_{\mathrm{react}} C_V
++ \left[(1-f_{\mathrm{pre}})p - f_{\mathrm{react}}r\right] C_I,
+$$ 
+
+so total normalized cost becomes 
 $$
 c_{\mathrm{mixed}}^{(n)}(\alpha)
 = f + R\left[p - (1-\alpha)fr - \alpha f p \nu \right],
 \qquad \text{if } (1-\alpha)f < p(1-\alpha f).
-$$ Equivalently, $$
+$$ 
+Equivalently, 
+$$
 c_{\mathrm{mixed}}^{(n)}(\alpha)
 = f + R\left[p - fr + \alpha f(r-p\nu)\right],
 \qquad \text{(reactive-limited)}.
@@ -1586,11 +1606,39 @@ $$ where $\alpha_c$ is the regime-switch point.
 
 #### Regime-switch point $\alpha_c$
 
-Solve the boundary condition $$
+Solve the boundary condition 
+
+$$
 (1-\alpha)f = p(1-\alpha f).
-$$ For $f>p$, this yields $$
+$$ For $f>p$, this yields 
+
+$$
 \alpha_c = \frac{f-p}{f(1-p)} \in (0,1).
-$$ If $f \le p$, then $\alpha_c \le 0$ and the reactive-rich regime is
+$$
+
+$(f-p)$ represents the **surplus capacity** available if acting purely reactively. 
+
+Now, consider the "cost" of shifting doses to pre-emptive vaccination:
+
+1.  Net cost of one pre-emptive dose: 
+    When you use 1 dose pre-emptively:
+    -   You spend **1** dose from your stockpile.
+    -   You prevent an outbreak with probability $p$, saving **$p$** expected future reactive doses.
+    -   The **net reduction** in your surplus is $1 - p$. (This is the "waste" rate).
+
+2.  Maximum allowable pre-emptive doses:
+    How many pre-emptive doses ($D_{\mathrm{pre}}$) can you afford? You can continue until you have consumed your entire surplus:
+    $$ D_{\mathrm{pre}} \times (\text{Net Cost}) = \text{Surplus} $$
+    $$ D_{\mathrm{pre}} \times (1 - p) = f - p $$
+    $$ D_{\mathrm{pre}} = \frac{f - p}{1 - p} $$
+
+3.  Converting to a fraction ($\alpha_c$):
+    To find the critical *fraction* of your total capacity ($f$), we divide the allowable doses by the total supply $f$:
+    $$ \alpha_c = \frac{D_{\mathrm{pre}}}{\text{total cpacity}} = \frac{\left( \frac{f - p}{1 - p} \right)}{f} = \frac{f - p}{f(1 - p)}. $$
+
+Thus, the factor $f(1-p)$ in the denominator arises from dividing the absolute surplus ($f-p$) by the waste rate ($1-p$) to get doses, and then dividing by $f$ to get the fraction.
+
+If $f \le p$, then $\alpha_c \le 0$ and the reactive-rich regime is
 not attainable for any $\alpha \in [0,1]$ (reactive capacity is always
 limited).
 
@@ -1599,11 +1647,17 @@ limited).
 Let $\alpha^*$ denote the optimal fraction of capacity allocated to
 pre-emptive vaccination.
 
-#### 1) Scarce capacity: $f \le p$
+#### 1. Scarce capacity: $f \le p$
 
-Reactive capacity is always limited. From the reactive-limited cost $$
+Reactive capacity is always limited. From the reactive-limited cost 
+
+$$
 c_{\mathrm{mixed}}^{(n)}(\alpha)=f + R\left[p-fr+\alpha f(r-p)\right],
-$$ the slope in $\alpha$ is proportional to $(r-p)$, so $$
+$$ 
+
+the slope in $\alpha$ is proportional to $(r-p)$, so 
+
+$$
 \alpha^* =
 \begin{cases}
 0, & r > p\nu \quad (\text{pure reactive})\\
@@ -1612,7 +1666,7 @@ $$ the slope in $\alpha$ is proportional to $(r-p)$, so $$
 \end{cases}
 $$
 
-#### 2) Abundant capacity: $f > p$
+#### 2. Abundant capacity: $f > p$
 
 Now $\alpha_c \in (0,1)$ is feasible.
 
@@ -1622,7 +1676,9 @@ Now $\alpha_c \in (0,1)$ is feasible.
     $\alpha=\alpha_c$ (largest feasible pre-emptive share while keeping
     the remaining group reactive-rich).
 
-The switching critical value is $$
+The switching critical value is 
+
+$$
 R_{\mathrm{crit}} = \frac{1-p}{p(\nu-r)}.
 $$
 
@@ -1858,7 +1914,8 @@ We extend the equal-risk $n$-population model to allow heterogeneous
 outbreak probabilities across populations and to incorporate targeting
 accuracy for pre-emptive vaccination.
 
-The pre-emptive and reactive fractions satisfy $$
+The pre-emptive and reactive fractions satisfy 
+$$
 f_{\mathrm{pre}} + f_{\mathrm{react}} = f.
 $$
 
@@ -1870,14 +1927,20 @@ $$
 \Lambda_i \sim \mathrm{Exponential}(\theta), \qquad \theta > 0.
 $$
 
-The outbreak probability for population $i$ is $$
+The outbreak probability for population $i$ is 
+
+$$
 p_i = 1 - e^{-\Lambda_i}, \qquad p_i \in (0,1).
 $$
 
 Using the transformation $p = 1 - e^{-\lambda}$, we obtain the density
 $$
 f_P(p) = \theta (1-p)^{\theta - 1}, \qquad 0 < p < 1,
-$$ so the outbreak-probability random variable $$
+$$ 
+
+so the outbreak-probability random variable 
+
+$$
 P \sim \mathrm{Beta}(1,\theta).
 $$
 
@@ -1921,7 +1984,8 @@ $$
 \Pr(P \ge t) = (1-t)^\theta.
 $$
 
-Thus, $$
+Thus, 
+$$
 q = (1 - p_{\mathrm{cut}}(q))^\theta
 \quad\Longrightarrow\quad
 p_{\mathrm{cut}}(q) = 1 - q^{1/\theta}.
@@ -1929,11 +1993,14 @@ $$
 
 ### Mean outbreak probability in the pre-emptive (top-risk) group
 
-Define $$
+Define 
+$$
 p_{\mathrm{pre}}(q) = \mathbb{E}[P \mid P \ge p_{\mathrm{cut}}(q)].
 $$
 
-Direct calculation yields $$
+Direct calculation yields 
+
+$$
 p_{\mathrm{pre}}(q)
 = 1 - \frac{\theta}{\theta + 1}\, q^{1/\theta},
 \qquad 0 < q \le 1.
@@ -1951,15 +2018,20 @@ Checks:
 
 ### Mean outbreak probability in the remaining group
 
-Let $$
+Let 
+
+$$
 p_{\mathrm{rem}}(q) = \mathbb{E}[P \mid P < p_{\mathrm{cut}}(q)].
 $$
 
-Using the law of total expectation: $$
+Using the law of total expectation: 
+$$
 p_{\mathrm{mean}}
 = q\,p_{\mathrm{pre}}(q)
 + (1-q)\,p_{\mathrm{rem}}(q),
-$$ so
+$$ 
+
+so
 
 $$
 p_{\mathrm{rem}}(q)
@@ -1979,7 +2051,8 @@ p_{\mathrm{rem}}(q)
 }{1 - q}.
 $$
 
-Using $q = f_{\mathrm{pre}} = \alpha f$, we write $$
+Using $q = f_{\mathrm{pre}} = \alpha f$, we write 
+$$
 p_{\mathrm{pre}}(\alpha f)
 = 1 - \frac{\theta}{\theta+1}(\alpha f)^{1/\theta},
 $$
@@ -2019,11 +2092,14 @@ $$
 p' = p_{\mathrm{rem}}(\alpha f).
 $$
 
-Reactive capacity: $$
+Reactive capacity: 
+$$
 f_{\mathrm{react}} = (1-\alpha)f.
 $$
 
-Effective capacity per remaining population: $$
+Effective capacity per remaining population: 
+
+$$
 f' = \frac{f_{\mathrm{react}}}{1 - f_{\mathrm{pre}}}
 = \frac{(1-\alpha)f}{1 - \alpha f}.
 $$
@@ -2035,7 +2111,8 @@ c_{\mathrm{rem}}^{(n)}(p',f')
 = f' + \bigl(p' - fr' \bigr)R.
 $$
 
-Total cost: $$
+Total cost: 
+$$
 c_{\mathrm{mixed}}^{(n)}(\alpha)
 = f + R\Bigl[(1-\alpha f)p' - (1-\alpha)f r \Bigr].
 $$
