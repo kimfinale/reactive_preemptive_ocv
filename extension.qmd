@@ -1711,7 +1711,6 @@ allocate_preemptive_patches_with_topup <- function(patch_df, patches, score_cell
 
     list(V_pre_cell = V_pre, used = used)
 }
-
 ```
 
 ```{r}
@@ -1806,7 +1805,6 @@ simulate_preemptive_by_patchsize <- function(p_true, adj,
         n_seeds = n_seeds
     )
 }
-
 ```
 
 ```{r}
@@ -1815,8 +1813,8 @@ p_aug <- augment_risk_spillover(p_true, adj, eta = eta_val)
 
 rank_out <- make_ranking(p_aug, rho_target = 0.8, seed = 1)
 score_spill <- rank_out$score
-
 ```
+
 
 ```{r}
 estimate_cost_by_patchsize <- function(p_true, adj, score_cell,
@@ -1868,10 +1866,10 @@ estimate_cost_by_patchsize <- function(p_true, adj, score_cell,
 
     do.call(rbind, res)
 }
-
 ```
 
 Simulation across patch size
+
 ```{r}
 eta_score <- eta_val # often set equal to true eta
 
@@ -1997,34 +1995,6 @@ VE_{\text{overall}} = 1 - (f(1-VE_{\text{direct}})(1-VE_{\text{indirect}}) + (1-
 $$
 
 where $VE_{\text{overall}}$ is a function of coverage ($f$), direct vaccine efficacy ($VE_{\text{direct}}$), and indirect vaccine effectiveness ($VE_{\text{indirect}}$). This formula accounts for the fact that vaccinated individuals are protected by both the vaccine and herd effects, while unvaccinated individuals benefit only from herd effects. See [this blog post](https://www.jonghoonk.com/blog/posts/vaccine_effectiveness/) for more details.
-
-```{r}
-# Example calculation
-baseline_cases <- 50000
-coverage_levels <- seq(0, 1, by = 0.1)
-ve_direct_val <- 0.7
-ive_val <- 0.3 # Assumed indirect effectiveness for this example
-
-# Overall effectiveness
-cases_ove <- sapply(coverage_levels, function(cov) {
-    calculate_cases_overall_effectiveness(
-        cases_baseline = baseline_cases,
-        coverage = cov,
-        ve_direct = ve_direct_val,
-        ve_indirect = ive_val
-    )$cases_post
-})
-
-results_ove <- data.frame(
-    coverage = coverage_levels,
-    cases = cases_ove,
-    dve = ve_direct_val,
-    ive = ive_val,
-    ove = 1 - cases_ove / baseline_cases
-)
-
-knitr::kable(results_ove, digits = 3, caption = "OVE calculation example")
-```
 
 # Comparison of ODE and OVE approaches
 
