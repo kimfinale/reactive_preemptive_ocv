@@ -13,66 +13,130 @@
 #'
 #' @return Data frame with time course of compartments and cumulative cases
 #' @export
-run_sir_vaccination <- function(time_step = 0.1, duration = 365, N = 100000,
-                                I0 = 1, R0 = 2.0, gamma = 1 / 5,
-                                rho = 0.01, vacc_start = 20,
-                                vacc_duration = 10, ve = 0.7) {
-    beta <- R0 * gamma / N
-    times <- seq(0, duration, by = time_step)
-    n_steps <- length(times)
-
-    S <- numeric(n_steps)
-    I <- numeric(n_steps)
-    R <- numeric(n_steps)
-    V <- numeric(n_steps) # Vaccinated compartment (effectively Removed)
-    CumCases <- numeric(n_steps)
-
-    S[1] <- N - I0
-    I[1] <- I0
-    R[1] <- 0
-    V[1] <- 0
-    CumCases[1] <- I0
-
-    for (t in 2:n_steps) {
-        curr_time <- times[t - 1]
-
-        # Vaccination logic
-        # Assume a constant rate `rho` of the REMAINING Susceptibles are vaccinated
-        # if we are within the campaign window.
-        # Alternatively, `rho` could be a fraction of N per day.
-        # Let's assume rho is fraction of N per day target, but limited by available S.
-        # vacc_rate = rho * N (doses per day)
-        # effective_vacc_rate = min(vacc_rate, S) * ve
-        # Here, let's keep it simple: proportion of current S moving to V
-
-        is_campaign <- (curr_time >= vacc_start) && (curr_time < (vacc_start + vacc_duration))
+#' SIR model equations for deSolve
+#'
+#' @param time Current time
+#' @param state Named vector of state variables
+#' @param parameters Named vector of parameters
+#' @return List of derivatives
+sir_equations <- function(time, state, parameters) {
+    with(as.list(c(state, parameters)), {
+        # Check if within vaccination campaign
+        is_campaign <- (time >= vacc_start) && (time < (vacc_start + vacc_duration))
 
         # Force of infection
-        lambda <- beta * I[t - 1]
+        lambda <- beta * I / N
 
-        # Derivatives (approximate with Euler for simplicity, or use simple discrete step)
-        new_inf <- lambda * S[t - 1] * time_step
-        new_rec <- gamma * I[t - 1] * time_step
+        dS <- -lambda * S
+        dI <- lambda * S - gamma * I
+        dR <- gamma * I
+        dCumCases <- lambda * S
 
-        new_vac <- 0
         if (is_campaign) {
-            # Rate rho applied to S
-            new_vac <- rho * S[t - 1] * time_step * ve
+            # Vaccination moves people from S to R
+            # Rate rho is applied to current S
+            # Effective vaccination: rho * S * ve
+            rate_vax <- rho * S * ve
+            dS <- dS - rate_vax
+            dR <- dR + rate_vax
         }
 
-        # Updates
-        S[t] <- S[t - 1] - new_inf - new_vac
-        I[t] <- I[t - 1] + new_inf - new_rec
-        R[t] <- R[t - 1] + new_rec
-        V[t] <- V[t - 1] + new_vac
-        CumCases[t] <- CumCases[t - 1] + new_inf
+        list(c(dS, dI, dR, dCumCases))
+    })
+}
 
-        # Ensure non-negativity
-        if (S[t] < 0) S[t] <- 0
-        if (I[t] < 0) I[t] <- 0
+#' SIR model with simple vaccination (ODE version)
+#'
+#' @param time_step Numeric, time step for integration (and output)
+#' @param duration Numeric, total simulation duration (days)
+#' @param N Numeric, Total population size
+#' @param I0 Numeric, Initial infected individuals
+#' @param R0 Numeric, Basic reproduction number
+#' @param gamma Numeric, Recovery rate (1/infectious_period)
+#' @param coverage Numeric, Target vaccine coverage (proportion of population)
+#' @param vacc_start Numeric, Start time of vaccination campaign
+#' @param vacc_duration Numeric, Duration of vaccination campaign
+#' @param ve Numeric, Vaccine efficacy (0 to 1) applied to Susceptibles moving to Recovered/Vaccinated
+#'
+#' @return Data frame with time course of compartments and cumulative cases
+#' @export
+run_sir_vaccination <- function(time_step = 1, duration = 365, N = 100000,
+                                I0 = 1, R0 = 2.0, gamma = 1 / 5,
+                                coverage = 0.8, vacc_start = 20,
+                                vacc_duration = 10, ve = 0.7) {
+    # Ensure deSolve is available; if not, you might need to install it.
+    if (!requireNamespace("deSolve", quietly = TRUE)) {
+        stop("Package 'deSolve' is required for this function.")
     }
 
-    data.frame(time = times, S = S, I = I, R = R, V = V, CumCases = CumCases)
+    # Helper function for SIR equations with S -> R vaccination
+    sir_equations_internal <- function(time, state, parameters) {
+        with(as.list(c(state, parameters)), {
+            # Check if within vaccination campaign
+            is_campaign <- (time >= vacc_start) && (time < (vacc_start + vacc_duration))
+
+            # Force of infection
+            lambda <- beta * I / N
+
+            dS <- -lambda * S
+            dI <- lambda * S - gamma * I
+            dR <- gamma * I
+            dCumCases <- lambda * S
+
+            if (is_campaign) {
+                # Vaccination moves people from S to R (effectively)
+                # The rate rho accounts for both coverage and vaccine efficacy
+                rate_vax <- rho * S
+                dS <- dS - rate_vax
+                dR <- dR + rate_vax
+            }
+
+            list(c(dS, dI, dR, dCumCases))
+        })
+    }
+
+    # Calculate effective coverage (proportion of S to move to R)
+    effective_coverage <- coverage * ve
+
+    # Calculate daily vaccination rate (rho) to achieve effective_coverage
+    # Formula: rho = -log(1 - effective_coverage) / vacc_duration
+    if (vacc_duration > 0 && effective_coverage > 0 && effective_coverage < 1) {
+        rho <- -log(1 - effective_coverage) / vacc_duration
+    } else {
+        rho <- 0
+    }
+
+    beta <- R0 * gamma
+    times <- seq(0, duration, by = time_step)
+
+    # Initial state
+    state <- c(
+        S = N - I0,
+        I = I0,
+        R = 0,
+        CumCases = I0
+    )
+
+    parameters <- c(
+        beta = beta,
+        gamma = gamma,
+        rho = rho,
+        vacc_start = vacc_start,
+        vacc_duration = vacc_duration,
+        ve = ve, # Kept for parameter completeness, though absorbed into rho
+        N = N
+    )
+
+    # Solve ODE using Runge-Kutta 4 (rk4) with the internal equation function
+    out <- deSolve::ode(
+        y = state,
+        times = times,
+        func = sir_equations_internal,
+        parms = parameters,
+        method = "rk4"
+    )
+
+    as.data.frame(out)
 }
 
 #' Calculate Proportional Reduction (r) using ODE
@@ -81,17 +145,17 @@ run_sir_vaccination <- function(time_step = 0.1, duration = 365, N = 100000,
 #' @return List with r value, and data frames for no-vax and vax scenarios
 #' @export
 calculate_r_ode <- function(N = 100000, I0 = 1, R0 = 2.0, gamma = 1 / 5,
-                            vacc_start = 20, rho = 0.05, vacc_duration = 10, ve = 0.7, ...) {
-    # Run No Vaccination Baseline (rho = 0)
+                            vacc_start = 20, coverage = 0.8, vacc_duration = 10, ve = 0.7, ...) {
+    # Run No Vaccination Baseline (coverage = 0)
     sim_novax <- run_sir_vaccination(
         N = N, I0 = I0, R0 = R0, gamma = gamma,
-        rho = 0, vacc_start = 0, vacc_duration = 0, ve = 0, ...
+        coverage = 0, vacc_start = 0, vacc_duration = 0, ve = 0, ...
     )
 
     # Run With Vaccination
     sim_vax <- run_sir_vaccination(
         N = N, I0 = I0, R0 = R0, gamma = gamma,
-        rho = rho, vacc_start = vacc_start,
+        coverage = coverage, vacc_start = vacc_start,
         vacc_duration = vacc_duration, ve = ve, ...
     )
 
@@ -106,190 +170,178 @@ calculate_r_ode <- function(N = 100000, I0 = 1, R0 = 2.0, gamma = 1 / 5,
     )
 }
 
-#' Calculate Cases using Overall Effectiveness Approach
+#' Calculate cases using overall effectiveness approach
 #'
 #' A simple static model: Cases = Cases_Baseline * (1 - Overallwise_Effectiveness)
-#' Overall Effectiveness depends on coverage and possibly indirect effects.
+#' Overall Effectiveness depends on coverage, direct vaccine effectiveness (DVE), and indirect vaccine effectiveness (IVE).
+#' Formula: OVE = 1 - (coverage * (1 - DVE) * (1 - IVE) + (1 - coverage) * (1 - IVE))
 #'
 #' @param cases_baseline Numeric, estimated cases without vaccination
-#' @param coverage Numeric, proportion of population vaccinated
-#' @param ve_direct Numeric, direct vaccine efficacy
-#' @param ve_indirect_func Function, takes coverage and returns indirect protection factor (0-1)
+#' @param coverage Numeric, proportion of population vaccinated (f)
+#' @param ve_direct Numeric, direct vaccine efficacy (DVE)
+#' @param ve_indirect Numeric, indirect vaccine effectiveness (IVE)
 #'
 #' @return Numeric, estimated cases after vaccination
 #' @export
-calculate_cases_overall_effectiveness <- function(cases_baseline, coverage, ve_direct,
-                                                  ve_indirect_func = NULL) {
-    # Direct effect: vaccinated individuals are protected
-    # Simple approximation: weighted average of risk
-    # Risk_vax = Risk_unvax * (1 - ve_direct)
-    # This simple formula assumes determining effectiveness on the WHOLE population:
-    # Overall_VE = coverage * ve_direct + (1-coverage)*0 (if no indirect)
-    # But usually "Overall Effectiveness" includes indirect effects.
+#' Calculate cases using overall effectiveness approach
+#'
+#' Adjusts a baseline incidence time series by applying an overall effectiveness (OVE) reduction
+#' to cases occurring after the start of a vaccination campaign.
+#'
+#' @param incidence_baseline Numeric vector, daily (or per-step) incidence time series without vaccination
+#' @param time Numeric vector, time points corresponding to incidence_baseline
+#' @param coverage Numeric, proportion of population vaccinated (f) at the end of campaign
+#' @param ve_direct Numeric, direct vaccine efficacy (DVE)
+#' @param ve_indirect Numeric, indirect vaccine effectiveness (IVE)
+#' @param vacc_start Numeric, Time when vaccination reduction begins to apply
+#'
+#' @return List with updated cumulative cases time series `cases_post`, `incidence_post` and the calculated `ove`
+#' @export
+calculate_cases_overall_effectiveness <- function(incidence_baseline, time, coverage, ve_direct,
+                                                  ve_indirect = 0, vacc_start = 0) {
+    # OVE = 1 - (f * (1 - DVE) * (1 - IVE) + (1 - f) * (1 - IVE))
+    term_vaccinated <- coverage * (1 - ve_direct) * (1 - ve_indirect)
+    term_unvaccinated <- (1 - coverage) * (1 - ve_indirect)
 
-    # If we follow the blog post logic/standard Halloran definitions:
-    # Effectiveness is 1 - (Incidence_vax_pop / Incidence_unvax_pop)
+    relative_risk_overall <- term_vaccinated + term_unvaccinated
+    ove <- 1 - relative_risk_overall
 
-    # Here we want Total Cases Reduction.
-    # Let's define a simple user-provided "Overall Effectiveness" (OE)
-    # OE = f(coverage, ve_direct)
+    # Apply OVE to reducing incidence occurring AFTER vaccination start
+    incidence_post <- incidence_baseline
 
-    # Simple linear model (no herd immunity threshold non-linearity):
-    # OE = coverage * ve_direct
-
-    # If we have indirect effect:
-    # Indirect protection for unvac: I_unvac_reduc = f(coverage)
-    # Indirect protection for vac: usually assumed same or additional
-
-    # Let's use the provided logic: TotalCases = TotalCases_0 * (1 - OE)
-
-    # We can define OE using a standard "linear" assumption if func not provided
-    oe <- coverage * ve_direct
-
-    if (!is.null(ve_indirect_func)) {
-        # If indirect function provided, it adds to the effect.
-        # This is highly model dependent.
-        # Let's assume the function returns the "Indirect Effectiveness"
-        ie <- ve_indirect_func(coverage)
-        # Combined? 1 - (1-Direct)*(1-Indirect)?
-        # Or simply OE = DirectPart + IndirectPart?
-        # For this exercise, let's assume the user supplies the full OE function or we use simple linear.
-        oe <- ie # Assuming the function returns the full Overall Effectiveness
+    idx_after <- time > vacc_start
+    if (any(idx_after)) {
+        incidence_post[idx_after] <- incidence_baseline[idx_after] * (1 - ove)
     }
 
-    cases_post <- cases_baseline * (1 - oe)
-    return(list(cases_post = cases_post, oe = oe))
+    cases_post <- cumsum(incidence_post)
+
+    return(list(cases_post = cases_post, incidence_post = incidence_post, ove = ove))
 }
 
-simple_nonlinear_oe <- function(coverage, ve_direct, threshold = 0.8) {
-    # Toy model: Linear up to threshold, then rapid increase (herd immunity)
-    direct <- coverage * ve_direct
-    indirect <- 0
-    if (coverage > 0) {
-        indirect <- (coverage^2) * 0.5 # Arbitrary non-linear boost
-    }
-    pmin(1, direct + indirect)
+
+#' Stratified SIR model (2 groups) - Pre-emptive (No dynamic vaccination)
+#'
+#' @param time Current time
+#' @param state Named vector of state variables
+#' @param parameters Named vector of parameters
+#' @return List of derivatives
+#' @export
+sir_2grp_preemptive <- function(time, state, parameters) {
+    # Unpack state
+    S0 <- state["S0"]
+    I0 <- state["I0"]
+    R0 <- state["R0"]
+    C0 <- state["C0"]
+    S1 <- state["S1"]
+    I1 <- state["I1"]
+    R1 <- state["R1"]
+    C1 <- state["C1"]
+
+    # Unpack parameters
+    beta <- parameters["beta"]
+    gamma <- parameters["gamma"]
+
+    # Total population (sum of all compartments)
+    N_total <- S0 + I0 + R0 + S1 + I1 + R1
+
+    # Force of infection (assuming well-mixed population)
+    lambda <- beta * (I0 + I1) / N_total
+
+    # Group 0 (Non-Target)
+    dS0 <- -lambda * S0
+    dI0 <- lambda * S0 - gamma * I0
+    dR0 <- gamma * I0
+    dC0 <- lambda * S0
+
+    # Group 1 (Target)
+    dS1 <- -lambda * S1
+    dI1 <- lambda * S1 - gamma * I1
+    dR1 <- gamma * I1
+    dC1 <- lambda * S1
+
+    list(c(dS0, dI0, dR0, dC0, dS1, dI1, dR1, dC1))
 }
 
-#' Calculate Indirect Vaccine Effectiveness (IVE) from ODE
+#' Calculate Indirect Vaccine Effectiveness (IVE) from ODE (Instantaneous Pre-emptive)
 #'
 #' @param N Numeric, Total population size
 #' @param I0 Numeric, Initial infected individuals
 #' @param R0 Numeric, Basic reproduction number
 #' @param gamma Numeric, Recovery rate
 #' @param ve Numeric, Vaccine efficacy
-#' @param rho Numeric, Vaccination rate
-#' @param vacc_start Numeric, Start time of vaccination
-#' @param vacc_duration Numeric, Duration of vaccination
-#'
+#' @param coverage Numeric, Vaccine coverage (Target proportion of total population)
 #' @return List with time series of IVE and final IVE value
 #' @export
 calculate_ive_ode <- function(N = 100000, I0 = 1, R0 = 2.0, gamma = 1 / 5,
-                              ve = 0.7, rho = 0.05, vacc_start = 20, vacc_duration = 10) {
-    # 1. Run Baseline (Unmitigated) Trend: No Vax
-    sim_novax <- run_sir_vaccination(
-        N = N, I0 = I0, R0 = R0, gamma = gamma,
-        rho = 0, vacc_start = 0, vacc_duration = 0, ve = 0
+                              ve = 0.7, coverage = 0.8, time_step = 1,
+                              duration = 365) {
+    # 1. Setup Parameters
+    beta <- R0 * gamma
+    params <- c(beta = beta, gamma = gamma)
+
+    # --- Population Groups ---
+    # Group 0: Non-target (remains unvaccinated).
+    # Group 1: Target (receives vaccination).
+    # IVE is calculated by comparing the attack rate in the non-target group (Group 0)
+    # between the vaccinated and baseline scenarios.
+    N1 <- N * coverage
+    N0 <- N - N1
+    # I0 is assumed to be in the target group, which makes it easy to compute the IVE based on the non-target group
+    I0_1 <- I0
+
+    # --- Scenario B: Baseline (No Vax) ---
+    # R initialized to 0
+    y0_base <- c(
+        S0 = N0, I0 = 0, R0 = 0, C0 = 0,
+        S1 = N1 - I0_1, I1 = I0_1, R1 = 0, C1 = 0
     )
 
-    # 2. Run Vaccination Scenario
-    sim_vax <- run_sir_vaccination(
-        N = N, I0 = I0, R0 = R0, gamma = gamma,
-        rho = rho, vacc_start = vacc_start,
-        vacc_duration = vacc_duration, ve = ve
+    times <- seq(0, duration, by = time_step)
+
+    out_novax <- deSolve::ode(y = y0_base, times = times, func = sir_2grp_preemptive, parms = params)
+    df_novax <- as.data.frame(out_novax)
+
+    # --- Scenario A: Vaccination ---
+
+    N1_susceptible <- N1 - I0_1
+    R1_init <- N1_susceptible * ve
+    S1_init <- N1_susceptible * (1 - ve)
+
+    y0_vax <- c(
+        S0 = N0, I0 = 0, R0 = 0, C0 = 0,
+        S1 = S1_init, I1 = I0_1, R1 = R1_init, C1 = 0
     )
 
-    # IVE(t) = 1 - (Incidence_unvax_in_vax_pop(t) / Incidence_unvax_in_novax_pop(t))
-    # OR Cumulative risk version?
-    # The blog post usually refers to attack rate reduction.
-    # Let's use cumulative attack rate (Risk) to be consistent with "Overall Effectiveness" case calc.
+    out_vax <- deSolve::ode(y = y0_vax, times = times, func = sir_2grp_preemptive, parms = params)
+    df_vax <- as.data.frame(out_vax)
 
-    # Cumulative Risk Unvaccinated in NoVax Pop
-    # AR_novax(t) = CumCases_novax(t) / N
+    # --- Calculate IVE ---
+    # Compare AR in Group 0 (Never Vaccinated / Non-Target)
+    # AR0 = C0 / N0
 
-    # Cumulative Risk Unvaccinated in Vax Pop
-    # We need to track cases among UNVACCINATED separately in the Vax scenario.
-    # Our run_sir_vaccination tracks Total CumCases.
-    # We need to modify it or approximate.
-    # Wait, run_sir_vaccination only returns Total CumCases. It doesn't split Cases by status (S->I vs V->I).
-    # However, with a leaky vaccine (ve applied to S->I rate?), V individuals get infected at rate (1-ve)*lambda.
-    # If our model moves S -> V, then V people have reduced susceptibility.
-    # Our model:
-    # new_inf = lambda * S
-    # new_vac = rho * S
-    # V compartment accumulates vaccinated.
-    # Do V get infected?
-    # Looking at run_sir_vaccination code:
-    # S[t] <- S[t-1] - new_inf - new_vac
-    # I[t] <- I[t-1] + new_inf - new_rec
-    # It seems V compartment is "Removed" from S, but DOES NOT contribute to I?
-    # If V individuals don't get infected, it's a "Perfect" vaccine (VE=1) for those who take it?
-    # Wait, the code says:
-    # new_vac <- rho * S[t-1] * time_step * ve
-    # And V[t] <- V[t-1] + new_vac
-    # This implies that `new_vac` amount of people are effectively "immune" and removed from S.
-    # The remaining S are still susceptible.
-    # People who are "vaccinated but failed" (1-ve) stay in S?
-    # If new_vac only moves "protected" people, then "Total Population" in S+I+R+V = N.
-    # Then S people are the "Unvaccinated" (plus those who failed vax).
-    # The incidence in S is `new_inf`.
-    # The "Unvaccinated Population" is S(t).
-    # But in the NoVax scenario, "Unvaccinated Population" is S_novax(t).
+    # Baseline AR0
+    C0_novax <- df_novax$C0
+    AR0_novax <- rep(0, length(C0_novax))
+    if (N0 > 0) AR0_novax <- C0_novax / N0
 
-    # Actually, the user's previous request was for "Overall Effectiveness approach" where Cases_post = Cases_baseline * (1 - OE).
-    # And this request asks to compute IVE.
-    # If the model is "All-or-Nothing" (which the current implementation suggests: only `ve` fraction move to V),
-    # then those remaining in S are the "Unvaccinated" (including failures).
-    # The risk in the "Unvaccinated" group in Vax scenario vs NoVax scenario.
+    # Vax Scenario AR0
+    C0_vax <- df_vax$C0
+    AR0_vax <- rep(0, length(C0_vax))
+    if (N0 > 0) AR0_vax <- C0_vax / N0
 
-    # Let's refine the model or interpretation.
-    # Current model `run_sir_vaccination`:
-    # new_vac = rho * S * ve
-    # S -> V (immune)
-    # So effectively, `ve` % of vaccinated become immune, (1-ve)% stay in S.
-    # This is "All-or-Nothing".
-    # In this case, comparing Cumulative Risk in S_vax vs S_novax measures indirect protection.
-
-    # Risk_unvax_vax(t) = Cumulative_Infections_in_S_vax(t) / Initial_S
-    # Wait, the denominator changes.
-    # Force of Infection lambda(t) is lower in Vax scenario because I(t) is lower.
-    # IVE = 1 - (lambda_vax(t) / lambda_novax(t))?
-    # Or 1 - (CumCases_S_vax / N) / (CumCases_S_novax / N)?
-
-    # Let's use the Cumulative Cases reduction for the whole population as "Overall Effectiveness".
-    # Indirect Effectiveness (IVE) usually refers to 1 - (Risk_unprotected_vax / Risk_unprotected_novax).
-
-    # In our model, S are the unprotected.
-    # Risk_unprotected_vax(t) can be approximated by Int(lambda_vax) ?
-    # Probability of infection for a susceptible: 1 - exp(- int lambda dt).
-
-    # Let's calculate IVE based on 1 - (Cumulative Hazard Vax / Cumulative Hazard NoVax).
-    # CumHazard(t) = Sum(beta * I(t) / N * dt)
-
-    times <- sim_novax$time
-    dt <- times[2] - times[1]
-    beta <- R0 * gamma / N
-
-    lambda_novax <- beta * sim_novax$I
-    lambda_vax <- beta * sim_vax$I
-
-    cum_hazard_novax <- cumsum(lambda_novax) * dt
-    cum_hazard_vax <- cumsum(lambda_vax) * dt
-
-    # Prob of infection for a purely susceptible person
-    risk_novax <- 1 - exp(-cum_hazard_novax)
-    risk_vax <- 1 - exp(-cum_hazard_vax)
-
-    # IVE = 1 - (Risk_vax / Risk_novax)
-    ive_series <- 1 - (risk_vax / risk_novax)
-
-    # Handle 0/0 at t=0
-    ive_series[is.nan(ive_series)] <- 0
+    # IVE vector
+    ive_series <- numeric(length(AR0_novax))
+    valid <- AR0_novax > 1e-9
+    ive_series[valid] <- 1 - (AR0_vax[valid] / AR0_novax[valid])
 
     final_ive <- tail(ive_series, 1)
 
     list(
-        time = times, ive_series = ive_series, final_ive = final_ive,
-        risk_novax = risk_novax, risk_vax = risk_vax
+        ive = final_ive,
+        ive_series = ive_series,
+        time = times,
+        df_novax = df_novax,
+        df_vax = df_vax
     )
 }

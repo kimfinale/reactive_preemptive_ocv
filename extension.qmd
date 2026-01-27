@@ -810,7 +810,6 @@ Conditional on $p=(p_1,\dots,p_n)$, primary outbreaks occur independently:
 $$
 Y_i^{(0)} \mid p_i \sim \mathrm{Bernoulli}(p_i), \qquad i=1,\dots,n.
 $$
-
 ---
 
 ## Spillover-driven secondary outbreaks
@@ -1917,10 +1916,9 @@ $$
 ```{r}
 # Example simulation
 
-# Calculate required vaccination rate for 90% coverage in 14 days
+# Parameters
 target_coverage <- 0.9
 vacc_duration <- 14
-rho_calc <- -log(1 - target_coverage) / vacc_duration
 
 params <- list(
     N = 100000,
@@ -1928,20 +1926,20 @@ params <- list(
     R0 = 2.5,
     gamma = 0.2,
     ve = 0.8,
-    rho = rho_calc,
+    coverage = target_coverage,
     vacc_duration = vacc_duration
 )
 
 # Baseline (no vaccination)
 sim_novax <- run_sir_vaccination(
     N = params$N, I0 = params$I0, R0 = params$R0, gamma = params$gamma,
-    rho = 0, vacc_start = 0, vacc_duration = 0, ve = 0
+    coverage = 0, vacc_start = 0, vacc_duration = 0, ve = 0
 )
 
-# With vaccination (starting at day 30)
+# With vaccination (starting at day 21)
 sim_vax <- run_sir_vaccination(
     N = params$N, I0 = params$I0, R0 = params$R0, gamma = params$gamma,
-    rho = params$rho, vacc_start = 30, vacc_duration = params$vacc_duration, ve = params$ve
+    coverage = params$coverage, vacc_start = 21, vacc_duration = params$vacc_duration, ve = params$ve
 )
 
 # Calculate r
@@ -1954,7 +1952,7 @@ print(paste0("Vaccinated Cases: ", round(cases_vax)))
 print(paste0("Proportional Reduction r: ", round(r_calc, 3)))
 ```
 
-## Sensitivity Analysis: Delay and Efficacy
+## Sensitivity analysis: delay and efficacy
 
 We can systematically explore how $r$ changes with the delay in start time and vaccine efficacy.
 
@@ -1971,7 +1969,7 @@ for (i in seq_len(nrow(results))) {
         N = params$N, I0 = params$I0, R0 = results$R0[i], gamma = params$gamma,
         vacc_start = results$delay[i],
         ve = results$ve[i],
-        rho = params$rho,
+        coverage = params$coverage,
         vacc_duration = 10
     )
     results$r[i] <- res$r
@@ -1990,59 +1988,49 @@ ggplot(results, aes(x = delay, y = r, color = factor(ve))) +
     theme_light()
 ```
 
-# Overall Effectiveness Approach
+# Overall effectiveness approach
 
-Alternatively, we can compute the expected number of cases by directly applying an "Overall Effectiveness" factor to the baseline cases. This approach simplifies the dynamics by assuming that the total impact of vaccination (direct + indirect effects) can be captured by a single effectiveness parameter $VE_{overall}$.
+Alternatively, we can compute the expected number of cases by directly applying an "overall effectiveness" factor to the baseline cases. This approach simplifies the dynamics by assuming that the total impact of vaccination (direct + indirect effects) can be captured by a single effectiveness parameter $VE_{\text{overall}}$.
 
 $$
-\text{Cases}_{post} = \text{Cases}_{baseline} \times (1 - VE_{overall})
+VE_{\text{overall}} = 1 - (f(1-VE_{\text{direct}})(1-VE_{\text{indirect}}) + (1-f)(1-VE_{\text{indirect}})),
 $$
 
-Where $VE_{overall}$ is a function of coverage and direct vaccine efficacy ($VE_{direct}$). A simple linear approximation is $VE_{overall} = \text{Coverage} \times VE_{direct}$.
+where $VE_{\text{overall}}$ is a function of coverage ($f$), direct vaccine efficacy ($VE_{\text{direct}}$), and indirect vaccine effectiveness ($VE_{\text{indirect}}$). This formula accounts for the fact that vaccinated individuals are protected by both the vaccine and herd effects, while unvaccinated individuals benefit only from herd effects. See [this blog post](https://www.jonghoonk.com/blog/posts/vaccine_effectiveness/) for more details.
 
 ```{r}
-# Example Calculation
+# Example calculation
 baseline_cases <- 50000
 coverage_levels <- seq(0, 1, by = 0.1)
 ve_direct_val <- 0.7
+ive_val <- 0.3 # Assumed indirect effectiveness for this example
 
-# Simple Linear Model
-cases_linear <- sapply(coverage_levels, function(cov) {
-    calculate_cases_overall_effectiveness(baseline_cases, cov, ve_direct_val)$cases_post
-})
-
-# Non-linear Model (toy herd immunity effect)
-cases_nonlinear <- sapply(coverage_levels, function(cov) {
-    # Custom non-linear function
-    nonlinear_func <- function(c) pmin(1, c * ve_direct_val + (c^2) * 0.4)
+# Overall effectiveness
+cases_ove <- sapply(coverage_levels, function(cov) {
     calculate_cases_overall_effectiveness(
-        baseline_cases, cov, ve_direct_val,
-        ve_indirect_func = nonlinear_func
+        cases_baseline = baseline_cases,
+        coverage = cov,
+        ve_direct = ve_direct_val,
+        ve_indirect = ive_val
     )$cases_post
 })
 
-df_oe <- data.frame(
-    coverage = rep(coverage_levels, 2),
-    cases = c(cases_linear, cases_nonlinear),
-    model = rep(c("Linear", "Non-linear (Herd Immunity)"), each = length(coverage_levels))
+results_ove <- data.frame(
+    coverage = coverage_levels,
+    cases = cases_ove,
+    dve = ve_direct_val,
+    ive = ive_val,
+    ove = 1 - cases_ove / baseline_cases
 )
 
-ggplot(df_oe, aes(x = coverage, y = cases, color = model)) +
-    geom_line(linewidth = 1) +
-    labs(
-        title = "Cases vs Coverage: Overall Effectiveness Models",
-        subtitle = paste0("Baseline Cases: ", baseline_cases, ", Direct VE: ", ve_direct_val),
-        x = "Vaccination Coverage",
-        y = "Total Cases"
-    ) +
-    theme_light()
+knitr::kable(results_ove, digits = 3, caption = "OVE calculation example")
 ```
 
-# Comparison of ODE and Overall Effectiveness Approaches
+# Comparison of ODE and OVE approaches
 
-In this section, we compare the reduction in cumulative cases estimated by the full ODE model against the simplified "Overall Effectiveness" approach, where the latter is informed by the Indirect Vaccine Effectiveness (IVE) derived from the ODE model.
+In this section, we compare the reduction in cumulative cases estimated by the full ODE model against the "overall effectiveness" approach, where the latter is informed by the indirect vaccine effectiveness (IVE) derived from the ODE model.
 
-We transform the time-dependent IVE into a single summary scalar (the final IVE) and use it to adjust the baseline cases.
+We transform the time-dependent IVE into a single summary scalar (the final IVE) for the OVE approach because the final value is the only value that matters to consider the effectiveness is computed using the cumulative cases in our examples. 
 
 $$
 \text{IVE}(t) = 1 - \frac{\text{Risk}_{\text{unvax, vax}}(t)}{\text{Risk}_{\text{unvax, novax}}(t)}
@@ -2050,81 +2038,183 @@ $$
 
 We check if:
 $$
-\text{Cases}_{\text{ODE}} \approx \text{Cases}_{\text{Baseline}} \times (1 - \text{Total Effectiveness})
+\text{Cases}_{\text{ODE}} = \text{Cases}_{\text{Baseline}} \times (1 - \text{OVE})
 $$
-where Total Effectiveness combines simple direct protection and the derived IVE.
 
 ```{r}
 # Parameters
 test_N <- 100000
-test_I0 <- 10
+test_I0 <- 1
 test_R0 <- 2.0
 test_gamma <- 0.2
 test_ve <- 0.7
-test_rho <- 0.05
-test_start <- 20
-test_dur <- 20
+test_coverage <- 0.9
+test_start <- 10
+test_vacc_dur <- 10
+test_sim_duration <- 700
 
 # 1. ODE IVE Calculation
 ive_res <- calculate_ive_ode(
     N = test_N, I0 = test_I0, R0 = test_R0, gamma = test_gamma,
-    ve = test_ve, rho = test_rho, vacc_start = test_start, vacc_duration = test_dur
+    coverage = test_coverage, ve = test_ve, duration = test_sim_duration
 )
 
 # Extract final IVE
-final_ive <- ive_res$final_ive
+final_ive <- ive_res$ive
 print(paste("Final IVE from ODE:", round(final_ive, 4)))
 
-# Plot IVE over time
-df_ive <- data.frame(time = ive_res$time, ive = ive_res$ive_series)
-ggplot(df_ive, aes(x = time, y = ive)) +
-    geom_line(color = "purple", linewidth = 1) +
-    labs(
-        title = "Indirect Vaccine Effectiveness (IVE) over Time",
-        x = "Time (days)", y = "IVE"
-    ) +
-    theme_light()
 
-# 2. Compare Case Reductions
+# 2. Compare case reductions
 # ODE Results
-cases_baseline_ode <- tail(ive_res$risk_novax, 1) * test_N # Approx using risk*N or just calculate_r_ode output
-# Let's get exact cases from the ODE objects inside calculate_ive_ode if possible, or re-run lightly.
 # For exact comparison, let's re-run verify:
 ode_check <- calculate_r_ode(
     N = test_N, I0 = test_I0, R0 = test_R0, gamma = test_gamma,
-    ve = test_ve, rho = test_rho, vacc_start = test_start, vacc_duration = test_dur
+    coverage = test_coverage, vacc_start = test_start, vacc_duration = test_vacc_dur, ve = test_ve
 )
 ode_cases_vax <- tail(ode_check$sim_vax$CumCases, 1)
 ode_cases_novax <- tail(ode_check$sim_novax$CumCases, 1)
-ode_reduction <- 1 - (ode_cases_vax / ode_cases_novax)
 
-# Simplified Approach Calculation
-# Calculate Coverage: In the ODE, how many were vaccinated?
-# V compartment at end
-V_final <- tail(ode_check$sim_vax$V, 1)
-coverage <- V_final / test_N
+# OVE Approach Calculation
+cum_novax <- ode_check$sim_novax$CumCases
+inc_novax <- c(cum_novax[1], diff(cum_novax))
 
-# Total Effectiveness formula approximation
-# reduction = (coverage * ve) + (1 - coverage * ve) * final_ive ?
-# This assumes IVE applies to the remaining susceptibility of the population?
-# Or more simply:
-# Direct protection prevents: coverage * ve * (Baseline Risk?)
-# Indirect protection prevents: (1 - Direct_Protected) * IVE * (Baseline Risk?)
+# Use the refactored function
+ove_res <- calculate_cases_overall_effectiveness(
+    incidence_baseline = inc_novax,
+    time = ode_check$sim_novax$time,
+    coverage = test_coverage,
+    ve_direct = test_ve,
+    ve_indirect = final_ive,
+    vacc_start = test_start + test_vacc_dur / 2
+)
 
-# Let's try the combined efficacy formula:
-# TE = 1 - (1 - coverage * ve) * (1 - final_ive)
-te_approx <- 1 - (1 - coverage * test_ve) * (1 - final_ive)
+plot(inc_novax)
+cum_vax <- ode_check$sim_vax$CumCases
+inc_vax <- c(cum_vax[1], diff(cum_vax))
+lines(inc_vax, col = 2)
+lines(ove_res$incidence_post, col = 3)
 
-cases_simplified <- ode_cases_novax * (1 - te_approx)
+ove_cases_vax <- tail(ove_res$cases_post, 1)
 
-print(paste("ODE Reduction:", round(ode_reduction, 4)))
-print(paste("Simplified TE Approx:", round(te_approx, 4)))
-print(paste("ODE Cases:", round(ode_cases_vax)))
-print(paste("Simplified Cases:", round(cases_simplified)))
+print(paste("ODE cases:", round(ode_cases_vax)))
+print(paste("OVE cases:", round(ove_cases_vax)))
 
-vals <- c(ode_reduction, te_approx)
-names(vals) <- c("ODE Reduction", "Simplified TE")
-barplot(vals, main = "Comparison of Reduction Estimates", col = c("steelblue", "orange"), ylim = c(0, 1))
+vals <- c(ode_cases_vax, ove_cases_vax)
+names(vals) <- c("ODE Model", "OVE Approach")
+barplot(vals, main = "Comparison of final Cases", col = c("steelblue", "orange"), ylab = "Cumulative Cases")
+abline(h = ode_cases_novax, col = "red", lty = 2)
+text(x = 1.5, y = ode_cases_novax, labels = "Baseline (No Vax)", pos = 3, col = "red")
+```
+
+```{r, fig.width=10, fig.height=8}
+# Parameters for comparison
+R0_vals <- c(1.5, 2.5, 4.0)
+coverage_vals <- c(0.5, 0.7, 0.9)
+start_vals <- seq(0, 40, by = 10)
+
+# Fixed parameters
+fix_N <- 100000
+fix_I0 <- 10
+fix_gamma <- 0.2
+fix_ve <- 0.7
+fix_dur <- 365 * 2
+fix_vacc_dur <- 10
+fix_ts <- 1 # a day
+
+results_list <- list()
+counter <- 1
+
+for (r0 in R0_vals) {
+    for (cov in coverage_vals) {
+        # Calculate IVE once per R0/Coverage (assuming Pre-emptive IVE baseline)
+        ive_res <- calculate_ive_ode(
+            N = fix_N, I0 = fix_I0, R0 = r0, gamma = fix_gamma,
+            coverage = cov, ve = fix_ve, duration = fix_dur, time_step = fix_ts
+        )
+        final_ive <- ive_res$ive
+
+        for (st in start_vals) {
+            # 1. ODE Simulation
+            ode_res <- calculate_r_ode(
+                N = fix_N, I0 = fix_I0, R0 = r0, gamma = fix_gamma,
+                coverage = cov, vacc_start = st, vacc_duration = fix_vacc_dur,
+                ve = fix_ve, duration = fix_dur, time_step = fix_ts
+            )
+
+            cases_ode <- tail(ode_res$sim_vax$CumCases, 1)
+            cases_novax <- tail(ode_res$sim_novax$CumCases, 1)
+            pct_red_ode <- 1 - (cases_ode / cases_novax)
+
+            # 2. OVE Approach
+            # Get baseline incidence
+            inc_novax <- c(ode_res$sim_novax$CumCases[1], diff(ode_res$sim_novax$CumCases))
+
+            ove_res <- calculate_cases_overall_effectiveness(
+                incidence_baseline = inc_novax,
+                time = ode_res$sim_novax$time,
+                coverage = cov,
+                ve_direct = fix_ve,
+                ve_indirect = final_ive,
+                vacc_start = st + fix_vacc_dur / 2
+            )
+
+            cases_ove <- tail(ove_res$cases_post, 1)
+            pct_red_ove <- 1 - (cases_ove / cases_novax)
+
+            # Differences
+            abs_diff <- pct_red_ode - pct_red_ove
+            rel_diff <- if (pct_red_ode != 0) (pct_red_ode - pct_red_ove) / pct_red_ode else NA
+
+            results_list[[counter]] <- data.frame(
+                R0 = r0,
+                Coverage = cov,
+                Start = st,
+                Cases_ODE = cases_ode,
+                Cases_OVE = cases_ove,
+                PctRed_ODE = pct_red_ode,
+                PctRed_OVE = pct_red_ove,
+                AbsDiff = abs_diff,
+                RelDiff = rel_diff,
+                IVE = final_ive
+            )
+            counter <- counter + 1
+        }
+    }
+}
+
+df_res <- do.call(rbind, results_list)
+
+# Reshape for Plotting
+library(ggplot2)
+library(tidyr)
+
+df_long <- pivot_longer(df_res,
+    cols = c("PctRed_ODE", "PctRed_OVE"),
+    names_to = "Method",
+    values_to = "PctReduction"
+)
+df_long$Method <- ifelse(df_long$Method == "PctRed_ODE", "ODE", "OVE")
+
+
+# Plot: % Reduction Comparison
+p1 <- ggplot(df_long, aes(x = Start, y = PctReduction, color = Method)) +
+    geom_line(linewidth = 1) +
+    geom_point() +
+    facet_grid(R0 ~ Coverage, labeller = label_both) +
+    labs(
+        title = "Comparison of Case Reduction: ODE vs OVE Approach",
+        subtitle = "Across R0 (rows) and Coverage (columns)",
+        y = "% Reduction in Cumulative Cases",
+        x = "Vaccination Start Time (days)"
+    ) +
+    theme_light() +
+    ylim(0, 1)
+
+print(p1)
+
+# Display a subset of results
+knitr::kable(head(df_res, 10), digits = 3, caption = "Comparison Results (First 10)")
+knitr::kable(tail(df_res, 10), digits = 3, caption = "Comparison Results (Last 10)")
 ```
 
 
