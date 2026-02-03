@@ -784,13 +784,11 @@ $$
 
 The normalzied per-population expected cost linearly increases with $f$
 for the pre-emptive strategy whereas, in case of reactive strategy, it
-increases only up to a point where $f=p$ and then remains constant. 
+increases only up to a point where $f=p$ and then remains constant. As previously noted, the relative performance of reactive versus pre-emptive strategies depends on the cost ratio $R$. We now visualize these impacts for both low and high $R$ scenarios. 
 
-##### Low cost ratio ($R = 1$)
+##### Low cost ratio ($R = 1$) - less severe outbreaks
 
-Less severe outbreaks ($R = 1$) favor reactive vaccination unless the
-vaccine is not very effective and its efficacy is below the outbreak
-probability ($r < p$). As previously noted, the relative performance of reactive versus pre-emptive strategies depends on the cost ratio $R$. We now visualize these impacts for both low and high $R$ scenarios.
+Less severe outbreaks ($R = 1$) tend to increase the per-population expected cost as the vaccination capacity increases. They favor reactive vaccination unless the vaccine is not very effective with its reactive effectiveness below the outbreak probability ($r < p$) and the vaccination capacity is not sufficient to respond to all outbreaks ($f < p$). 
 
 $p = 0.4, R = 1$.
 
@@ -855,7 +853,9 @@ ggplot(df_cost, aes(x = f, y = cost, color = strategy)) +
 
 ##### High cost ratio ($R = 6$)
 
-Severe outbreaks ($R = 6$) favor pre-emptive vaccination unless the
+Severe outbreaks ($R = 6$) decrease the per-population expected cost as the vaccination capacity increases, to the point where all subpopulations are vaccinated ($f = 1$) for pre-emptive strategy. 
+
+ favor pre-emptive vaccination unless the
 vaccine is limited ($f < p$) and reactive efficacy is above the outbreak
 probability ($r > p$).
 
@@ -919,6 +919,44 @@ ggplot(df_cost, aes(x = f, y = cost, color = strategy)) +
     legend.position = "top"
   )
 ```
+
+#### Critical vaccination capacity
+
+We define the critical vaccination capacity $f_{\text{crit}}$ as the capacity at which the costs of pre-emptive and reactive strategies are equivalent. This indifference point can occur in the regime where capacity is sufficient to cover all outbreaks ($f > p$).
+
+In this regime ($f > p$), the reactive cost is constant because all outbreaks are covered, while the pre-emptive cost continues to rise with capacity ($f$) due to the vaccination of non-outbreak populations. 
+
+We equate the costs:
+$$
+c_{\mathrm{pre}}^{(n)} = c_{\mathrm{react}}^{(n)}
+$$
+
+Substituting the expressions for $f > p$:
+$$
+f + (1 - f\nu)pR = p\bigl[1 + (1-r)R\bigr]
+$$
+
+Solving for $f$:
+$$
+\begin{aligned}
+f + pR - f\nu pR &= p + pR - prR \\
+f(1 - \nu pR) &= p(1 - rR) \\
+f_{\text{crit}} &= \frac{p(1 - rR)}{1 - \nu pR}
+\end{aligned}
+$$
+
+For the case shown in the leftmost panel of the low cost ratio figure ($R=1$, $p=0.4$, $r=0.2$, $\nu=1$):
+$$
+f_{\text{crit}} = \frac{0.4(1 - 0.2(1))}{1 - 1(0.4)(1)} = \frac{0.4(0.8)}{0.6} = \frac{0.32}{0.6} \approx 0.533
+$$
+This matches the intersection point observed in the plot.
+
+Similarly, for the high cost ratio scenario ($R=6$, $p=0.4$, $r=0.6$, $\nu=1$) shown in the rightmost panel of the corresponding figure:
+$$
+f_{\text{crit}} = \frac{0.4(1 - 0.6(6))}{1 - 1(0.4)(6)} = \frac{0.4(1 - 3.6)}{1 - 2.4} = \frac{0.4(-2.6)}{-1.4} = \frac{-1.04}{-1.4} \approx 0.743
+$$
+In this case, pre-emptive vaccination becomes more cost-effective than reactive vaccination only when the capacity exceeds approximately 74%.
+
 
 #### $p_{\mathrm{crit}}^{(n)}$ in case of multi-population of equal-risk for $f = 0.5$:
 
@@ -1267,8 +1305,13 @@ $$
     cost ratio, $R$:
     -   larger $R$ (more costly outbreaks) $\Rightarrow$ smaller
         $p_{\mathrm{crit}}^{(n)}$,
-    -   larger $f\nu$ (more effective capacity) $\Rightarrow$ larger
+    -   larger $f\nu$ (more effective pre-emptive capacity) $\Rightarrow$ smaller
         $p_{\mathrm{crit}}^{(n)}$, for fixed $R$ and $r$.
+
+**Intuition:**
+
+*   **Scarce capacity ($f \le r/\nu$):** In this regime, the vaccine supply limits both strategies. The decision simplifies to comparing the expected cases prevented per dose: $\nu p$ for pre-emptive (discounted by risk) versus $r$ for reactive (targeted). Costs ($R$) cancel out because every available dose is used in either strategy.
+*   **Abundant capacity ($f > r/\nu$):** Here, doses are not the limiting factor for the reactive strategy (which saturates at cost proportional to $p$). The decision is driven by minimizing the high cost of infections ($R$). As $R$ increases, the penalty for the "leaky" protection of reactive vaccination (which allows $1-r$ cases) outweighs the upfront cost of pre-emptive mass vaccination.
 
 ### Costs
 
