@@ -289,3 +289,94 @@ opt_alpha_heterorisk <- function(
         sigma = sigma
     )
 }
+
+#' Mixed strategy cost c_mix^{(n)}(alpha) = C_mix^{(n)} / C_V
+#' @export
+cost_mix_multi <- function(alpha, p, R, r, f, nu = 1) {
+    alpha <- pmax(pmin(alpha, 1), 0)
+
+    f_pre <- alpha * f
+    f_react <- (1 - alpha) * f
+
+    # Reactive-rich among non-pre-emptive populations
+    cond_rich <- f_react >= p * (1 - f_pre)
+
+    c_rich <- f_pre * (1 + p * (1 - nu) * R) + (1 - f_pre) * p * (1 + (1 - r) * R)
+    c_lim <- f + R * (p - f_pre * p * nu - f_react * r)
+
+    ifelse(cond_rich, c_rich, c_lim)
+}
+
+#' Numerical optimizer over a grid (useful for plotting / validation)
+#' @export
+opt_alpha_equalrisk <- function(p, R, r, f, nu = 1, grid_len = 1001) {
+    alpha_grid <- seq(0, 1, length.out = grid_len)
+    costs <- cost_mix_multi(alpha = alpha_grid, p = p, R = R, r = r, f = f, nu = nu)
+
+    idx_min <- which.min(costs)
+
+    list(
+        alpha_star = alpha_grid[idx_min],
+        cost_star  = costs[idx_min],
+        alpha_grid = alpha_grid,
+        cost_grid  = costs
+    )
+}
+
+#' Closed-form alpha^* for equal-risk multi-population case
+#' @export
+alpha_star_equalrisk <- function(p, R, r, f, nu = 1, eps = 1e-12) {
+    # r can be a vector
+
+    # Scarce capacity: f <= p
+    if (f <= p + eps) {
+        # If r > p*nu -> pure reactive (0)
+        # If r < p*nu -> pure pre-emptive (1)
+        return(
+            ifelse(r > p * nu + eps, 0,
+                ifelse(r < p * nu - eps, 1, NA_real_)
+            )
+        )
+    }
+
+    # Abundant capacity: f > p
+    alpha_c <- (f - p) / (f * (1 - p))
+
+    alpha_star <- rep(NA_real_, length(r))
+
+    # r < p*nu -> pure pre-emptive
+    alpha_star[r < p * nu - eps] <- 1
+
+    # r > p*nu -> compare alpha=0 vs alpha=alpha_c
+    idx <- which(r > p * nu + eps)
+    if (length(idx) > 0) {
+        # R_thr = (1-p) / (p*(nu - r)) if nu > r
+        # If nu <= r, slope is positive => pure reactive (alpha=0)
+
+        # We set alpha_star to 0 by default for these indices
+        alpha_star[idx] <- 0
+
+        # Check where nu > r (slope could be negative)
+        # Actually, R_thr is valid only if nu > r.
+        # If nu <= r, then 1-p + pR(r-nu) > 0 always (since 1-p>0, p>0, R>0, r>=nu).
+        # So if nu <= r, pure reactive is always better.
+
+        # We only consider switching to alpha_c if nu > r AND R >= R_thr
+        sub_idx <- idx[nu > r[idx] + eps]
+
+        if (length(sub_idx) > 0) {
+            # Calculate R_thr for these
+            R_vals_sub <- if (length(R) == 1) rep(R, length(sub_idx)) else R[sub_idx]
+
+            R_thr <- (1 - p) / (p * (nu - r[sub_idx]))
+
+            # If R >= R_thr, switch to alpha_c
+            switch_mask <- R_vals_sub >= R_thr - eps
+
+            # Map sub_idx back to alpha_star
+            alpha_star[sub_idx[switch_mask]] <- alpha_c
+        }
+    }
+
+    alpha_star
+}
