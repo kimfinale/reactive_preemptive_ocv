@@ -107,7 +107,7 @@ $$
 We estimate:
 
 $$
-C_{\text{illness}}^{\text{indirect}}= N_{\text{cases}}\times d \times w ,
+C_{\text{illness}}^{\text{indirect}}= N_{\text{cases}}\times d \times w,
 $$
 
 where
@@ -244,7 +244,7 @@ $$
 
 $$
 c_{\mathrm{react}}^{(1)}
-= \frac{\mathbb{E}[C_{\mathrm{react}}]}{C_{\mathrm{V}}}
+= \frac{\mathbb{E}[C_{\mathrm{react}}]}{C_V}
 = p\bigl[1 + (1-r)R\bigr].
 $$
 
@@ -341,7 +341,7 @@ df_cost <- expand.grid(
 #   )
 df_pstar <- expand.grid(r = r_vals, R = R_vals) |>
     dplyr::mutate(
-        p_star = p_star_one(R, r, nu = 1),
+        p_star = p_star_one(R, r, nu = nu_val),
         r_label = paste0("r = ", r),
 
         # [NEW] Create the dynamic label string here
@@ -381,7 +381,7 @@ ggplot(df_cost, aes(
         inherit.aes = FALSE,
         hjust = -0.03,
         vjust = 1.1,
-        size = 3
+        size = 4
     ) +
     ggbrace::stat_brace(
         data = df_brace1,

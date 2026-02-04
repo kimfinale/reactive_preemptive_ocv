@@ -1,0 +1,787 @@
+---
+title: "Analytic Study: Heterogeneous Risk and Targeting Accuracy"
+author: "Jong-Hoon Kim"
+date: "`r Sys.Date()`"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    code-fold: true
+bibliography: references.bib
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(tidyverse)
+library(patchwork)
+source("R/analytic_utils.R")
+```
+
+# Introduction
+
+We extend the **homogeneous risk** model to a **heterogeneous risk** setting where the outbreak probability $x$ varies across the population according to a probability density function $g(x)$.
+
+To derive clear analytical bounds, we initially assume a **perfect targeting** scenario for the pre-emptive strategy: we can identify and vaccinate the highest-risk sub-populations first. We then relax this assumption to explore the impact of **imperfect targeting** (imperfect ranking and parameter estimation). Reactive vaccination, by contrast, targets those who actually experience an outbreak, but is constrained by the delay and logistics.
+
+# Model Setup
+
+## Risk Distribution
+
+Let the risk of outbreak $X$ for a randomly selected unit be distributed according to a **Beta distribution** with parameters $\alpha=1$ and $\beta=\theta$. This choice allows for a simple parametric form that is strictly decreasing (for $\theta > 1$) or uniform ($\theta=1$), capturing the realistic scenario where most units have low risk and a few have high risk.
+
+$$
+X \sim \text{Beta}(1, \theta)
+$$
+
+The PDF is:
+$$
+g(x) = \theta (1-x)^{\theta-1}, \quad x \in [0,1], \, \theta > 0.
+$$
+
+The mean outbreak probability is:
+$$
+p = \mathbb{E}[X] = \frac{1}{1+\theta} \implies \theta = \frac{1-p}{p}.
+$$
+Thus, we can parameterize the distribution entirely by the mean risk $p$.
+
+## Baseline: Perfect Targeting Strategy
+
+Suppose we have a total vaccine capacity $f$ (as a fraction of the total population). We decide to use a portion $f_{\mathrm{pre}}$ for pre-emptive vaccination and reserve $f_{\mathrm{react}} = f - f_{\mathrm{pre}}$ for reactive campaigns.
+
+Strategies are defined by the cut-off threshold. Under perfect targeting, we vaccinate all units with risk $x \ge x^*$ pre-emptively.
+
+The fraction vaccinated pre-emptively is:
+$$
+f_{\mathrm{pre}} = \int_{x^*}^1 g(x) \, dx = \left[ -(1-x)^\theta \right]_{x^*}^1 = (1-x^*)^\theta.
+$$
+Inverting this gives the risk threshold $x^*$ for a given capacity $f_{\mathrm{pre}}$:
+$$
+(1-x^*) = f_{\mathrm{pre}}^{1/\theta} \implies x^* = 1 - f_{\mathrm{pre}}^{1/\theta}.
+$$
+
+### Average Risk in Pre-emptive Group
+
+The mean risk among the pre-emptively vaccinated group ($x \ge x^*$) is:
+$$
+\bar{p}_{\mathrm{pre}} = \frac{\int_{x^*}^1 x g(x) \, dx}{f_{\mathrm{pre}}} 
+= \frac{\int_{x^*}^1 x \theta (1-x)^{\theta-1} \, dx}{f_{\mathrm{pre}}}.
+$$
+Let $u = 1-x$, so $du = -dx$. The limits are $u_{\mathrm{lower}} = 0$, $u_{\mathrm{upper}} = 1-x^*$.
+$$
+\int_0^{1-x^*} (1-u) \theta u^{\theta-1} \, du 
+= \theta \int_0^{1-x^*} (u^{\theta-1} - u^\theta) \, du
+= \theta \left[ \frac{u^\theta}{\theta} - \frac{u^{\theta+1}}{\theta+1} \right]_0^{1-x^*}
+= (1-x^*)^\theta - \frac{\theta}{\theta+1} (1-x^*)^{\theta+1}.
+$$
+Substituting $(1-x^*)^\theta = f_{\mathrm{pre}}$ and $(1-x^*) = f_{\mathrm{pre}}^{1/\theta}$:
+$$
+\text{Numerator} = f_{\mathrm{pre}} - p \cdot f_{\mathrm{pre}} \cdot f_{\mathrm{pre}}^{1/\theta} = f_{\mathrm{pre}} \left( 1 - p f_{\mathrm{pre}}^{1/\theta} \right).
+$$
+(Recall $p = 1/(\theta+1)$ implies $\theta/(\theta+1) = \theta p = 1-p$, wait, $\frac{\theta}{\theta+1} = \frac{1/p - 1}{1/p} = 1-p$. Correct.)
+
+Thus,
+$$
+\bar{p}_{\mathrm{pre}} = 1 - (1-p) f_{\mathrm{pre}}^{1/\theta}.
+$$
+Or in terms of $p$ only:
+$$
+\bar{p}_{\mathrm{pre}} = 1 - (1-p) f_{\mathrm{pre}}^{p/(1-p)}.
+$$
+
+### Average Risk in the Remaining Group
+
+The remaining population has size $1 - f_{\mathrm{pre}}$. The mean risk is:
+$$
+\bar{p}_{\mathrm{rem}} = \frac{p - f_{\mathrm{pre}} \bar{p}_{\mathrm{pre}}}{1 - f_{\mathrm{pre}}} 
+= \frac{p - f_{\mathrm{pre}} + (1-p) f_{\mathrm{pre}}^{1+1/\theta}}{1 - f_{\mathrm{pre}}}.
+$$
+This looks a bit complex. Alternatively, using the surplus concept directly:
+The total expected outbreaks in the remaining group is $E_{\mathrm{rem}} = p_{\mathrm{total}} - p_{\mathrm{prevented\_by\_pre}} = p - f_{\mathrm{pre}}\bar{p}_{\mathrm{pre}}$.
+Actually, let's stick to the definition.
+$$
+E_{\mathrm{rem}} = \int_0^{x^*} x g(x) dx = p - \int_{x^*}^1 x g(x) dx = p - f_{\mathrm{pre}}\bar{p}_{pre}.
+$$
+
+# Cost Analysis
+
+We use a mixed strategy characterized by $\alpha \in [0,1]$, where $f_{\mathrm{pre}} = \alpha f$.
+The remaining capacity for reactive use is $f_{\mathrm{react}} = (1-\alpha)f$.
+
+## Pre-emptive Cost
+The cost for the pre-emptive phase is deterministic in terms of doses used ($f_{\mathrm{pre}}$), plus the expected "leakage" (outbreaks happening despite vaccination, due to $\nu < 1$).
+$$
+C_{\mathrm{pre}}(\alpha) = f_{\mathrm{pre}} \cdot 1 + f_{\mathrm{pre}} \bar{p}_{\mathrm{pre}} (1 - \nu) R
+$$
+
+*Note: This use of the mean risk $\bar{p}_{\mathrm{pre}}$ is **exact**, not an approximation. Since the cost is a linear function of the outbreak probability ($Cost \propto x$), the expected cost over the group is equal to the cost calculated at the group's expected risk (Linearity of Expectation).*
+
+The expected outbreaks in the vaccinated group is $f_{\mathrm{pre}} \bar{p}_{\mathrm{pre}}$.
+So cost is:
+$$
+c_{\mathrm{pre}}(\alpha) = f_{\mathrm{pre}} [ 1 + \bar{p}_{\mathrm{pre}} (1-\nu) R ].
+$$
+
+## Reactive Cost
+The expected number of outbreaks in the remaining (unvaccinated) population is $E_{\mathrm{rem}} = p - f_{\mathrm{pre}} \bar{p}_{\mathrm{pre}}$.
+Let $P_{\mathrm{rem}} = E_{\mathrm{rem}}$ for shorthand.
+
+We have two regimes:
+
+1. **Reactive-Rich**: Capacity $f_{\mathrm{react}} \ge P_{\mathrm{rem}}$.
+   We can cover all outbreaks.
+
+   Cost: $P_{\mathrm{rem}} [ 1 + (1-r)R ]$. (Assuming reactive vaccination covers the outbreak cases).
+
+2. **Reactive-Limited**: Capacity $f_{\mathrm{react}} < P_{\mathrm{rem}}$.
+   We can only cover $f_{\mathrm{react}}$ outbreaks.
+   Cost: $f_{\mathrm{react}} [ 1 + (1-r)R ] + (P_{\mathrm{rem}} - f_{\mathrm{react}}) R$.
+   (The uncovered outbreaks cost $R$ each).
+
+## Regime Switch
+The transition occurs when supply matches demand:
+$$
+f_{\mathrm{react}} = P_{\mathrm{rem}} \implies (1-\alpha)f = p - \alpha f \bar{p}_{\mathrm{pre}}(\alpha f).
+$$
+This assumes outbreaks are the only demand.
+
+Let's substitute $\bar{p}_{\mathrm{pre}} = 1 - (1-p)(\alpha f)^{1/\theta}$.
+$$
+(1-\alpha)f = p - \alpha f [ 1 - (1-p)(\alpha f)^{1/\theta} ]
+$$
+$$
+(1-\alpha)f = p - \alpha f + \alpha f (1-p) (\alpha f)^{1/\theta}
+$$
+$$
+f - \alpha f = p - \alpha f + (1-p) (\alpha f)^{1+1/\theta}
+$$
+$$
+f - p = (1-p) f^{1+1/\theta} \alpha^{1+1/\theta}
+$$
+Solving for $\alpha_c$ (critical pre-emptive fraction):
+$$
+\alpha_c^{1+1/\theta} = \frac{f-p}{(1-p) f^{1+1/\theta}} = \frac{f-p}{1-p} f^{-(1+1/\theta)}
+$$
+$$
+\alpha_c = \left( \frac{f-p}{1-p} \right)^{\frac{\theta}{\theta+1}} \frac{1}{f}.
+$$
+Recall $p = 1/(\theta+1) \implies \theta/(\theta+1) = 1-p$.
+So the exponent is $1-p$.
+$$
+\alpha_c = \frac{1}{f} \left( \frac{f-p}{1-p} \right)^{1-p}.
+$$
+This is the closed-form solution for the regime switching point under perfect targeting!
+
+**Comparison with Homogeneous Model**:
+The formula for the homogeneous case (where targeting is impossible) is:
+$$
+\alpha_c^{\mathrm{homo}} = \frac{f-p}{f(1-p)}.
+$$
+The heterogeneous result $\alpha_c^{\mathrm{hetero}} = \frac{1}{f} \left( \frac{f-p}{1-p} \right)^{1-p}$ is different because the risk distribution is fundamentally different.
+Specifically, `Beta(1, \theta)` describes a skewed risk profile. By targeting the high-risk tail, we remove a disproportionately large amount of risk ($E_{pre}$) for each unit of vaccine. This reduces the burden on the reactive phase more efficiently than random vaccination, effectively shifting the regime boundary. The two models would only converge if the heterogeneity (variance) vanished, which is not possible for `Beta(1, \theta)` with a fixed non-zero mean $p$.
+
+
+# Optimization
+
+We seek $\alpha^*$ to minimize total cost $c(\alpha) = c_{\mathrm{pre}}(\alpha) + c_{\mathrm{react}}(\alpha)$.
+
+## Functions
+
+```{r}
+#| code-fold: false
+
+# Mean risk in pre-emptive group of size f_pre
+mean_risk_pre <- function(f_pre, p) {
+    if (f_pre <= 0) {
+        return(0)
+    }
+    if (f_pre >= 1) {
+        return(p)
+    }
+
+    theta <- (1 - p) / p
+    # Formula: 1 - (1-p) * f_pre^(1/theta)
+    # 1/theta = p/(1-p)
+    exponent <- p / (1 - p)
+
+    1 - (1 - p) * f_pre^exponent
+}
+
+# Total Mean Risk (should be p)
+# Integrate x * theta * (1-x)^(theta-1) from 0 to 1
+# = p. Correct.
+
+# Critical alpha for regime switch
+alpha_c_hetero <- function(f, p) {
+    if (f <= p) {
+        return(-1)
+    } # Always limited
+
+    exponent <- 1 - p # theta / (theta+1)
+
+    term <- (f - p) / (1 - p)
+    # alpha_c = (1/f) * term^exponent
+    (1 / f) * (term^exponent)
+}
+
+# Heterogeneous Cost Function
+cost_hetero <- function(alpha, f, p, R, r, nu = 1) {
+    alpha <- pmax(0, pmin(1, alpha))
+    f_pre <- alpha * f
+    f_react_cap <- (1 - alpha) * f
+
+    # 1. Pre-emptive Cost
+    p_bar_pre <- numeric(length(alpha))
+    # Vectorized calculation
+    idx_pos <- f_pre > 0
+    if (any(idx_pos)) {
+        exponent <- p / (1 - p)
+        p_bar_pre[idx_pos] <- 1 - (1 - p) * f_pre[idx_pos]^exponent
+    }
+
+    E_pre <- f_pre * p_bar_pre
+
+    c_pre_val <- f_pre + E_pre * (1 - nu) * R
+
+    # 2. Reactive Cost
+    # Remaining outbreaks
+    E_rem <- p - E_pre
+
+    # Regime check
+    is_rich <- f_react_cap >= E_rem
+
+    c_react_val <- ifelse(is_rich,
+        E_rem * (1 + (1 - r) * R),
+        f_react_cap * (1 + (1 - r) * R) + (E_rem - f_react_cap) * R
+    )
+
+    c_pre_val + c_react_val
+}
+```
+
+## Comparisons
+
+We compare the Optimal $\alpha^*$ under Homogeneous vs Heterogeneous assumptions.
+
+```{r}
+#| label: fig-hetero-compare
+#| fig-cap: "Optimal pre-emptive fraction under Heterogeneous (Perfect Targeting) vs Homogeneous risk."
+#| fig-width: 10
+#| fig-height: 6
+
+# Parameters
+f_val <- 0.5
+p_val <- 0.3
+r_val <- 0.6
+R_seq <- seq(0, 25, length.out = 200)
+
+# Calculate Alpha Star for each R
+# We will use numerical optimization for the heterogeneous case to be safe,
+# though we could derive the slope sign change.
+
+get_alpha_star_hetero <- function(R, f, p, r, nu = 1) {
+    optim(
+        par = 0.5, fn = cost_hetero,
+        f = f, p = p, R = R, r = r, nu = nu,
+        method = "L-BFGS-B", lower = 0, upper = 1
+    )$par
+}
+
+# Wrapper for vector R
+calc_curve <- function(R_vec, type) {
+    sapply(R_vec, function(R) {
+        if (type == "Homogeneous") {
+            # Use existing utility
+            val <- alpha_star_equalrisk(p = p_val, R = R, r = r_val, f = f_val, nu = 1)
+            # Handle NA (middle region) by 0 or alpha_c ??
+            # The function returns 0 if reactive is better, alpha_c if mixed is better, 1 if pre.
+            # It handles the logic.
+            return(val)
+        } else {
+            # Hetero
+            # Check corners and critical point?
+            # Numerical is robust
+            get_alpha_star_hetero(R, f_val, p_val, r_val)
+        }
+    })
+}
+
+df_plot <- data.frame(R = R_seq) %>%
+    mutate(
+        Homo = calc_curve(R, "Homogeneous"),
+        Hetero = calc_curve(R, "Heterogeneous")
+    ) %>%
+    pivot_longer(cols = c("Homo", "Hetero"), names_to = "Model", values_to = "Alpha")
+
+ggplot(df_plot, aes(x = R, y = Alpha, color = Model, linetype = Model)) +
+    geom_line(linewidth = 1.2) +
+    theme_minimal() +
+    labs(y = expression(alpha^"*"), title = paste0("f=", f_val, ", p=", p_val, ", r=", r_val)) +
+    scale_color_brewer(palette = "Set1")
+
+```
+
+**Observation**: With perfect targeting (Heterogeneous), we switch to pre-emptive vaccination (or a mixed strategy) at a much lower cost ratio $R$ than in the homogeneous case. This is because we can selectively vaccinate the "super-spreaders" (high risk) first, getting a much higher "bang for the buck" (higher cases prevented per dose).
+
+The "kink" in the heterogeneous curve corresponds to saturating the high-risk group that "matters" for the regime switch, or sliding along the critical boundary $\alpha_c$ which now shifts because the remaining risk changes non-linearly.
+
+## Impact of Reactive Effectiveness
+
+We now fix the cost ratio $R$ and vary the reactive effectiveness $r$. This allows us to observe the full range of strategies:
+1. **Pure Pre-emptive ($\alpha^*=1$)**: When reactive vaccination is ineffective (low $r$).
+2. **Mixed / Boundary ($\alpha^* \in (0, 1)$)**: When reactive vaccination is moderately effective.
+3. **Pure Reactive ($\alpha^*=0$)**: When reactive vaccination is highly effective (high $r$).
+
+```{r}
+#| label: fig-hetero-r
+#| fig-cap: "Optimal pre-emptive fraction across Reactive Effectiveness (r)."
+#| fig-width: 10
+#| fig-height: 6
+
+# Parameters
+R_fixed <- 5
+r_seq <- seq(0, 1, length.out = 200)
+
+# Wrapper for vector r
+calc_curve_r <- function(r_vec, type) {
+    sapply(r_vec, function(r_curr) {
+        if (type == "Homogeneous") {
+            # Use existing utility
+            val <- alpha_star_equalrisk(p = p_val, R = R_fixed, r = r_curr, f = f_val, nu = 1)
+            # Handle NA
+            if (is.na(val)) {
+                return(0)
+            } # Logic fallback
+            return(val)
+        } else {
+            # Hetero
+            get_alpha_star_hetero(R_fixed, f_val, p_val, r_curr)
+        }
+    })
+}
+
+df_plot_r <- data.frame(r = r_seq) %>%
+    mutate(
+        Homo = calc_curve_r(r, "Homogeneous"),
+        Hetero = calc_curve_r(r, "Heterogeneous")
+    ) %>%
+    pivot_longer(cols = c("Homo", "Hetero"), names_to = "Model", values_to = "Alpha")
+
+# Theoretical alpha_c (regime switch point)
+ac_homo <- (f_val - p_val) / (f_val * (1 - p_val))
+ac_hetero <- alpha_c_hetero(f_val, p_val)
+
+ggplot(df_plot_r, aes(x = r, y = Alpha, color = Model, linetype = Model)) +
+    geom_line(linewidth = 1.2) +
+    # Add horizontal lines for alpha_c
+    geom_hline(aes(yintercept = ac_homo, color = "Homogeneous"), linetype = "dotted", alpha = 0.6) +
+    geom_hline(aes(yintercept = ac_hetero, color = "Heterogeneous"), linetype = "dotted", alpha = 0.6) +
+    theme_minimal() +
+    labs(
+        x = "Reactive Effectiveness (r)",
+        y = expression(alpha^"*"),
+        title = paste0("f=", f_val, ", p=", p_val, ", R=", R_fixed),
+        caption = "Dotted lines allow comparison with regime-switching boundary alpha_c"
+    ) +
+    scale_color_brewer(palette = "Set1")
+```
+
+## Intuition: Why Heterogeneity Favors Pre-emption
+
+The observation that $\alpha^*$ is consistently higher (or equal) in the heterogeneous case compared to the homogeneous case is a general result of the **perfect targeting** assumption.
+
+### Mechanism: Concentration of Risk
+
+In the homogeneous model, every vaccine dose prevents an expected $p$ outbreaks (before considering efficiency $\nu$).
+In the heterogeneous model with perfect targeting, we prioritize individuals with risk $x > p$. Consequently, the average risk in the pre-emptive group $\bar{p}_{\mathrm{pre}}$ is strictly greater than the population mean $p$ (for any $\alpha < 1$).
+
+This **concentrates the benefit** of pre-emptive vaccination. The "cases prevented per dose" increases from $\nu \cdot p$ to $\nu \cdot \bar{p}_{\mathrm{pre}}$. Since we effectively get "more protection for the same price", the pre-emptive strategy becomes economically favorable at lower values of $R$ (cost of illness) and lower values of $\nu$ (pre-emptive efficiency) than effectively implied by the homogeneous mean.
+
+### Generality
+
+Does this hold for any risk distribution?
+
+**Yes**, provided:
+1.  The variance of the risk distribution is non-zero (i.e., not homogeneous).
+2.  We employ a **targeting strategy** that prioritizes higher-risk groups (e.g., $x_{target} > x_{untarget}$).
+
+If risk is uniform (or any other distribution), sorting by risk ensures that the first individuals vaccinated have risk $x > E[X]$. This boosts the marginal benefit of the pre-emptive phase relative to the "average" strategy. The degree of this advantage depends on the **skewness** (or inequality) of the risk distribution—a highly skewed distribution (like the Beta distribution used here, or Gamma/Lognormal) where a small group holds most of the risk will show a widely expanded region where pre-emptive vaccination is optimal.
+
+## Impact of Mean Outbreak Probability
+
+Finally, we examine how the optimal strategy changes as the overall mean risk $p$ increases.
+
+```{r}
+#| label: fig-hetero-p
+#| fig-cap: "Optimal pre-emptive fraction across Mean Outbreak Probability (p)."
+#| fig-width: 10
+#| fig-height: 6
+
+# Parameters
+R_fixed <- 5
+f_fixed <- 0.5
+r_fixed <- 0.6
+p_seq <- seq(0.01, 0.99, length.out = 100)
+
+# Wrapper for vector p
+calc_curve_p <- function(p_vec, type) {
+    sapply(p_vec, function(p_curr) {
+        if (type == "Homogeneous") {
+            # Use existing utility
+            val <- alpha_star_equalrisk(p = p_curr, R = R_fixed, r = r_fixed, f = f_fixed, nu = 1)
+            if (is.na(val)) {
+                return(0)
+            }
+            return(val)
+        } else {
+            # Hetero
+            get_alpha_star_hetero(R_fixed, f_fixed, p_curr, r_fixed)
+        }
+    })
+}
+
+df_plot_p <- data.frame(p = p_seq) %>%
+    mutate(
+        Homo = calc_curve_p(p, "Homogeneous"),
+        Hetero = calc_curve_p(p, "Heterogeneous")
+    ) %>%
+    pivot_longer(cols = c("Homo", "Hetero"), names_to = "Model", values_to = "Alpha")
+
+ggplot(df_plot_p, aes(x = p, y = Alpha, color = Model, linetype = Model)) +
+    geom_line(linewidth = 1.2) +
+    theme_minimal() +
+    labs(
+        x = "Mean Outbreak Probability (p)",
+        y = expression(alpha^"*"),
+        title = paste0("f=", f_fixed, ", R=", R_fixed, ", r=", r_fixed)
+    ) +
+    scale_color_brewer(palette = "Set1")
+```
+
+## Intuition: Why does Optimal Alpha Decrease as Risk Increases?
+
+It might be counter-intuitive that $\alpha^*$ (the pre-emptive fraction) *decreases* as the mean risk $p$ increases (visible in the middle range of the plot). One might expect higher risk to linearly favor more pre-emptive action.
+
+However, the optimal strategy often involves maintaining a **Reactive-Rich** state (where we have enough localized stockpile to cover all outbreaks in the unvaccinated/remaining group).
+
+This behavior is driven by the **Capacity Constraint** (the "Crowding Out" effect):
+
+1.  **Shrinking Surplus**: As the mean outbreak probability $p$ rises, the expected number of outbreaks increases. This consumes more of our vaccine capacity for reactive response.
+2.  **Maintenance of Reactive-Richness**: To prevent sliding into the inefficient "Reactive-Limited" regime (where we run out of vaccines during outbreaks), we must reserve a larger portion of our stockpile for reactive use.
+3.  **Squeezing Pre-emption**: This increased demand for reactive reserves forces us to *reduce* the pre-emptive allocation $\alpha$. Specifically, the critical boundary drops roughly as $\alpha_c \propto (f-p)$.
+
+Thus, while higher *individual* risk makes pre-emption more efficient per dose, higher *population* risk depletes the "surplus" capacity that makes pre-emption affordable without compromising the reactive safety net. Only when $p$ becomes very small (abundant surplus) or very large (reactive strategy fails anyway) do we see different behaviors.
+
+## Comparison of Parametric Distributions
+
+We can generalize the analysis to other risk distributions (e.g., Exponential, Gamma, Log-normal). The core logic remains satisfying the "Perfect Targeting" assumption:
+1.  Target the top fraction $f_{\mathrm{pre}}$ of the risk distribution.
+2.  Compute the average risk in this top percentile ($\bar{p}_{\mathrm{pre}}$).
+3.  Use this $\bar{p}_{\mathrm{pre}}$ in the cost calculations.
+
+We compare four distributions, all calibrated to have the **same mean outbreak probability** $p$:
+1.  **Beta**: $X \sim \text{Beta}(1, \theta)$ (our baseline).
+2.  **Exponential**: $X \sim \text{Exp}(\lambda)$ (strictly decreasing).
+3.  **Gamma**: $X \sim \text{Gamma}(k, \theta)$ (can be hump-shaped). We choose shape $k=2$.
+4.  **Log-normal**: $X \sim \text{Lognormal}(\mu, \sigma)$. We match the Coefficient of Variation (CV) to the Exponential distribution (CV=1).
+
+*Note: For distributions with support $[0, \infty)$, we assume the mass $>1$ is negligible or effectively capped at 1 (risk score interpretation).*
+
+```{r}
+#| label: fig-dist-compare
+#| fig-cap: "Optimal pre-emptive fraction for different risk distributions (Mean p=0.3)."
+#| fig-width: 10
+#| fig-height: 6
+
+# Generic helper to get mean risk in top fraction f_pre
+get_mean_risk_top <- function(f_pre, density_fn, quantile_fn, p_mean) {
+    if (f_pre <= 0) {
+        return(0)
+    }
+    if (f_pre >= 1) {
+        return(p_mean)
+    }
+
+    # Find cutoff x* such that P(X > x*) = f_pre
+    # x* = Quantile(1 - f_pre)
+    x_star <- quantile_fn(1 - f_pre)
+
+    # Integrate x * pdf(x) from x* to Inf (or reasonable max)
+    # robust max for integration
+    upper_bound <- quantile_fn(0.9999) * 2
+
+    # E[X | X > x*] * P(X > x*) = Integral
+    # We want Integral / f_pre
+    # We clamp risk at 1 for consistency with probability definition
+    integrand <- function(x) {
+        pmin(1, x) * density_fn(x)
+    }
+
+    res <- tryCatch(
+        integrate(integrand, lower = x_star, upper = Inf)$value,
+        error = function(e) {
+            # Fallback for numerical issues far in tail
+            integrate(integrand, lower = x_star, upper = upper_bound)$value
+        }
+    )
+
+    res / f_pre
+}
+
+# Generic cost function wrapper
+cost_generic <- function(alpha, f, p, R, r, dist_list, nu = 1) {
+    f_pre <- alpha * f
+    f_react_cap <- (1 - alpha) * f
+
+    # Get p_bar_pre for this specific alpha/f_pre
+    p_bar_pre <- get_mean_risk_top(f_pre, dist_list$d, dist_list$q, p)
+
+    E_pre <- f_pre * p_bar_pre
+    c_pre_val <- f_pre + E_pre * (1 - nu) * R
+
+    E_rem <- max(0, p - E_pre) # Remaining outbreaks
+
+    is_rich <- f_react_cap >= E_rem
+    c_react_val <- ifelse(is_rich,
+        E_rem * (1 + (1 - r) * R),
+        f_react_cap * (1 + (1 - r) * R) + (E_rem - f_react_cap) * R
+    )
+
+    c_pre_val + c_react_val
+}
+
+# Optimization wrapper
+get_alpha_star_generic <- function(R, f, p, r, dist_list) {
+    optim(
+        par = 0.5, fn = cost_generic,
+        f = f, p = p, R = R, r = r, dist_list = dist_list,
+        method = "L-BFGS-B", lower = 0, upper = 1
+    )$par
+}
+
+# --- Define Distributions (Mean = p = 0.3) ---
+p_target <- 0.3
+
+# 1. Beta (Baseline)
+theta_beta <- (1 - p_target) / p_target
+list_beta <- list(
+    d = function(x) dbeta(x, 1, theta_beta),
+    q = function(p) qbeta(p, 1, theta_beta)
+)
+
+# 2. Exponential
+# Mean = 1/rate => rate = 1/p
+rate_exp <- 1 / p_target
+list_exp <- list(
+    d = function(x) dexp(x, rate_exp),
+    q = function(p) qexp(p, rate_exp)
+)
+
+# 3. Gamma (Shape=2)
+# Mean = shape * scale => scale = p / shape
+shape_gam <- 2
+scale_gam <- p_target / shape_gam
+list_gamma <- list(
+    d = function(x) dgamma(x, shape = shape_gam, scale = scale_gam),
+    q = function(p) qgamma(p, shape = shape_gam, scale = scale_gam)
+)
+
+# 4. Lognormal (CV=1)
+# CV = sqrt(exp(sigma^2) - 1). If CV=1, exp(sigma^2)=2 => sigma^2 = ln(2)
+sig2_ln <- log(2)
+sig_ln <- sqrt(sig2_ln)
+# Mean = exp(mu + sigma^2/2) => p = exp(mu + ln(2)/2)
+# log(p) = mu + 0.5*ln(2) => mu = log(p) - 0.5*ln(2)
+mu_ln <- log(p_target) - 0.5 * sig2_ln
+list_lnorm <- list(
+    d = function(x) dlnorm(x, meanlog = mu_ln, sdlog = sig_ln),
+    q = function(p) qlnorm(p, meanlog = mu_ln, sdlog = sig_ln)
+)
+
+# --- Generate Plot ---
+R_sweep <- seq(1, 15, length.out = 30)
+
+run_sweep <- function(dist_list) {
+    sapply(R_sweep, function(RR) get_alpha_star_generic(RR, 0.5, p_target, 0.6, dist_list)) |> as.numeric()
+}
+
+df_dists <- data.frame(R = R_sweep) %>%
+    mutate(
+        Beta = run_sweep(list_beta),
+        Exponential = run_sweep(list_exp),
+        Gamma = run_sweep(list_gamma),
+        Lognormal = run_sweep(list_lnorm)
+    ) %>%
+    pivot_longer(cols = -R, names_to = "Distribution", values_to = "Alpha")
+
+ggplot(df_dists, aes(x = R, y = Alpha, color = Distribution, linetype = Distribution)) +
+    geom_line(linewidth = 1.2) +
+    theme_minimal() +
+    labs(
+        title = paste0("Comparison of Optimal Strategies (Mean p=", p_target, ")"),
+        y = expression(alpha^"*"),
+        caption = "All distributions have same mean risk. Lognormal/Exponential have CV=1."
+    ) +
+    scale_color_brewer(palette = "Dark2")
+
+```
+
+**Interpretation**:
+
+
+Results show that distributions with **heavier tails** (higher skewness) favor pre-emptive vaccination more strongly (switching at lower $R$).
+*   **Beta (parameter 1, $\theta$)**: Highly skewed, mass concentrated at 0, risk decreasing. High benefit to targeting.
+*   **Exponential / Lognormal**: Moderately skewed.
+*   **Gamma (Shape=2)**: Less skewed (hump-shaped). Targeting provides less advantage than highly skewed distributions, so the switch happens later (higher $R$).
+
+# Imperfect Targeting
+
+We now relax the assumption of Perfect Targeting. In practice, our ability to prioritize high-risk populations is limited by information gaps or logistical constraints. We consider two dimensions of imperfection:
+
+1.  **Imperfect Ranking**: We target based on a "risk score" $S$ that is only imperfectly correlated with the true risk $X$.
+2.  **Imperfect Estimation**: We correctly rank, but overestimate or underestimate the overall magnitude of the risk (mean $p$).
+
+## Imperfect Ranking (Correlation)
+
+We model imperfect ranking by introducing noise to the selection process. 
+True risk $X$ follows the $\text{Beta}(1, \theta)$ distribution as defined before.
+We define a targeting score $S$ such that the **Spearman Rank Correlation** between $X$ and $S$ is $\rho \in [0, 1]$.
+
+*   $\rho=1$: Perfect Targeting (sort by $X$).
+*   $\rho=0$: Random Targeting (sort by noise, equivalent to homogeneous targeting effectiveness).
+
+We simulate this using a latent variable approach (Gaussian copula-like mechanism on the underlying exponential scale) to preserve the marginal distribution of risk while tuning the correlation.
+
+```{r}
+#| label: fig-rank-corr
+#| fig-cap: "Optimal pre-emptive fraction under Imperfect Ranking (varying correlation rho)."
+#| fig-width: 10
+#| fig-height: 6
+
+# Parameters
+R_vals_corr <- seq(0, 20, length.out = 30) # Coarse grid for MC speed
+p_sim <- 0.3
+f_sim <- 0.5
+r_sim <- 0.6
+theta_sim <- (1 - p_sim) / p_sim
+
+# Pre-generate population for MC consistency
+set.seed(123)
+M_pop <- 5000 # Population size for MC estimation
+pop_data <- sim_lambda_P(M_pop, theta_sim)
+lambda_vec <- pop_data$lambda
+P_vec <- pop_data$P
+
+# Wrapper to find alpha* for a given rho and R
+get_alpha_star_rho <- function(rho_val, R_val) {
+    # opt_alpha_heterorisk from analytic_utils.R
+    res <- opt_alpha_heterorisk(
+        f = f_sim, r = r_sim, R = R_val, theta = theta_sim, rho = rho_val,
+        lambda = lambda_vec, P = P_vec,
+        grid_len = 101, # Faster grid search
+        seed_sigma = 123,
+        seed_score = 456
+    )
+    res$alpha_star
+}
+
+# Run sweep for different rhos
+rhos_to_test <- c(1.0, 0.8, 0.5, 0.0)
+
+results_corr <- expand.grid(R = R_vals_corr, Rho = rhos_to_test) %>%
+    mutate(Alpha = mapply(get_alpha_star_rho, Rho, R))
+
+results_corr$Rho_Label <- factor(paste0("rho = ", results_corr$Rho),
+    levels = paste0("rho = ", c(1.0, 0.8, 0.5, 0.0))
+)
+
+ggplot(results_corr, aes(x = R, y = Alpha, color = Rho_Label)) +
+    geom_line(linewidth = 1.2) +
+    theme_minimal() +
+    labs(
+        title = expression("Impact of Ranking Accuracy (" * rho * ")"),
+        subtitle = paste0("Beta Risk (p=", p_sim, "), f=", f_sim, ", r=", r_sim),
+        x = "Relative Cost of Illness (R)",
+        y = expression(alpha^"*"),
+        color = "Rank Correlation"
+    ) +
+    scale_color_viridis_d()
+```
+
+**Observation**:
+As the quality of targeting degrades (lower $\rho$), the advantage of pre-emptive vaccination diminishes. 
+*   At $\rho=1$ (yellow), we see the aggressive switch to pre-emption at low $R$.
+*   At $\rho=0$ (purple), the strategy effectively mimics the **Homogeneous** case (random selection provides no efficiency boost), requiring a much higher $R$ to justify pre-emption.
+*   Intermediate correlations show intermediate switching points.
+
+## Parameter Uncertainty (Wrong Mean)
+
+Here we consider the case where the planner *estimates* the mean risk as $\hat{p}$, but the *true* mean risk is $p_{true}$.
+The planner calculates the optimal strategy $\hat{\alpha}^*$ based on $\hat{p}$.
+We calculate the **True Cost** of applying this $\hat{\alpha}^*$ to a world with $p_{true}$.
+
+We visualize the **Cost Penalty**: How much extra cost do we incur compared to the optimal strategy if we had known $p_{true}$?
+
+```{r}
+#| label: fig-bias-penalty
+#| fig-cap: "Cost Penalty of Mean Risk Misestimation."
+#| fig-width: 10
+#| fig-height: 6
+
+# Truth
+p_true <- 0.3
+f_bias <- 0.5
+R_bias <- 6 # A critical region where decision matters
+r_bias <- 0.6
+nu_bias <- 1
+
+# Perfect targeting assumed for this section to isolate bias effect
+rho_bias <- 1.0
+
+# Estimate range: 0.1 to 0.5 (under to over estimation)
+p_est_seq <- seq(0.1, 0.6, length.out = 100)
+
+# 1. Calculate Optimal Alpha for Truth
+true_alpha_star <- get_alpha_star_hetero(R_bias, f_bias, p_true, r_bias)
+true_min_cost <- cost_hetero(true_alpha_star, f_bias, p_true, R_bias, r_bias)
+
+# 2. Calculate Chosen Alpha for each Estimate
+chosen_alphas <- sapply(p_est_seq, function(p_hat) {
+    get_alpha_star_hetero(R_bias, f_bias, p_hat, r_bias)
+})
+
+# 3. Calculate Realized Cost for Chosen Alpha given p_true
+realized_costs <- sapply(chosen_alphas, function(a_hat) {
+    cost_hetero(a_hat, f_bias, p_true, R_bias, r_bias)
+})
+
+# 4. Percent cost increase
+cost_penalty_pct <- 100 * (realized_costs - true_min_cost) / true_min_cost
+
+df_bias <- data.frame(p_hat = p_est_seq, penalty = cost_penalty_pct)
+
+ggplot(df_bias, aes(x = p_hat, y = penalty)) +
+    geom_line(linewidth = 1.2, color = "firebrick") +
+    geom_vline(xintercept = p_true, linetype = "dashed") +
+    theme_minimal() +
+    labs(
+        title = paste0("Cost Penalty of Misestimating Risk (True p=", p_true, ")"),
+        subtitle = paste0("R=", R_bias, ", Perfect Targeting"),
+        x = "Estimated Mean Probability (p_hat)",
+        y = "% Increase in Cost over Optimal"
+    ) +
+    annotate("text", x = p_true, y = 0, label = "Truth", vjust = -1, hjust = -0.1)
+
+```
+
+**Interpretation**:
+Misestimation leads to suboptimal $\alpha$ choices.
+*   **Underestimation ($\hat{p} < p$)**: We might mistakenly believe we are in the "Reactive-Limited" regime (if we think surplus $f-\hat{p}$ is large? No, if $\hat{p}$ is small, capacity is abundant). Or we might think risk is low enough that reactive is cheap. This usually leads to under-investing in pre-emption when it is actually needed.
+*   **Overestimation ($\hat{p} > p$)**: We might panic and switch to pre-emption (or mixed) unnecessarily, or conversely, if $\hat{p}$ is very high, we might reduce pre-emption due to the "Crowding Out" effect discussed earlier.
+
+The valley at $\hat{p} = p_{true}$ represents zero penalty (optimal decision). The steepness of the curve shows the sensitivity of the decision.
+
+
+
