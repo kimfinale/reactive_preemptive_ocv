@@ -189,7 +189,7 @@ We seek $\alpha^*$ to minimize total cost $c(\alpha) = c_{\mathrm{pre}}(\alpha) 
 ## Functions
 
 ```{r}
-#| code-fold: false
+#| code-fold: true
 
 # Mean risk in pre-emptive group of size f_pre
 mean_risk_pre_beta <- function(f_pre, p) {
@@ -245,7 +245,7 @@ cost_beta <- function(alpha, f, p, R, r, nu = 1) {
     c_pre_val <- f_pre + E_pre * (1 - nu) * R
 
     # 2. Reactive Cost
-    # Remaining outbreaks
+    # Expected proportion of outbreaks in the remaining (unvaccinated) population
     E_rem <- p - E_pre
 
     # Regime check
@@ -267,7 +267,7 @@ We compare the optimal $\alpha^*$ under homogeneous vs heterogeneous assumptions
 ```{r}
 #| label: fig-hetero-compare
 #| fig-cap: "Optimal pre-emptive fraction under Heterogeneous (Perfect Targeting) vs Homogeneous risk."
-#| fig-width: 10
+#| fig-width: 8
 #| fig-height: 6
 
 # Parameters
@@ -309,34 +309,70 @@ calc_curve <- function(R_vec, type) {
 
 df_plot <- data.frame(R = R_seq) %>%
     mutate(
-        Homo = calc_curve(R, "Homogeneous"),
-        Hetero = calc_curve(R, "Heterogeneous")
+        Homogeneous = calc_curve(R, "Homogeneous"),
+        Heterogeneous = calc_curve(R, "Heterogeneous")
     ) %>%
-    pivot_longer(cols = c("Homo", "Hetero"), names_to = "Model", values_to = "Alpha")
+    pivot_longer(cols = c("Homogeneous", "Heterogeneous"), names_to = "Model", values_to = "Alpha") %>%
+    group_by(Model) %>%
+    mutate(
+        # Create segments for abrupt changes in Homogeneous model
+        Segment = if (unique(Model) == "Homogeneous") {
+            cumsum(c(TRUE, abs(diff(Alpha)) > 1e-6))
+        } else {
+            1
+        }
+    ) %>%
+    ungroup()
 
-ggplot(df_plot, aes(x = R, y = Alpha, color = Model, linetype = Model)) +
-    geom_line(linewidth = 1.2) +
-    theme_minimal() +
+# Calculate critical alphas for reference lines
+ac_homo <- (f_val - p_val) / (f_val * (1 - p_val))
+ac_hetero <- alpha_c_beta(f_val, p_val)
+
+# Calculate critical R for Homogeneous case
+# Formula from alpha_star_equalrisk: R_thr = (1-p)/(p*(nu-r)) with nu=1
+Rc_homo <- (1 - p_val) / (p_val * (1 - r_val))
+
+df_ref <- data.frame(
+    Model = c("Homogeneous", "Heterogeneous"),
+    Alpha_c = c(ac_homo, ac_hetero),
+    Label = c("alpha[c]^{homo}", "alpha[c]^{hetero}")
+)
+
+ggplot(df_plot, aes(x = R, y = Alpha, color = Model)) +
+    geom_line(aes(group = interaction(Model, Segment)), linewidth = 1.2) +
+    geom_hline(data = df_ref, aes(yintercept = Alpha_c, color = Model), linetype = "dotted", linewidth = 0.8, alpha = 0.8) +
+    geom_text(data = df_ref, aes(x = 0, y = Alpha_c, label = Label, color = Model), parse = TRUE, hjust = 0, vjust = -0.5, show.legend = FALSE) +
+    # Add vertical line for Rc (Homogeneous)
+    geom_vline(xintercept = Rc_homo, linetype = "dashed", color = "#377eb8", linewidth = 0.8, alpha = 0.8) +
+    annotate("text", x = Rc_homo + 0.5, y = 0.1, label = expression(italic(R)[c]^{
+        homo
+    }), parse = TRUE, color = "#377eb8", hjust = 0) +
+    theme_light() +
     labs(y = expression(alpha^"*"), title = paste0("f=", f_val, ", p=", p_val, ", r=", r_val)) +
-    scale_color_brewer(palette = "Set1")
+    scale_color_brewer("", palette = "Set1") +
+    coord_cartesian(ylim = c(0, 1)) +
+    theme(legend.position = "top")
 
 ```
 
-**Observation**: With perfect targeting (heterogeneous), we switch to pre-emptive vaccination (or a mixed strategy) at a much lower cost ratio $R$ than in the homogeneous case. This is because we can selectively vaccinate the high-risk group first, getting a higher "bang for the buck" (higher cases prevented per dose).
+In the heterogeneous model, the transition to pre-emptive vaccination occurs at a significantly lower cost ratio $R$ compared to the homogeneous case. This is driven by the efficiency of targeting: by prioritizing the high-risk subpopulation, the pre-emptive strategy achieves a greater marginal reduction in transmission per dose, making it economically optimal even when the relative cost of pre-emptive vaccination is higher.
 
-The "kink" in the heterogeneous curve corresponds to saturating the high-risk group that "matters" for the regime switch, or sliding along the critical boundary $\alpha_c$ which now shifts because the remaining risk changes non-linearly.
+The abrupt change in slope (the "kink", visible around $R \approx 6$) corresponds to the saturation of the high-risk group. As the cost of outbreaks ($R$) increases, it becomes efficient to vaccinate the "high-risk sub-populations" very quickly. Once this group is covered, the marginal benefit of vaccinating the remaining (lower-risk) population drops significantly, causing the rate of increase in $\alpha^*$ to slow down or plateau.
 
 ## Impact of Reactive Effectiveness
 
 We now fix the cost ratio $R$ and vary the reactive effectiveness $r$. This allows us to observe the full range of strategies:
-1. **Pure Pre-emptive ($\alpha^*=1$)**: When reactive vaccination is ineffective (low $r$).
-2. **Mixed / Boundary ($\alpha^* \in (0, 1)$)**: When reactive vaccination is moderately effective.
-3. **Pure Reactive ($\alpha^*=0$)**: When reactive vaccination is highly effective (high $r$).
+
+1.  **Pure Pre-emptive ($\alpha^*=1$)**: When reactive vaccination is ineffective (low $r$).
+
+2.  **Mixed / Boundary ($\alpha^* \in (0, 1)$)**: When reactive vaccination is moderately effective.
+
+3.  **Pure Reactive ($\alpha^*=0$)**: When reactive vaccination is highly effective (high $r$).
 
 ```{r}
 #| label: fig-hetero-r
 #| fig-cap: "Optimal pre-emptive fraction across Reactive Effectiveness (r)."
-#| fig-width: 10
+#| fig-width: 8
 #| fig-height: 6
 
 # Parameters
@@ -366,7 +402,19 @@ df_plot_r <- data.frame(r = r_seq) %>%
         Homogeneous = calc_curve_r(r, "Homogeneous"),
         Heterogeneous = calc_curve_r(r, "Heterogeneous")
     ) %>%
-    pivot_longer(cols = c("Homogeneous", "Heterogeneous"), names_to = "Model", values_to = "Alpha")
+    pivot_longer(cols = c("Homogeneous", "Heterogeneous"), names_to = "Model", values_to = "Alpha") %>%
+    group_by(Model) %>%
+    mutate(
+        # Create segments to break the line for Homogeneous steps
+        # For Hetero, we want one continuous line (Segment = 1)
+        # For Homo, we want breaks when values change substantially
+        Segment = if (unique(Model) == "Homogeneous") {
+            cumsum(c(TRUE, abs(diff(Alpha)) > 1e-6))
+        } else {
+            1
+        }
+    ) %>%
+    ungroup()
 
 # Theoretical alpha_c (regime switch point)
 ac_homo <- (f_val - p_val) / (f_val * (1 - p_val))
@@ -375,23 +423,50 @@ ac_hetero <- alpha_c_beta(f_val, p_val)
 # Create a data frame for the reference lines to share the legend
 df_ref <- data.frame(
     Model = c("Homogeneous", "Heterogeneous"),
-    Alpha_c = c(ac_homo, ac_hetero)
+    Alpha_c = c(ac_homo, ac_hetero),
+    Label = c("alpha[c]^{homo}", "alpha[c]^{hetero}")
 )
 
+# Calculate critical r for Homogeneous case (f=0.5, p=0.3, R=5, nu=1)
+# Derived from R_c formula: 1-rc = (1-p)/(p*R) => rc = 1 - (1-p)/(p*R)
+rc_homo <- 1 - (1 - p_val) / (p_val * R_fixed)
+
+# Calculate point where p = r/nu => r = p * nu
+nu_val <- 1
+r_equal <- p_val * nu_val
+
 ggplot(df_plot_r, aes(x = r, y = Alpha, color = Model)) +
-    geom_line(aes(linetype = Model), linewidth = 1.2) +
-    # Add horizontal lines for alpha_c, mapping color to join the legend
-    # We suppress the linetype legend for these or make them all dotted
+    geom_line(aes(group = interaction(Model, Segment)), linewidth = 1.2) +
+    # Add horizontal lines for alpha_c
     geom_hline(data = df_ref, aes(yintercept = Alpha_c, color = Model), linetype = "dotted", linewidth = 0.8, alpha = 0.8) +
-    theme_minimal() +
+    geom_text(data = df_ref, aes(x = 0, y = Alpha_c, label = Label, color = Model), parse = TRUE, hjust = 0, vjust = -0.5, show.legend = FALSE) +
+    # Add vertical line for rc (Homogeneous)
+    geom_vline(xintercept = rc_homo, linetype = "dashed", color = "steelblue", linewidth = 0.8, alpha = 0.8) +
+    annotate("text", x = rc_homo + 0.02, y = 0.1, label = "r[c]^{homo}", parse = TRUE, color = "steelblue", hjust = 0) +
+    # Add vertical line for p = r/nu
+    geom_vline(xintercept = r_equal, linetype = "dotted", color = "steelblue", linewidth = 0.8, alpha = 0.8) +
+    annotate("text", x = r_equal + 0.02, y = 0.5, label = "r == p%.%nu", parse = TRUE, color = "steelblue", hjust = 0, vjust = 1) +
+    theme_light() +
     labs(
         x = "Reactive Effectiveness (r)",
         y = expression(alpha^"*"),
         title = paste0("f=", f_val, ", p=", p_val, ", R=", R_fixed),
         caption = "Dotted lines indicate regime-switching boundary alpha_c"
     ) +
-    scale_color_brewer(palette = "Set1")
+    scale_color_brewer("", palette = "Set1") +
+    theme(legend.position = "top")
+
 ```
+
+**Interpretation of the Critical Threshold $\alpha_c$ (Dotted Lines)**:
+
+The threshold $\alpha_c$ represents the "capacity boundary"—the **maximum** pre-emptive coverage allowed before the reactive system (with remaining capacity $f(1-\alpha)$) becomes overwhelmed by the remaining cases.
+
+*   **Reactive-Rich Zone ($\alpha \le \alpha_c$)**: Below this line, the reactive capacity is sufficient to cover all remaining cases. The system is unconstrained.
+
+*   **Reactive-Limited Zone ($\alpha > \alpha_c$)**: Above this line, pre-emption has consumed so much capacity ("crowding out") that the remaining reactive stockpile is insufficient to treat all outbreaks. We pay a penalty for this overflow.
+
+*   **Efficiency of Targeting**: In the **Heterogeneous** model (dashed line), $\alpha_c$ is **higher** than in the homogeneous case. Because we target high-risk individuals, we remove cases from the pool faster than we consume capacity, effectively "raising the ceiling" and allowing more pre-emptive vaccination before hitting the capacity constraint.
 
 ## Intuition: Why Heterogeneity Favors Pre-emption
 
@@ -423,6 +498,25 @@ This holds for any risk distribution provided:
 
 If risk is non-uniform (or follows any other heterogeneous distribution), sorting by risk ensures that the first individuals vaccinated have risk $x > E[X]$. This boosts the marginal benefit of the pre-emptive phase relative to the "average" strategy. The degree of this advantage depends on the **skewness** (or inequality) of the risk distribution—a highly skewed distribution (like the Beta distribution used here, or Gamma/Lognormal) where a small group holds most of the risk will show a widely expanded region where pre-emptive vaccination is optimal.
 
+### Why is $\alpha^*$ "smooth" in the Heterogeneous case?
+
+In the **Homogeneous** model, the optimal strategy is always a "corner solution" ($\alpha^* = 0$, $\alpha^* = 1$) or pinned exactly to the constraint ($\alpha^* = \alpha_c$). In contrast, the **Heterogeneous** model produces a smooth curve where $\alpha^*$ can take any value between 0 and 1.
+
+This is due to the difference in **Marginal Returns**:
+
+1.  **Homogeneous (Constant Returns)**: Every population unit has the exact same risk $p$. The benefit of vaccinating the 1st unit is identical to the benefit of vaccinating the 1,000th unit. The trade-off is linear.
+    *   If Benefit > Cost, you vaccinate *everyone* ($\alpha^*=1$).
+    *   If Benefit < Cost, you vaccinate *no one* ($\alpha^*=0$).
+    *   (The only exception is if you are forced to stop at $\alpha_c$ because of the capacity constraint).
+
+2.  **Heterogeneous (Diminishing Returns)**: We target high-risk populations first.
+    *   The 1st dose goes to a population with very high risk (huge benefit).
+    *   The 1,000th dose goes to a population with moderate risk (moderate benefit).
+    *   The last dose goes to a population with zero risk (zero benefit).
+    *   Because the **marginal benefit decreases** as we vaccinate more units, it eventually crosses the cost line. The optimal stopping point $\alpha^*$ is exactly where *Marginal Benefit = Marginal Cost*, which can happen anywhere between 0 and 1.
+
+This "Interior Solution" is a classic economic result of diminishing returns.
+
 ## Impact of Mean Outbreak Probability
 
 Finally, we examine how the optimal strategy changes as the overall mean risk $p$ increases.
@@ -430,7 +524,7 @@ Finally, we examine how the optimal strategy changes as the overall mean risk $p
 ```{r}
 #| label: fig-hetero-p
 #| fig-cap: "Optimal pre-emptive fraction across Mean Outbreak Probability (p)."
-#| fig-width: 10
+#| fig-width: 8
 #| fig-height: 6
 
 # Parameters
@@ -458,20 +552,47 @@ calc_curve_p <- function(p_vec, type) {
 
 df_plot_p <- data.frame(p = p_seq) %>%
     mutate(
-        Homo = calc_curve_p(p, "Homogeneous"),
-        Hetero = calc_curve_p(p, "Heterogeneous")
+        Homogeneous = calc_curve_p(p, "Homogeneous"),
+        Heterogeneous = calc_curve_p(p, "Heterogeneous")
     ) %>%
-    pivot_longer(cols = c("Homo", "Hetero"), names_to = "Model", values_to = "Alpha")
+    pivot_longer(cols = c("Homogeneous", "Heterogeneous"), names_to = "Model", values_to = "Alpha") %>%
+    group_by(Model) %>%
+    mutate(
+        # Create segments for abrupt changes in Homogeneous model
+        Segment = if (unique(Model) == "Homogeneous") {
+            cumsum(c(TRUE, abs(diff(Alpha)) > 0.05))
+        } else {
+            1
+        }
+    ) %>%
+    ungroup()
 
-ggplot(df_plot_p, aes(x = p, y = Alpha, color = Model, linetype = Model)) +
-    geom_line(linewidth = 1.2) +
-    theme_minimal() +
+# Calculate critical p for Homogeneous case
+# R_c = (1-p) / (p * (1-r)) => R * p * (1-r) = 1 - p
+# p * (1 + R*(1-r)) = 1 => p_c = 1 / (1 + R*(1-r))
+pc_homo <- 1 / (1 + R_fixed * (1 - r_fixed))
+
+# Alpha_c at p_c (Homogeneous)
+ac_homo_p <- (f_fixed - pc_homo) / (f_fixed * (1 - pc_homo))
+
+ggplot(df_plot_p, aes(x = p, y = Alpha, color = Model)) +
+    geom_line(aes(group = interaction(Model, Segment)), linewidth = 1.2) +
+    # Vertical line at p_c
+    geom_vline(xintercept = pc_homo, linetype = "dashed", color = "#377eb8", linewidth = 0.8, alpha = 0.8) +
+    annotate("text", x = pc_homo + 0.02, y = 0.5, label = "p[c]^{homo}", parse = TRUE, color = "#377eb8", hjust = 0) +
+    # Point at (p_c, alpha_c) if alpha_c is relevant?
+    # Or just label alpha_c? The user said "mark alpha_c and p_c in which R=R_c"
+    # Likely the intersection point.
+    annotate("point", x = pc_homo, y = ac_homo_p, color = "#377eb8", size = 3) +
+    annotate("text", x = pc_homo + 0.02, y = ac_homo_p, label = "alpha[c]^{homo}", parse = TRUE, color = "#377eb8", hjust = 0, vjust = -1) +
+    theme_light() +
     labs(
         x = "Mean Outbreak Probability (p)",
         y = expression(alpha^"*"),
         title = paste0("f=", f_fixed, ", R=", R_fixed, ", r=", r_fixed)
     ) +
-    scale_color_brewer(palette = "Set1")
+    scale_color_brewer("", palette = "Set1") +
+    theme(legend.position = "top")
 ```
 
 ## Intuition: Non-Monotonic Behavior of Optimal Alpha
@@ -481,7 +602,9 @@ The relationship between the optimal pre-emptive fraction $\alpha^*$ and the mea
 ### Phase 1: Low Risk (Rising $\alpha^*$)
 When $p$ is very low, the expected number of outbreaks is small. A reactive strategy is highly efficient because we only use vaccines when outbreaks actually occur, "saving" doses that would otherwise be wasted on non-outbreaks in a pre-emptive campaign.
 As $p$ rises, the "hit rate" of pre-emptive vaccination improves.
+
 *   **Homogeneous**: The rise is gradual.
+
 *   **Heterogeneous**: The switch to pre-emption happens much earlier and more aggressively. By targeting the high-risk tail, we achieve a much higher "cases prevented per dose" than the population average, making pre-emption economically viable even at relatively low overall risk levels.
 
 ### Phase 2: Moderate Risk (Falling $\alpha^*$)
@@ -501,13 +624,19 @@ As $p \to 1$, the variance of the Beta distribution shrinks (everyone becomes hi
 
 We can generalize the analysis to other risk distributions (e.g., Exponential, Gamma, Log-normal). The core logic remains satisfying the "Perfect Targeting" assumption:
 1.  Target the top fraction $f_{\mathrm{pre}}$ of the risk distribution.
+
 2.  Compute the average risk in this top percentile ($\bar{p}_{\mathrm{pre}}$).
+
 3.  Use this $\bar{p}_{\mathrm{pre}}$ in the cost calculations.
 
 We compare four distributions, all calibrated to have the **same mean outbreak probability** $p$:
+
 1.  **Beta**: $X \sim \text{Beta}(1, \theta)$ (our baseline).
+
 2.  **Exponential**: $X \sim \text{Exp}(\lambda)$ (strictly decreasing).
+
 3.  **Gamma**: $X \sim \text{Gamma}(k, \theta)$ (can be hump-shaped). We choose shape $k=2$.
+
 4.  **Log-normal**: $X \sim \text{Lognormal}(\mu, \sigma)$. We match the Coefficient of Variation (CV) to the Exponential distribution (CV=1).
 
 *Note: For distributions with support $[0, \infty)$, we assume the mass $>1$ is negligible or effectively capped at 1 (risk score interpretation).*
@@ -639,8 +768,23 @@ df_dists <- data.frame(R = R_sweep) %>%
     ) %>%
     pivot_longer(cols = -R, names_to = "Distribution", values_to = "Alpha")
 
+# Calculate critical R for Homogeneous case (p=0.3, r=0.6, nu=1)
+# Rc = (1-p)/(p*(1-r))
+Rc_homo_dist <- (1 - p_target) / (p_target * (1 - 0.6))
+
+# Calculate alpha_c for Homogeneous and Beta
+ac_homo_dist <- (0.5 - p_target) / (0.5 * (1 - p_target))
+ac_beta_dist <- alpha_c_beta(0.5, p_target)
+
 ggplot(df_dists, aes(x = R, y = Alpha, color = Distribution, linetype = Distribution)) +
     geom_line(linewidth = 1.2) +
+    geom_vline(xintercept = Rc_homo_dist, linetype = "dashed", color = "gray40", linewidth = 0.8, alpha = 0.8) +
+    # Add alpha_c lines
+    geom_hline(yintercept = ac_homo_dist, linetype = "dotted", color = "gray40", linewidth = 0.8, alpha = 0.8) +
+    annotate("text", x = 14, y = ac_homo_dist, label = "alpha[c]^{homo}", parse = TRUE, color = "gray40", vjust = -0.5, hjust = 1) +
+    geom_hline(yintercept = ac_beta_dist, linetype = "dotted", color = "gray40", linewidth = 0.8, alpha = 0.8) +
+    annotate("text", x = 14, y = ac_beta_dist, label = "alpha[c]^{hetero}", parse = TRUE, color = "gray40", vjust = -0.5, hjust = 1) +
+    annotate("text", x = Rc_homo_dist + 0.5, y = 0.1, label = "italic(R)[c]^{homo}", parse = TRUE, color = "gray40", hjust = 0) +
     theme_minimal() +
     labs(
         title = paste0("Comparison of Optimal Strategies (Mean p=", p_target, ")"),
@@ -719,8 +863,22 @@ results_corr$Rho_Label <- factor(paste0("rho = ", results_corr$Rho),
     levels = paste0("rho = ", c(1.0, 0.8, 0.5, 0.0))
 )
 
+# Calculate critical R for Homogeneous case (p=0.3, r=0.6, nu=1)
+Rc_homo_rank <- (1 - p_sim) / (p_sim * (1 - r_sim))
+
+# Alpha_c values
+ac_homo_rank <- (f_sim - p_sim) / (f_sim * (1 - p_sim))
+ac_beta_rank <- alpha_c_beta(f_sim, p_sim)
+
 ggplot(results_corr, aes(x = R, y = Alpha, color = Rho_Label)) +
     geom_line(linewidth = 1.2) +
+    geom_vline(xintercept = Rc_homo_rank, linetype = "dashed", color = "gray40", linewidth = 0.8, alpha = 0.8) +
+    # Add alpha_c lines
+    geom_hline(yintercept = ac_homo_rank, linetype = "dotted", color = "gray40", linewidth = 0.8, alpha = 0.8) +
+    annotate("text", x = 18, y = ac_homo_rank, label = "alpha[c]^{homo}", parse = TRUE, color = "gray40", vjust = -0.5, hjust = 1) +
+    geom_hline(yintercept = ac_beta_rank, linetype = "dotted", color = "gray40", linewidth = 0.8, alpha = 0.8) +
+    annotate("text", x = 18, y = ac_beta_rank, label = "alpha[c]^{hetero}", parse = TRUE, color = "gray40", vjust = -0.5, hjust = 1) +
+    annotate("text", x = Rc_homo_rank + 0.5, y = 0.1, label = "italic(R)[c]^{homo}", parse = TRUE, color = "gray40", hjust = 0) +
     theme_minimal() +
     labs(
         title = expression("Impact of Ranking Accuracy (" * rho * ")"),
