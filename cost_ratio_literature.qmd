@@ -1,0 +1,555 @@
+---
+title: "Cost Ratio Literature Review: R = C_I / C_V"
+subtitle: "PubMed-based survey across VIMC diseases"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    embed-resources: true
+---
+
+## Overview
+
+This document summarises cost data extracted from PubMed abstracts for 14 vaccine-preventable diseases listed by the Vaccine Impact Modelling Consortium (VIMC). The goal is to estimate plausible ranges of the cost ratio $R = C_I / C_V$ (infection cost per case divided by vaccination cost per person) used in the reactive vs. pre-emptive vaccination framework.
+
+::: {.callout-note}
+Cost data were extracted from **abstracts only** using regex heuristics. Many cost figures appear only in full-text articles. This survey is a starting point for manual curation, not a definitive extraction.
+:::
+
+## Summary by Disease
+
+| Disease | Articles | Year range | Study types | Cost-per-case mentions | Vaccine cost mentions |
+|---------|----------|------------|-------------|----------------------|----------------------|
+| Cholera | 122 | 1986–2026 | other(14), COI(46), CEA(67), BIA(1), CBA(11) | 1 | 51 |
+| COVID-19 | 177 | 2020–2026 | CEA(148), COI(35), CBA(20), other(4), BIA(2) | 0 | 12 |
+| Typhoid | 112 | 1990–2025 | COI(52), CEA(68), BIA(1), CBA(10), other(2) | 16 | 9 |
+| Dengue | 169 | 2000–2026 | CEA(67), COI(107), CBA(10), BIA(4), other(3) | 14 | 6 |
+| Haemophilus influenzae type b | 118 | 1985–2025 | other(7), COI(39), CEA(69), CBA(28), BIA(4) | 0 | 40 |
+| Rotavirus | 178 | 1980–2025 | CEA(138), COI(73), CBA(14), BIA(9), other(1) | 11 | 67 |
+| Pneumococcal disease (PCV) | 184 | 1980–2026 | COI(61), CEA(145), CBA(14), BIA(5), other(3) | 0 | 11 |
+| Human papillomavirus (HPV) | 195 | 2003–2025 | CEA(182), COI(26), BIA(5), CBA(7), other(1) | 1 | 22 |
+| Japanese encephalitis | 57 | 1990–2025 | CEA(32), COI(26), CBA(7), other(2) | 2 | 12 |
+| Malaria | 185 | 1991–2026 | COI(33), CEA(156), CBA(20), BIA(6), other(3) | 44 | 16 |
+| Measles | 162 | 1978–2026 | CEA(97), other(13), CBA(29), COI(41), BIA(2) | 23 | 22 |
+| Meningococcal meningitis | 164 | 1980–2026 | CEA(119), COI(50), CBA(8), other(5) | 7 | 28 |
+| Rubella | 148 | 1976–2025 | other(10), CEA(87), CBA(43), COI(35) | 8 | 15 |
+| Yellow fever | 48 | 1980–2025 | COI(20), CEA(27), CBA(4), other(3) | 0 | 19 |
+
+## Cholera
+
+**122 articles** with cost data (1986–2026). Countries: worldwide, US, global, India, China.
+
+### Cost per case mentions
+
+| Amount | PMID | Year | Context (excerpt) |
+|--------|------|------|-------------------|
+| US$1.72 | [31150406](https://pubmed.ncbi.nlm.nih.gov/31150406/) | 2019 | ratio-cost per case averted, cost per life saved and cost per DALY averted-for a single dose OCV. RESULTS: The mean cost |
+
+### Vaccine cost mentions
+
+| Amount | PMID | Year | Context (excerpt) |
+|--------|------|------|-------------------|
+| US$0.36 | [27930668](https://pubmed.ncbi.nlm.nih.gov/27930668/) | 2016 | ars (US$) and in international dollar (I$). RESULTS: Ten studies were identified and included in the analysis. The vacci |
+| US$ 6.32 | [27930668](https://pubmed.ncbi.nlm.nih.gov/27930668/) | 2016 | nd in international dollar (I$). RESULTS: Ten studies were identified and included in the analysis. The vaccine delivery |
+| US$2014 | [27930668](https://pubmed.ncbi.nlm.nih.gov/27930668/) | 2016 | tional dollar (I$). RESULTS: Ten studies were identified and included in the analysis. The vaccine delivery costs ranged |
+| $ 0.99 | [27930668](https://pubmed.ncbi.nlm.nih.gov/27930668/) | 2016 | tudies were identified and included in the analysis. The vaccine delivery costs ranged from US$0.36 to US$ 6.32 (in US$2 |
+| $ 16.81 | [27930668](https://pubmed.ncbi.nlm.nih.gov/27930668/) | 2016 | identified and included in the analysis. The vaccine delivery costs ranged from US$0.36 to US$ 6.32 (in US$2014) which w |
+| $2014 | [27930668](https://pubmed.ncbi.nlm.nih.gov/27930668/) | 2016 | nd included in the analysis. The vaccine delivery costs ranged from US$0.36 to US$ 6.32 (in US$2014) which was equivalen |
+| US$ 0.29 | [27930668](https://pubmed.ncbi.nlm.nih.gov/27930668/) | 2016 | costs ranged from US$0.36 to US$ 6.32 (in US$2014) which was equivalent to I$ 0.99 to I$ 16.81 (in I$2014). The vaccine  |
+| US$ 29.70 | [27930668](https://pubmed.ncbi.nlm.nih.gov/27930668/) | 2016 | from US$0.36 to US$ 6.32 (in US$2014) which was equivalent to I$ 0.99 to I$ 16.81 (in I$2014). The vaccine procurement c |
+| US$2014 | [27930668](https://pubmed.ncbi.nlm.nih.gov/27930668/) | 2016 | to US$ 6.32 (in US$2014) which was equivalent to I$ 0.99 to I$ 16.81 (in I$2014). The vaccine procurement costs ranged f |
+| $ 0.72 | [27930668](https://pubmed.ncbi.nlm.nih.gov/27930668/) | 2016 | equivalent to I$ 0.99 to I$ 16.81 (in I$2014). The vaccine procurement costs ranged from US$ 0.29 to US$ 29.70 (in US$20 |
+
+### Key articles for review
+
+- [Breastfeeding promotion and priority setting in health.](https://pubmed.ncbi.nlm.nih.gov/10158457/) (1996, Health policy and planning). Types: CEA. Money mentions: 30.
+- [Oral Cholera Vaccination Delivery Cost in Low- and Middle-Income Countries: An Analysis Based on Systematic Review.](https://pubmed.ncbi.nlm.nih.gov/27930668/) (2016, PLoS neglected tropical diseases). Types: CEA. Money mentions: 16.
+- [Evaluating the costs of cholera illness and cost-effectiveness of a single dose oral vaccination campaign in Lusaka, Zambia.](https://pubmed.ncbi.nlm.nih.gov/31150406/) (2019, PloS one). Types: CEA. Money mentions: 14.
+- [Potential impact of reactive vaccination in controlling cholera outbreaks: an exploratory analysis using a Zimbabwean experience.](https://pubmed.ncbi.nlm.nih.gov/21920160/) (2011, South African medical journal = Suid-Afrikaanse tydskrif vir geneeskunde). Types: CEA, COI. Money mentions: 11.
+- [Economic burden of cholera in Asia.](https://pubmed.ncbi.nlm.nih.gov/31611097/) (2020, Vaccine). Types: COI. Money mentions: 12.
+
+## COVID-19
+
+**177 articles** with cost data (2020–2026). Countries: worldwide, us, Global, sub-Saharan Africa, global.
+
+### Vaccine cost mentions
+
+| Amount | PMID | Year | Context (excerpt) |
+|--------|------|------|-------------------|
+| US$7 | [35914832](https://pubmed.ncbi.nlm.nih.gov/35914832/) | 2022 | ising roll-out in those over 50-years (80% uptake in all scenarios). Cost data were obtained from primary analyses. We a |
+| US$3.90 | [35914832](https://pubmed.ncbi.nlm.nih.gov/35914832/) | 2022 | ptake in all scenarios). Cost data were obtained from primary analyses. We assumed vaccine procurement at US$7 per dose  |
+| US$6.11 | [35914832](https://pubmed.ncbi.nlm.nih.gov/35914832/) | 2022 | all scenarios). Cost data were obtained from primary analyses. We assumed vaccine procurement at US$7 per dose and vacci |
+| US$919.11 | [35914832](https://pubmed.ncbi.nlm.nih.gov/35914832/) | 2022 | nalyses. We assumed vaccine procurement at US$7 per dose and vaccine delivery costs of US$3.90-US$6.11 per dose. The cos |
+| US$2300 | [38824084](https://pubmed.ncbi.nlm.nih.gov/38824084/) | 2024 | , respectively. In the PSA, almost 100% of simulations fell below the estimated opportunity cost-based cost-effectivenes |
+| $11 | [36827972](https://pubmed.ncbi.nlm.nih.gov/36827972/) | 2023 | d use of fractional dosing for boosters, together with delivery costs divided by fractionation, could substantially gain |
+| $2 | [36827972](https://pubmed.ncbi.nlm.nih.gov/36827972/) | 2023 | for boosters, together with delivery costs divided by fractionation, could substantially gain more net monetary benefit  |
+| US$318, | [36273987](https://pubmed.ncbi.nlm.nih.gov/36273987/) | 2022 | d to the current vaccination programme, PCV20 vaccination programme gained more QALYs with less cost, while PCV15 vaccin |
+| US$1 | [36273987](https://pubmed.ncbi.nlm.nih.gov/36273987/) | 2022 | current vaccination programme, PCV20 vaccination programme gained more QALYs with less cost, while PCV15 vaccination pro |
+| US$11 | [40645638](https://pubmed.ncbi.nlm.nih.gov/40645638/) | 2025 | veness in terms of death prevention, reduction in medical costs and timely COVID-19 testing. RESULTS: The analysis revea |
+
+### Key articles for review
+
+- [Emerging Therapies for COVID-19: The Value of Information From More Clinical Trials.](https://pubmed.ncbi.nlm.nih.gov/35490085/) (2022, Value in health : the journal of the International Society for Pharmacoeconomics and Outcomes Research). Types: CEA. Money mentions: 12.
+- [Economic burden of public health care and hospitalisation associated with COVID-19 in China.](https://pubmed.ncbi.nlm.nih.gov/35032917/) (2022, Public health). Types: CEA, COI. Money mentions: 12.
+- [Cost-effectiveness of Low-complexity Screening Tests in Community-based Case-finding for Tuberculosis.](https://pubmed.ncbi.nlm.nih.gov/37623745/) (2024, Clinical infectious diseases : an official publication of the Infectious Diseases Society of America). Types: CEA. Money mentions: 11.
+- [College Campuses and COVID-19 Mitigation: Clinical and Economic Value.](https://pubmed.ncbi.nlm.nih.gov/33347322/) (2021, Annals of internal medicine). Types: CEA. Money mentions: 10.
+- [Cost-effectiveness of interventions for the prevention and control of COVID-19: Systematic review of 85 modelling studies.](https://pubmed.ncbi.nlm.nih.gov/35712857/) (2022, Journal of global health). Types: CEA, CBA. Money mentions: 9.
+
+## Typhoid
+
+**112 articles** with cost data (1990–2025). Countries: Global, worldwide, South-East Asia, low-income, global.
+
+### Cost per case mentions
+
+| Amount | PMID | Year | Context (excerpt) |
+|--------|------|------|-------------------|
+| $2,058,196 | [31310226](https://pubmed.ncbi.nlm.nih.gov/31310226/) | 2019 | total, 318 case-patients were included, each matched with 2 controls. Most spending accrued in inpatient settings. Direc |
+| $6,098 | [31310226](https://pubmed.ncbi.nlm.nih.gov/31310226/) | 2019 | with 2 controls. Most spending accrued in inpatient settings. Direct healthcare spending totaled $2,058,196; the mean at |
+| $5,328 | [31310226](https://pubmed.ncbi.nlm.nih.gov/31310226/) | 2019 | s. Most spending accrued in inpatient settings. Direct healthcare spending totaled $2,058,196; the mean attributable cos |
+| $6,868 | [31310226](https://pubmed.ncbi.nlm.nih.gov/31310226/) | 2019 | spending accrued in inpatient settings. Direct healthcare spending totaled $2,058,196; the mean attributable cost per ca |
+| $4,558 | [31310226](https://pubmed.ncbi.nlm.nih.gov/31310226/) | 2019 | gs. Direct healthcare spending totaled $2,058,196; the mean attributable cost per case was $6,098 (95% CI $5,328-$6,868) |
+| $7,852 | [31310226](https://pubmed.ncbi.nlm.nih.gov/31310226/) | 2019 | ect healthcare spending totaled $2,058,196; the mean attributable cost per case was $6,098 (95% CI $5,328-$6,868) but va |
+| US$ 1 | [15609783](https://pubmed.ncbi.nlm.nih.gov/15609783/) | 2004 | s, and medicines provided free of charge to the families. The mean cost per episode of blood culture-confirmed typhoid f |
+| $79.80 | [33258938](https://pubmed.ncbi.nlm.nih.gov/33258938/) | 2020 | represented ~3.5% of annual individual labor income. From the healthcare provider perspective, the average direct medica |
+| $71.54 | [33258938](https://pubmed.ncbi.nlm.nih.gov/33258938/) | 2020 | .5% of annual individual labor income. From the healthcare provider perspective, the average direct medical economic cos |
+| $93.43 | [33258938](https://pubmed.ncbi.nlm.nih.gov/33258938/) | 2020 | ual labor income. From the healthcare provider perspective, the average direct medical economic cost per case was $79.80 |
+| US $58.64 | [33258940](https://pubmed.ncbi.nlm.nih.gov/33258940/) | 2020 | case were 3% of annual labor income across the sample. From the perspective of the healthcare provider, the average dire |
+| US $37.25 | [33258940](https://pubmed.ncbi.nlm.nih.gov/33258940/) | 2020 | nnual labor income across the sample. From the perspective of the healthcare provider, the average direct medical cost p |
+| US $73.27 | [33258940](https://pubmed.ncbi.nlm.nih.gov/33258940/) | 2020 | the sample. From the perspective of the healthcare provider, the average direct medical cost per case was US $58.64 (ran |
+| US $50.88 | [33258941](https://pubmed.ncbi.nlm.nih.gov/33258941/) | 2020 | costs represented 8.2% of the annual labor income. From the health care provider perspective, the estimated average dire |
+| US $52.24 | [33258941](https://pubmed.ncbi.nlm.nih.gov/33258941/) | 2020 | f the annual labor income. From the health care provider perspective, the estimated average direct medical cost per case |
+
+### Vaccine cost mentions
+
+| Amount | PMID | Year | Context (excerpt) |
+|--------|------|------|-------------------|
+| USD 470,934 | [37978481](https://pubmed.ncbi.nlm.nih.gov/37978481/) | 2023 | fetime. To implement a TCV vaccination program over the lifetime horizon, the estimated cost of the vaccine and administ |
+| USD 919,186 | [37978481](https://pubmed.ncbi.nlm.nih.gov/37978481/) | 2023 | ment a TCV vaccination program over the lifetime horizon, the estimated cost of the vaccine and administration costs wou |
+| $1440 | [28527687](https://pubmed.ncbi.nlm.nih.gov/28527687/) | 2017 | obability of being cost-saving in Delhi and Dong Thap and were most likely to provide a return on investment above a wil |
+| $2300 | [28527687](https://pubmed.ncbi.nlm.nih.gov/28527687/) | 2017 | cost-saving in Delhi and Dong Thap and were most likely to provide a return on investment above a willingness-to-pay thr |
+| $5360 | [28527687](https://pubmed.ncbi.nlm.nih.gov/28527687/) | 2017 | d Dong Thap and were most likely to provide a return on investment above a willingness-to-pay threshold of I$1440 in Kol |
+| $1 | [31130329](https://pubmed.ncbi.nlm.nih.gov/31130329/) | 2019 | Y) averted, or assuming a WTP value of at least 25% of each country's gross domestic product (GDP) per capita per DALY a |
+| US$1 | [35153097](https://pubmed.ncbi.nlm.nih.gov/35153097/) | 2022 | ines and injection supplies and service delivery costs. Without vaccine cost, we estimate the cost per child immunized t |
+| $0.45 | [32725235](https://pubmed.ncbi.nlm.nih.gov/32725235/) | 2020 | 92% in low-income areas). Not including vaccine and vaccination supplies, the average financial cost and economic cost p |
+| $1.42 | [32725235](https://pubmed.ncbi.nlm.nih.gov/32725235/) | 2020 | w-income areas). Not including vaccine and vaccination supplies, the average financial cost and economic cost per dose o |
+
+### Key articles for review
+
+- [Measurement of the personal cost of illness due to some major water-related diseases in an Indian rural population.](https://pubmed.ncbi.nlm.nih.gov/2351512/) (1990, International journal of epidemiology). Types: COI. Money mentions: 12.
+- [Direct Medical Costs of 3 Reportable Travel-Related Infections in Ontario, Canada, 2012-2014.](https://pubmed.ncbi.nlm.nih.gov/31310226/) (2019, Emerging infectious diseases). Types: CEA. Money mentions: 6.
+- [Typhoid and Paratyphoid Cost of Illness in Nepal: Patient and Health Facility Costs From the Surveillance for Enteric Fever in Asia Project II.](https://pubmed.ncbi.nlm.nih.gov/33258938/) (2020, Clinical infectious diseases : an official publication of the Infectious Diseases Society of America). Types: COI. Money mentions: 6.
+- [Typhoid and Paratyphoid Cost of Illness in Bangladesh: Patient and Health Facility Costs From the Surveillance for Enteric Fever in Asia Project II.](https://pubmed.ncbi.nlm.nih.gov/33258940/) (2020, Clinical infectious diseases : an official publication of the Infectious Diseases Society of America). Types: COI. Money mentions: 6.
+- [Typhoid and Paratyphoid Cost of Illness in Pakistan: Patient and Health Facility Costs From the Surveillance for Enteric Fever in Asia Project II.](https://pubmed.ncbi.nlm.nih.gov/33258941/) (2020, Clinical infectious diseases : an official publication of the Infectious Diseases Society of America). Types: COI. Money mentions: 5.
+
+## Dengue
+
+**169 articles** with cost data (2000–2026). Countries: Global, Brazil, worldwide, global, Colombia.
+
+### Cost per case mentions
+
+| Amount | PMID | Year | Context (excerpt) |
+|--------|------|------|-------------------|
+| USD 41 | [36534668](https://pubmed.ncbi.nlm.nih.gov/36534668/) | 2022 | s (15-24-year-olds), irrespective of dengue case definition. Economic and societal burdens are extensive, with the avera |
+| USD 261, | [36534668](https://pubmed.ncbi.nlm.nih.gov/36534668/) | 2022 | ear-olds), irrespective of dengue case definition. Economic and societal burdens are extensive, with the average cost pe |
+| USD 440.3 million | [36534668](https://pubmed.ncbi.nlm.nih.gov/36534668/) | 2022 | inition. Economic and societal burdens are extensive, with the average cost per case ranging from USD 41 to USD 261, tot |
+| $90.41 | [32901596](https://pubmed.ncbi.nlm.nih.gov/32901596/) | 2020 | nsurance (25%), and other sources (government, charity, and private insurance, 18%). After including fatal cases, the av |
+| $72.79 | [32901596](https://pubmed.ncbi.nlm.nih.gov/32901596/) | 2020 | and other sources (government, charity, and private insurance, 18%). After including fatal cases, the average cost per e |
+| $112.35 | [32901596](https://pubmed.ncbi.nlm.nih.gov/32901596/) | 2020 | er sources (government, charity, and private insurance, 18%). After including fatal cases, the average cost per episode  |
+| USD365.16 | [29634177](https://pubmed.ncbi.nlm.nih.gov/29634177/) | 2016 | days of school and patients and caregivers lost an average of 12.5 days of work. The mean total cost per case of dengue  |
+| USD327.90 | [29634177](https://pubmed.ncbi.nlm.nih.gov/29634177/) | 2016 | ers lost an average of 12.5 days of work. The mean total cost per case of dengue infection was estimated to be USD365.16 |
+| US$139.3 | [28031723](https://pubmed.ncbi.nlm.nih.gov/28031723/) | 2017 | Cost of illness in this study was estimated under the incidence-based approach from the societal perspective. RESULTS: T |
+| $61.7 | [28031723](https://pubmed.ncbi.nlm.nih.gov/28031723/) | 2017 | illness in this study was estimated under the incidence-based approach from the societal perspective. RESULTS: The avera |
+| $151.0 | [28031723](https://pubmed.ncbi.nlm.nih.gov/28031723/) | 2017 | cietal perspective. RESULTS: The average cost per case was US$139.3±$61.7. The average cost per child was higher than pe |
+| $63.5 | [28031723](https://pubmed.ncbi.nlm.nih.gov/28031723/) | 2017 | perspective. RESULTS: The average cost per case was US$139.3±$61.7. The average cost per child was higher than per adult |
+| $132.7 | [28031723](https://pubmed.ncbi.nlm.nih.gov/28031723/) | 2017 | e. RESULTS: The average cost per case was US$139.3±$61.7. The average cost per child was higher than per adult, but not  |
+| $59.9 | [28031723](https://pubmed.ncbi.nlm.nih.gov/28031723/) | 2017 | LTS: The average cost per case was US$139.3±$61.7. The average cost per child was higher than per adult, but not signifi |
+
+### Vaccine cost mentions
+
+| Amount | PMID | Year | Context (excerpt) |
+|--------|------|------|-------------------|
+| US$ 308.94 | [40692505](https://pubmed.ncbi.nlm.nih.gov/40692505/) | 2025 | ranged from US$ 3.5 million (US Virgin Islands, 2014-2015) to US$ 83.6 billion (Region of the Americas, 2013-2015). Dire |
+| US$ 33.7 million | [40692505](https://pubmed.ncbi.nlm.nih.gov/40692505/) | 2025 | Islands, 2014-2015) to US$ 83.6 billion (Region of the Americas, 2013-2015). Direct medical costs varied from US$ 308.94 |
+| US$ 888,000 | [40692505](https://pubmed.ncbi.nlm.nih.gov/40692505/) | 2025 | ical costs varied from US$ 308.94 (Tamil Nadu, India, 2006) to US$ 33.7 million (Réunion Island, 2005-2006). Vector cont |
+| US$ 466 million | [40692505](https://pubmed.ncbi.nlm.nih.gov/40692505/) | 2025 | u, India, 2006) to US$ 33.7 million (Réunion Island, 2005-2006). Vector control program costs ranged from US$ 888,000 an |
+| $1182 | [32576458](https://pubmed.ncbi.nlm.nih.gov/32576458/) | 2020 | erall incidence of dengue infections followed by vaccine price. Probabilistic sensitivity analysis shows that ICER for d |
+| $6367 | [32576458](https://pubmed.ncbi.nlm.nih.gov/32576458/) | 2020 | gue infections followed by vaccine price. Probabilistic sensitivity analysis shows that ICER for dengue vaccination vari |
+
+### Key articles for review
+
+- [Cost of Dengue Illness in Indonesia across Hospital, Ambulatory, and not Medically Attended Settings.](https://pubmed.ncbi.nlm.nih.gov/32901596/) (2020, The American journal of tropical medicine and hygiene). Types: COI. Money mentions: 18.
+- [Cost-effectiveness of dengue vaccination in ten endemic countries.](https://pubmed.ncbi.nlm.nih.gov/29229427/) (2018, Vaccine). Types: CEA. Money mentions: 11.
+- [Costs of dengue to the health system and individuals in Colombia from 2010 to 2012.](https://pubmed.ncbi.nlm.nih.gov/25667054/) (2015, The American journal of tropical medicine and hygiene). Types: COI. Money mentions: 9.
+- [Cost-Effectiveness of Dengue Vaccination in Indonesia: Considering Integrated Programs with Wolbachia-Infected Mosquitos and Health Education.](https://pubmed.ncbi.nlm.nih.gov/32545688/) (2020, International journal of environmental research and public health). Types: CEA. Money mentions: 9.
+- [Economic report on the cost of dengue fever in Vietnam: case of a provincial hospital.](https://pubmed.ncbi.nlm.nih.gov/28031723/) (2017, ClinicoEconomics and outcomes research : CEOR). Types: COI. Money mentions: 6.
+
+## Haemophilus influenzae type b
+
+**118 articles** with cost data (1985–2025). Countries: United States, Worldwide, worldwide, China, Thailand.
+
+### Vaccine cost mentions
+
+| Amount | PMID | Year | Context (excerpt) |
+|--------|------|------|-------------------|
+| US$3 | [19093776](https://pubmed.ncbi.nlm.nih.gov/19093776/) | 2009 | s evaluated, Hib vaccine was shown to be cost effective, although the vaccine is not yet cost saving based on pentavalen |
+| US$ 6252, | [26044493](https://pubmed.ncbi.nlm.nih.gov/26044493/) | 2015 | l costs per DALY were below GDP per capita. RESULT: From the societal perspective, incremental costs per discounted case |
+| US$ 26,476 | [26044493](https://pubmed.ncbi.nlm.nih.gov/26044493/) | 2015 | r DALY were below GDP per capita. RESULT: From the societal perspective, incremental costs per discounted case, death an |
+| US$ 1231, | [26044493](https://pubmed.ncbi.nlm.nih.gov/26044493/) | 2015 | ow GDP per capita. RESULT: From the societal perspective, incremental costs per discounted case, death and DALY averted  |
+| US$ 0.69 | [26044493](https://pubmed.ncbi.nlm.nih.gov/26044493/) | 2015 | incremental costs per discounted case, death and DALY averted were US$ 6252, US$ 26,476 and US$ 1231, respectively; the  |
+| US$ 6954, | [26044493](https://pubmed.ncbi.nlm.nih.gov/26044493/) | 2015 | US$ 6252, US$ 26,476 and US$ 1231, respectively; the break-even vaccine price was US$ 0.69/dose. From the governmental p |
+| US$ 29,449, | [26044493](https://pubmed.ncbi.nlm.nih.gov/26044493/) | 2015 | US$ 26,476 and US$ 1231, respectively; the break-even vaccine price was US$ 0.69/dose. From the governmental perspective |
+| US$ 1373, | [26044493](https://pubmed.ncbi.nlm.nih.gov/26044493/) | 2015 | US$ 1231, respectively; the break-even vaccine price was US$ 0.69/dose. From the governmental perspective, the results w |
+| US$ 0.48 | [26044493](https://pubmed.ncbi.nlm.nih.gov/26044493/) | 2015 | US$ 0.69/dose. From the governmental perspective, the results were US$ 6954, US$ 29,449, and US$ 1373, respectively; the |
+| US$ 1911 | [26044493](https://pubmed.ncbi.nlm.nih.gov/26044493/) | 2015 | tive, the results were US$ 6954, US$ 29,449, and US$ 1373, respectively; the break-even vaccine price was US$ 0.48/dose. |
+
+### Key articles for review
+
+- [Achieving immunization agenda 2030 coverage targets for 14 pathogens: Projected product and immunization delivery costs for 194 Countries, 2021-2030.](https://pubmed.ncbi.nlm.nih.gov/36686400/) (2023, Vaccine: X). Types: other. Money mentions: 12.
+- [Economic evaluation of delivering Haemophilus influenzae type b vaccine in routine immunization services in Kenya.](https://pubmed.ncbi.nlm.nih.gov/17768499/) (2007, Bulletin of the World Health Organization). Types: CEA. Money mentions: 12.
+- [An economic analysis of alternatives for childhood immunisation against Haemophilus influenzae type b disease.](https://pubmed.ncbi.nlm.nih.gov/7718653/) (1994, Australian journal of public health). Types: CEA. Money mentions: 11.
+- [Estimating the economic impact of pneumococcal conjugate, Haemophilus influenzae type b and rotavirus vaccines in India: National and state-level analyses.](https://pubmed.ncbi.nlm.nih.gov/31607600/) (2019, Vaccine). Types: COI. Money mentions: 12.
+- [Cost-effectiveness of Haemophilus influenzae type b vaccine in Vietnam.](https://pubmed.ncbi.nlm.nih.gov/26044493/) (2015, Vaccine). Types: CEA, COI. Money mentions: 9.
+
+## Rotavirus
+
+**178 articles** with cost data (1980–2025). Countries: China, worldwide, Mozambique, middle-income, Global.
+
+### Cost per case mentions
+
+| Amount | PMID | Year | Context (excerpt) |
+|--------|------|------|-------------------|
+| US$60 million | [29223486](https://pubmed.ncbi.nlm.nih.gov/29223486/) | 2018 | million cases and 8900 deaths while saving US$6 to US$9 million in costs over a 20-year period. The net cost of vaccinat |
+| US$238 | [29223486](https://pubmed.ncbi.nlm.nih.gov/29223486/) | 2018 | over a 20-year period. The net cost of vaccination program is approximately US$60 million over the same period. The soci |
+| US$332 | [29223486](https://pubmed.ncbi.nlm.nih.gov/29223486/) | 2018 | year period. The net cost of vaccination program is approximately US$60 million over the same period. The societal cost  |
+| US$27 | [29223486](https://pubmed.ncbi.nlm.nih.gov/29223486/) | 2018 | m is approximately US$60 million over the same period. The societal cost per DALY averted is US$238 to US$332 with cost  |
+| US$38 | [29223486](https://pubmed.ncbi.nlm.nih.gov/29223486/) | 2018 | oximately US$60 million over the same period. The societal cost per DALY averted is US$238 to US$332 with cost per case  |
+| US$7000 | [29223486](https://pubmed.ncbi.nlm.nih.gov/29223486/) | 2018 | ocietal cost per DALY averted is US$238 to US$332 with cost per case averted ranging from US$27 to US$38. The cost per d |
+| $27.10 | [23777692](https://pubmed.ncbi.nlm.nih.gov/23777692/) | 2013 | d. RESULTS: There were 1456 diarrheal disease cases among the 130,800 children (aged ≥ 60 months) included in the study. |
+| $15.60 | [23777692](https://pubmed.ncbi.nlm.nih.gov/23777692/) | 2013 | al disease cases among the 130,800 children (aged ≥ 60 months) included in the study. The median cost per case was $27.1 |
+| $858,791, | [23777692](https://pubmed.ncbi.nlm.nih.gov/23777692/) | 2013 | ulting in a frequency of 1181 cases per 100,000 children (95% confidence interval [CI]=1122, 1240). The overall cost of  |
+| $263 | [23777692](https://pubmed.ncbi.nlm.nih.gov/23777692/) | 2013 | ldren (95% confidence interval [CI]=1122, 1240). The overall cost of all-cause pneumonia cases was $858,791, and the med |
+| $27 | [23777692](https://pubmed.ncbi.nlm.nih.gov/23777692/) | 2013 | confidence interval [CI]=1122, 1240). The overall cost of all-cause pneumonia cases was $858,791, and the median cost pe |
+
+### Vaccine cost mentions
+
+| Amount | PMID | Year | Context (excerpt) |
+|--------|------|------|-------------------|
+| US$7.8 million | [35933279](https://pubmed.ncbi.nlm.nih.gov/35933279/) | 2022 | lion in healthcare costs. The cost per DALY averted was US$70. From 2021 to 2030, we estimate all three vaccines could p |
+| US$31 million | [35933279](https://pubmed.ncbi.nlm.nih.gov/35933279/) | 2022 | 8 million in healthcare costs. With Global Alliance for Vaccines and Immunization (Gavi) support, ROTARIX would have the |
+| US$75.8 million | [35933279](https://pubmed.ncbi.nlm.nih.gov/35933279/) | 2022 | g cost-effective at a willingness-to-pay threshold of 0.5x GDP per capita. Without Gavi support, ROTASIIL would have the |
+| $58 | [28623028](https://pubmed.ncbi.nlm.nih.gov/28623028/) | 2017 | pitalizations and 3 million outpatient visits in the base scenario. With a Gavi subsidy, cost/disability adjusted life y |
+| $142 | [28623028](https://pubmed.ncbi.nlm.nih.gov/28623028/) | 2017 | s and 3 million outpatient visits in the base scenario. With a Gavi subsidy, cost/disability adjusted life year (DALY) r |
+| $2.19 | [28623028](https://pubmed.ncbi.nlm.nih.gov/28623028/) | 2017 | vi subsidy, cost/disability adjusted life year (DALY) ratios ranged from $58/DALY to $142/DALY averted. Without a Gavi s |
+| $615 | [28623028](https://pubmed.ncbi.nlm.nih.gov/28623028/) | 2017 | r (DALY) ratios ranged from $58/DALY to $142/DALY averted. Without a Gavi subsidy and a vaccine price of $2.19 per dose, |
+| $1514 | [28623028](https://pubmed.ncbi.nlm.nih.gov/28623028/) | 2017 | os ranged from $58/DALY to $142/DALY averted. Without a Gavi subsidy and a vaccine price of $2.19 per dose, cost/DALY ra |
+| US$ 9090 | [25919152](https://pubmed.ncbi.nlm.nih.gov/25919152/) | 2015 | . Vaccination with either vaccine compared to no vaccination was highly cost-effective based on WHO guidelines and Argen |
+| $0.20 | [25919149](https://pubmed.ncbi.nlm.nih.gov/25919149/) | 2015 | n, health utilization, and costs were used to populate the TRIVAC cost-effectiveness model. The baseline analysis assume |
+
+### Key articles for review
+
+- [Cost-effectiveness of rotavirus vaccination in children under five years of age in 195 countries: A meta-regression analysis.](https://pubmed.ncbi.nlm.nih.gov/35643565/) (2022, Vaccine). Types: CEA. Money mentions: 15.
+- [Cost-effectiveness of childhood rotavirus vaccination in Taiwan.](https://pubmed.ncbi.nlm.nih.gov/19186200/) (2009, Vaccine). Types: CEA, COI. Money mentions: 14.
+- [Cost-effectiveness of rotavirus vaccination in the Philippines: A modeling study.](https://pubmed.ncbi.nlm.nih.gov/34753614/) (2021, Vaccine). Types: CEA. Money mentions: 14.
+- [Cost-effectiveness analysis of rotavirus vaccination in Argentina.](https://pubmed.ncbi.nlm.nih.gov/25919152/) (2015, Vaccine). Types: CEA. Money mentions: 11.
+- [Cost-effectiveness of rotavirus vaccination programs in Taiwan.](https://pubmed.ncbi.nlm.nih.gov/24060569/) (2013, Vaccine). Types: CEA, COI. Money mentions: 13.
+
+## Pneumococcal disease (PCV)
+
+**184 articles** with cost data (1980–2026). Countries: global, Thailand, United States, US, middle-income.
+
+### Vaccine cost mentions
+
+| Amount | PMID | Year | Context (excerpt) |
+|--------|------|------|-------------------|
+| US$318, | [36273987](https://pubmed.ncbi.nlm.nih.gov/36273987/) | 2022 | d to the current vaccination programme, PCV20 vaccination programme gained more QALYs with less cost, while PCV15 vaccin |
+| US$1 | [36273987](https://pubmed.ncbi.nlm.nih.gov/36273987/) | 2022 | current vaccination programme, PCV20 vaccination programme gained more QALYs with less cost, while PCV15 vaccination pro |
+| US$ 3.50 | [25919165](https://pubmed.ncbi.nlm.nih.gov/25919165/) | 2015 | e from clinical trials and the scientific literature was used to estimate the impact of the vaccine. A 3+0 schedule and  |
+| $46 | [28693751](https://pubmed.ncbi.nlm.nih.gov/28693751/) | 2017 | SION: In comparison to no-vaccination, we found PCV13 use in those aged 65years was unlikely to be cost-effective unless |
+| $15 | [30554762](https://pubmed.ncbi.nlm.nih.gov/30554762/) | 2019 | to 0·711 million) and 54·6 million disease episodes (51·8 million to 58·1 million) annually. Global vaccine costs (in 20 |
+| $3 | [30554762](https://pubmed.ncbi.nlm.nih.gov/30554762/) | 2019 | to 58·1 million) annually. Global vaccine costs (in 2015 international dollars) of $15·5 billion could be partially offs |
+| $2.19 | [38822745](https://pubmed.ncbi.nlm.nih.gov/38822745/) | 2024 | orts. Pre-pandemic population- and serotype-specific pneumococcal disease risk and illness/vaccine costs came from U.S.  |
+| $216,805 | [38822745](https://pubmed.ncbi.nlm.nih.gov/38822745/) | 2024 | t 3%/year over a lifetime time horizon. RESULTS: Uptake programs decreased pneumococcal disease overall. In Black cohort |
+| $245,546 | [38822745](https://pubmed.ncbi.nlm.nih.gov/38822745/) | 2024 | ts, PCV20 without program cost $216,805 per quality-adjusted life year (QALY) gained compared with no vaccination; incre |
+| $28,301 | [29370768](https://pubmed.ncbi.nlm.nih.gov/29370768/) | 2018 | sensitivity analyses were conducted. RESULTS: From a third-party payer perspective, which considers direct medical costs |
+
+### Key articles for review
+
+- [Cost of invasive pneumococcal disease, all-cause pneumonia, and all-cause otitis media among commercial-insured US children.](https://pubmed.ncbi.nlm.nih.gov/40152182/) (2025, Journal of medical economics). Types: COI. Money mentions: 18.
+- [Cost-Effectiveness and Budget Impact Analyses of Pneumococcal Vaccination in Indonesia.](https://pubmed.ncbi.nlm.nih.gov/33995536/) (2021, Journal of environmental and public health). Types: CEA, BIA. Money mentions: 13.
+- [Health-economic burden attributable to novel serotypes in candidate 24- and 31-valent pneumococcal conjugate vaccines.](https://pubmed.ncbi.nlm.nih.gov/39260055/) (2024, Vaccine). Types: COI. Money mentions: 12.
+- [The economic burden of childhood pneumococcal diseases in The Gambia.](https://pubmed.ncbi.nlm.nih.gov/26893592/) (2016, Cost effectiveness and resource allocation : C/E). Types: COI. Money mentions: 12.
+- [Intersectoral costs of pneumococcal diseases: a systematic review of partial economic evaluation studies.](https://pubmed.ncbi.nlm.nih.gov/40741932/) (2025, Expert review of pharmacoeconomics & outcomes research). Types: other. Money mentions: 10.
+
+## Human papillomavirus (HPV)
+
+**195 articles** with cost data (2003–2025). Countries: China, Global, Philippines, Thailand, UK.
+
+### Cost per case mentions
+
+| Amount | PMID | Year | Context (excerpt) |
+|--------|------|------|-------------------|
+| $5.9 billion | [14982672](https://pubmed.ncbi.nlm.nih.gov/14982672/) | 2004 | $0.4 billion). HIV and HPV were by far the most costly STDs in terms of total estimated direct medical costs, accounting |
+
+### Vaccine cost mentions
+
+| Amount | PMID | Year | Context (excerpt) |
+|--------|------|------|-------------------|
+| US $83 | [39365579](https://pubmed.ncbi.nlm.nih.gov/39365579/) | 2024 | £20 000 per QALY) vs posttreatment surveillance alone. The resulting ICER was £52 358.01 (US $68 588.99) per HPV-related |
+| $120, | [26475535](https://pubmed.ncbi.nlm.nih.gov/26475535/) | 2015 | SmithKline, New York, NY), quadrivalent Gardasil (Merck and Co, Kenilworth, NJ), and 9-valent Gardasil-9 (Merck and Co). |
+| US $29 | [35916995](https://pubmed.ncbi.nlm.nih.gov/35916995/) | 2022 | iscrete choice experiment and cost of illness. Costs only included the vaccine cost. The cost of two doses of bivalent a |
+| US $151, | [35916995](https://pubmed.ncbi.nlm.nih.gov/35916995/) | 2022 | experiment and cost of illness. Costs only included the vaccine cost. The cost of two doses of bivalent and quadrivalent |
+| US $1 | [35916995](https://pubmed.ncbi.nlm.nih.gov/35916995/) | 2022 | illness. Costs only included the vaccine cost. The cost of two doses of bivalent and quadrivalent vaccines were US $29 a |
+| US$ 8.4 | [35248423](https://pubmed.ncbi.nlm.nih.gov/35248423/) | 2022 | nt rate of QALYs. Compared to 4vHPV vaccine, for 9vHPV vaccine to remain very cost-effective and cost-effective, its pri |
+| US$ 15, | [35248423](https://pubmed.ncbi.nlm.nih.gov/35248423/) | 2022 | ALYs. Compared to 4vHPV vaccine, for 9vHPV vaccine to remain very cost-effective and cost-effective, its price per dose  |
+| US$15 | [35248423](https://pubmed.ncbi.nlm.nih.gov/35248423/) | 2022 | a. CONCLUSION: Compared to the 4vHPV vaccine, the 9vHPV vaccine is a cost-effective option in Ethiopia, given that its p |
+| US$4,217 | [34928971](https://pubmed.ncbi.nlm.nih.gov/34928971/) | 2021 | . ICERs are positively related to vaccine cost, and negatively related to cervical cancer burden. The mean predicted ICE |
+| $11.2 | [34303563](https://pubmed.ncbi.nlm.nih.gov/34303563/) | 2022 | verted from the government perspective; 95% credible range: $19-$280/DALY averted). Projected average annual costs of th |
+
+### Key articles for review
+
+- [Cost-effectiveness of human papillomavirus vaccination in girls living in Latin American countries: A systematic review and meta-analysis.](https://pubmed.ncbi.nlm.nih.gov/35370017/) (2022, Vaccine). Types: CEA. Money mentions: 14.
+- [The projected cost-effectiveness and budget impact of HPV vaccine introduction in Ghana.](https://pubmed.ncbi.nlm.nih.gov/34303563/) (2022, Vaccine). Types: CEA, BIA. Money mentions: 8.
+- [Cost-effectiveness of HPV vaccination in 195 countries: A meta-regression analysis.](https://pubmed.ncbi.nlm.nih.gov/34928971/) (2021, PloS one). Types: CEA. Money mentions: 7.
+- [Cost-effectiveness of human papillomavirus (HPV) vaccination in Tunisia: a modelling study.](https://pubmed.ncbi.nlm.nih.gov/39638594/) (2024, BMJ open). Types: CEA. Money mentions: 7.
+- [Cost-Effectiveness Analysis of the Introduction of HPV Vaccination of 9-Year-Old-Girls in Iran.](https://pubmed.ncbi.nlm.nih.gov/29698864/) (2018, Value in health regional issues). Types: CEA. Money mentions: 7.
+
+## Japanese encephalitis
+
+**57 articles** with cost data (1990–2025). Countries: India, China, Pakistan, Bangladesh, Philippines.
+
+### Cost per case mentions
+
+| Amount | PMID | Year | Context (excerpt) |
+|--------|------|------|-------------------|
+| $0.6 billion | [32169391](https://pubmed.ncbi.nlm.nih.gov/32169391/) | 2020 | ence and medical treatment costs. RESULTS: The numbers-needed-to-treat to prevent a case and cost per case averted were  |
+| $1.2 billion | [32169391](https://pubmed.ncbi.nlm.nih.gov/32169391/) | 2020 | bers-needed-to-treat to prevent a case and cost per case averted were approximately 0.7 million and $0.6 billion for Ris |
+
+### Vaccine cost mentions
+
+| Amount | PMID | Year | Context (excerpt) |
+|--------|------|------|-------------------|
+| $269.8 billion | [36686400](https://pubmed.ncbi.nlm.nih.gov/36686400/) | 2023 | nsitivity analysis were conducted to account for uncertainty in future vaccine pricing and delivery costs. The total cos |
+| $247.1 | [36686400](https://pubmed.ncbi.nlm.nih.gov/36686400/) | 2023 | unt for uncertainty in future vaccine pricing and delivery costs. The total cost of immunization programs is $269.8 bill |
+| $311.8 | [36686400](https://pubmed.ncbi.nlm.nih.gov/36686400/) | 2023 | ncertainty in future vaccine pricing and delivery costs. The total cost of immunization programs is $269.8 billion (95%  |
+| $152.8 billion | [36686400](https://pubmed.ncbi.nlm.nih.gov/36686400/) | 2023 | re vaccine pricing and delivery costs. The total cost of immunization programs is $269.8 billion (95% confidence interva |
+| $114.9 billion | [36686400](https://pubmed.ncbi.nlm.nih.gov/36686400/) | 2023 | of immunization programs is $269.8 billion (95% confidence interval: $247.1 - $311.8), of which $152.8 billion is consid |
+| $2.1 billion | [36686400](https://pubmed.ncbi.nlm.nih.gov/36686400/) | 2023 | of which $152.8 billion is considered as routine vaccine cost, $114.9 billion is routine delivery cost. Non- routine cos |
+| $89.9 billion | [36686400](https://pubmed.ncbi.nlm.nih.gov/36686400/) | 2023 | n is routine delivery cost. Non- routine cost for LICs and LMICs totaled $2.1 billion. The incremental cost of achieving |
+| $27.7 | [36686400](https://pubmed.ncbi.nlm.nih.gov/36686400/) | 2023 | livery cost. Non- routine cost for LICs and LMICs totaled $2.1 billion. The incremental cost of achieving coverage goals |
+| $110.1 | [36686400](https://pubmed.ncbi.nlm.nih.gov/36686400/) | 2023 | cost. Non- routine cost for LICs and LMICs totaled $2.1 billion. The incremental cost of achieving coverage goals after  |
+| $192.6 | [36686400](https://pubmed.ncbi.nlm.nih.gov/36686400/) | 2023 | countries requiring the largest increase in investment (56.2% of incremental costs). The average immunization cost per c |
+
+### Key articles for review
+
+- [Japanese encephalitis vaccination in the Philippines: A cost-effectiveness analysis comparing alternative delivery strategies.](https://pubmed.ncbi.nlm.nih.gov/32085954/) (2020, Vaccine). Types: CEA. Money mentions: 18.
+- [Estimating the cost of illness of acute Japanese encephalitis and sequelae care in Vietnam and Laos: A cross-sectional study.](https://pubmed.ncbi.nlm.nih.gov/37310946/) (2023, PLOS global public health). Types: COI. Money mentions: 18.
+- [Achieving immunization agenda 2030 coverage targets for 14 pathogens: Projected product and immunization delivery costs for 194 Countries, 2021-2030.](https://pubmed.ncbi.nlm.nih.gov/36686400/) (2023, Vaccine: X). Types: other. Money mentions: 12.
+- [Estimated economic impact of vaccinations in 73 low- and middle-income countries, 2001-2020.](https://pubmed.ncbi.nlm.nih.gov/28867843/) (2017, Bulletin of the World Health Organization). Types: COI. Money mentions: 7.
+- [Analysis of the Full Economic Cost for Japanese Encephalitis Under Different Risk Scenarios for Business Travelers to Asia.](https://pubmed.ncbi.nlm.nih.gov/30320627/) (2019, Journal of occupational and environmental medicine). Types: CBA. Money mentions: 7.
+
+## Malaria
+
+**185 articles** with cost data (1991–2026). Countries: Global, Sub-Saharan Africa, Mozambique, middle-income, Sudan.
+
+### Cost per case mentions
+
+| Amount | PMID | Year | Context (excerpt) |
+|--------|------|------|-------------------|
+| $1.18 | [34372987](https://pubmed.ncbi.nlm.nih.gov/34372987/) | 2021 | provider perspective. A third of all studies took place in 3 countries. The median provider economic cost of protecting  |
+| $5.70 | [34372987](https://pubmed.ncbi.nlm.nih.gov/34372987/) | 2021 | perspective. A third of all studies took place in 3 countries. The median provider economic cost of protecting 1 person  |
+| $0.53 | [34372987](https://pubmed.ncbi.nlm.nih.gov/34372987/) | 2021 | took place in 3 countries. The median provider economic cost of protecting 1 person per year ranged from $1.18 to $5.70  |
+| $5.97 | [34372987](https://pubmed.ncbi.nlm.nih.gov/34372987/) | 2021 | ce in 3 countries. The median provider economic cost of protecting 1 person per year ranged from $1.18 to $5.70 with vec |
+| $6.06 | [34372987](https://pubmed.ncbi.nlm.nih.gov/34372987/) | 2021 | ith vector control and from $0.53 to $5.97 with chemoprevention. The median provider economic cost per case diagnosed wi |
+| $9.31 | [34372987](https://pubmed.ncbi.nlm.nih.gov/34372987/) | 2021 | $0.53 to $5.97 with chemoprevention. The median provider economic cost per case diagnosed with rapid diagnostic tests wa |
+| $89.93 | [34372987](https://pubmed.ncbi.nlm.nih.gov/34372987/) | 2021 | $5.97 with chemoprevention. The median provider economic cost per case diagnosed with rapid diagnostic tests was $6.06 a |
+| $883,096 | [34532221](https://pubmed.ncbi.nlm.nih.gov/34532221/) | 2020 | timate efficacy for the subsequent year. RESULTS: The total cost of malaria elimination activities in Sampov Loun OD fro |
+| $1,304 | [34532221](https://pubmed.ncbi.nlm.nih.gov/34532221/) | 2020 | cost of malaria elimination activities in Sampov Loun OD from July 2015 to March 2018 was $883,096. The cost per case of |
+| $2,058,196 | [31310226](https://pubmed.ncbi.nlm.nih.gov/31310226/) | 2019 | total, 318 case-patients were included, each matched with 2 controls. Most spending accrued in inpatient settings. Direc |
+| $6,098 | [31310226](https://pubmed.ncbi.nlm.nih.gov/31310226/) | 2019 | with 2 controls. Most spending accrued in inpatient settings. Direct healthcare spending totaled $2,058,196; the mean at |
+| $5,328 | [31310226](https://pubmed.ncbi.nlm.nih.gov/31310226/) | 2019 | s. Most spending accrued in inpatient settings. Direct healthcare spending totaled $2,058,196; the mean attributable cos |
+| $6,868 | [31310226](https://pubmed.ncbi.nlm.nih.gov/31310226/) | 2019 | spending accrued in inpatient settings. Direct healthcare spending totaled $2,058,196; the mean attributable cost per ca |
+| $4,558 | [31310226](https://pubmed.ncbi.nlm.nih.gov/31310226/) | 2019 | gs. Direct healthcare spending totaled $2,058,196; the mean attributable cost per case was $6,098 (95% CI $5,328-$6,868) |
+| $7,852 | [31310226](https://pubmed.ncbi.nlm.nih.gov/31310226/) | 2019 | ect healthcare spending totaled $2,058,196; the mean attributable cost per case was $6,098 (95% CI $5,328-$6,868) but va |
+
+### Vaccine cost mentions
+
+| Amount | PMID | Year | Context (excerpt) |
+|--------|------|------|-------------------|
+| US$7.8 million | [35933279](https://pubmed.ncbi.nlm.nih.gov/35933279/) | 2022 | lion in healthcare costs. The cost per DALY averted was US$70. From 2021 to 2030, we estimate all three vaccines could p |
+| US$31 million | [35933279](https://pubmed.ncbi.nlm.nih.gov/35933279/) | 2022 | 8 million in healthcare costs. With Global Alliance for Vaccines and Immunization (Gavi) support, ROTARIX would have the |
+| US$75.8 million | [35933279](https://pubmed.ncbi.nlm.nih.gov/35933279/) | 2022 | g cost-effective at a willingness-to-pay threshold of 0.5x GDP per capita. Without Gavi support, ROTASIIL would have the |
+| US$ 2 | [19505328](https://pubmed.ncbi.nlm.nih.gov/19505328/) | 2009 | d mass vaccination combined with EPI). The cost-effectiveness ratios presented are calculated for four health outcomes,  |
+| US$ 10 | [19505328](https://pubmed.ncbi.nlm.nih.gov/19505328/) | 2009 | ccination combined with EPI). The cost-effectiveness ratios presented are calculated for four health outcomes, for assum |
+| $5 | [27890400](https://pubmed.ncbi.nlm.nih.gov/27890400/) | 2017 | Ys per 100,000 fully vaccinated children with much variation across settings primarily driven by differences in transmis |
+| $39.8 | [27890400](https://pubmed.ncbi.nlm.nih.gov/27890400/) | 2017 | ildren with much variation across settings primarily driven by differences in transmission intensity. At a price of $5 p |
+| $188 | [27890400](https://pubmed.ncbi.nlm.nih.gov/27890400/) | 2017 | in transmission intensity. At a price of $5 per dose program costs average $39.8 per fully vaccinated child with a media |
+| $78 | [27890400](https://pubmed.ncbi.nlm.nih.gov/27890400/) | 2017 | ion intensity. At a price of $5 per dose program costs average $39.8 per fully vaccinated child with a median cost-effec |
+| $22,448 | [27890400](https://pubmed.ncbi.nlm.nih.gov/27890400/) | 2017 | intensity. At a price of $5 per dose program costs average $39.8 per fully vaccinated child with a median cost-effective |
+
+### Key articles for review
+
+- [Costs and cost-effectiveness of malaria control interventions--a systematic review.](https://pubmed.ncbi.nlm.nih.gov/22050911/) (2011, Malaria journal). Types: CEA. Money mentions: 33.
+- [Economic analysis of a new four-panel rapid screening test in antenatal care in Kenya, Rwanda, and Uganda.](https://pubmed.ncbi.nlm.nih.gov/37525192/) (2023, BMC health services research). Types: CEA, CBA. Money mentions: 27.
+- [Impact, healthcare utilization and costs of travel-associated mosquito-borne diseases in international travellers: a prospective study.](https://pubmed.ncbi.nlm.nih.gov/37129519/) (2023, Journal of travel medicine). Types: COI. Money mentions: 16.
+- [Seasonal malaria chemoprevention in the Sahel subregion of Africa: a cost-effectiveness and cost-savings analysis.](https://pubmed.ncbi.nlm.nih.gov/33482140/) (2021, The Lancet. Global health). Types: CEA. Money mentions: 14.
+- [Cost-effectiveness of surgery and its policy implications for global health: a systematic review and analysis.](https://pubmed.ncbi.nlm.nih.gov/25103302/) (2014, The Lancet. Global health). Types: CEA. Money mentions: 12.
+
+## Measles
+
+**162 articles** with cost data (1978–2026). Countries: low-income, middle-income, United States, worldwide, India.
+
+### Cost per case mentions
+
+| Amount | PMID | Year | Context (excerpt) |
+|--------|------|------|-------------------|
+| $40,147 | [36707337](https://pubmed.ncbi.nlm.nih.gov/36707337/) | 2023 | RESULTS: Twenty-two studies were reviewed. Most studies evaluated outbreaks that occurred from 2011 to 2013 and 2017 to  |
+| $39.3 million | [36707337](https://pubmed.ncbi.nlm.nih.gov/36707337/) | 2023 | enty-two studies were reviewed. Most studies evaluated outbreaks that occurred from 2011 to 2013 and 2017 to 2019. Total |
+| $168 | [36707337](https://pubmed.ncbi.nlm.nih.gov/36707337/) | 2023 | ies evaluated outbreaks that occurred from 2011 to 2013 and 2017 to 2019. Total costs varied from $40,147 to $39.3 milli |
+| $49,439 | [36707337](https://pubmed.ncbi.nlm.nih.gov/36707337/) | 2023 | uated outbreaks that occurred from 2011 to 2013 and 2017 to 2019. Total costs varied from $40,147 to $39.3 million. Per  |
+| USD 107 | [39687243](https://pubmed.ncbi.nlm.nih.gov/39687243/) | 2024 | bivariate sensitivity analyses were performed. RESULTS: There were 36 236 confirmed measles cases from 2018 to 2020. The |
+| USD 2 | [39687243](https://pubmed.ncbi.nlm.nih.gov/39687243/) | 2024 | S: There were 36 236 confirmed measles cases from 2018 to 2020. The estimated outbreaks cost was USD 107 960 122, with t |
+| USD 3 | [39687243](https://pubmed.ncbi.nlm.nih.gov/39687243/) | 2024 | 36 236 confirmed measles cases from 2018 to 2020. The estimated outbreaks cost was USD 107 960 122, with the cost per ca |
+| USD 2 | [39687243](https://pubmed.ncbi.nlm.nih.gov/39687243/) | 2024 | d measles cases from 2018 to 2020. The estimated outbreaks cost was USD 107 960 122, with the cost per case ranging from |
+| $32.90 | [9599864](https://pubmed.ncbi.nlm.nih.gov/9599864/) | 1998 | in a school-based outbreak of measles, with no intervention and with each of six control strategies. The marginal cost p |
+| $6795 | [9599864](https://pubmed.ncbi.nlm.nih.gov/9599864/) | 1998 | rol strategies. The marginal cost per case prevented ranged from $32.90 when only previously unvaccinated school childre |
+| US $9.9 million | [31107215](https://pubmed.ncbi.nlm.nih.gov/31107215/) | 2019 | period, 12,427 measles cases and 24,627 rubella cases were recorded; 27 infants had congenital rubella syndrome (CRS). T |
+| US $439 | [31107215](https://pubmed.ncbi.nlm.nih.gov/31107215/) | 2019 | 4,627 rubella cases were recorded; 27 infants had congenital rubella syndrome (CRS). The cost of the outbreaks was US $9 |
+| US $132 | [31107215](https://pubmed.ncbi.nlm.nih.gov/31107215/) | 2019 | ere recorded; 27 infants had congenital rubella syndrome (CRS). The cost of the outbreaks was US $9.9 million. Cost per  |
+| US $44,051 | [31107215](https://pubmed.ncbi.nlm.nih.gov/31107215/) | 2019 | had congenital rubella syndrome (CRS). The cost of the outbreaks was US $9.9 million. Cost per case was US $439 for meas |
+| $152 | [31967305](https://pubmed.ncbi.nlm.nih.gov/31967305/) | 2020 | d 10 published studies from 2001 through 2018 that presented cost estimates from 11 measles outbreaks. The median total  |
+
+### Vaccine cost mentions
+
+| Amount | PMID | Year | Context (excerpt) |
+|--------|------|------|-------------------|
+| $548.19 | [38924461](https://pubmed.ncbi.nlm.nih.gov/38924461/) | 2024 | ted a 2-dose MMR vaccination program would save $119.24 to prevent one measles case, and a second dose could prevent 9,2 |
+| $232.70 | [32451210](https://pubmed.ncbi.nlm.nih.gov/32451210/) | 2020 | usceptibility in children <8 months provided incremental health gains compared to minimal costs at the individual-level. |
+| $17 | [7930754](https://pubmed.ncbi.nlm.nih.gov/7930754/) | 1994 | rations research to improve the use of existing technology, and vaccine development. As a benchmark, the existing Schwar |
+| US$ 53.5 million | [25919173](https://pubmed.ncbi.nlm.nih.gov/25919173/) | 2015 | ide costs to the four health-system levels. RESULTS: The total aggregated national costs for routine immunization - incl |
+| US$ 60.3 | [25919173](https://pubmed.ncbi.nlm.nih.gov/25919173/) | 2015 | tine immunization - including vaccine costs - equaled US$ 53.5 million during 2011 (including central, regional, and dis |
+| US$ 48.1 | [25919173](https://pubmed.ncbi.nlm.nih.gov/25919173/) | 2015 | ring 2011 (including central, regional, and district costs); this equated to US$ 60.3 per fully immunized child (FIC) wh |
+| US$ 5.1 | [25919173](https://pubmed.ncbi.nlm.nih.gov/25919173/) | 2015 | 3.9 million, primarily due to salaried labor (66%). The mean facility-level cost per vaccine dose administered in a rout |
+| US$ 2.4 | [25919173](https://pubmed.ncbi.nlm.nih.gov/25919173/) | 2015 | ue to salaried labor (66%). The mean facility-level cost per vaccine dose administered in a routine immunization program |
+| US$ 3.7 | [25919173](https://pubmed.ncbi.nlm.nih.gov/25919173/) | 2015 | t per vaccine dose administered in a routine immunization program was US$ 5.1 (with a range of US$ 2.4-7.8 depending on  |
+| $96 million | [3923849](https://pubmed.ncbi.nlm.nih.gov/3923849/) | 1985 | imately +14.5 million. Expenditures for immunization, including vaccine administration costs and the costs associated wi |
+
+### Key articles for review
+
+- [Breastfeeding promotion and priority setting in health.](https://pubmed.ncbi.nlm.nih.gov/10158457/) (1996, Health policy and planning). Types: CEA. Money mentions: 30.
+- [Economic burden of measles outbreaks: a cost-of-illness study in a middle-income country in the post-elimination era.](https://pubmed.ncbi.nlm.nih.gov/39687243/) (2024, Revista panamericana de salud publica = Pan American journal of public health). Types: COI. Money mentions: 12.
+- [Achieving immunization agenda 2030 coverage targets for 14 pathogens: Projected product and immunization delivery costs for 194 Countries, 2021-2030.](https://pubmed.ncbi.nlm.nih.gov/36686400/) (2023, Vaccine: X). Types: other. Money mentions: 12.
+- [Economic value of vaccinating geographically hard-to-reach populations with measles vaccine: A modeling application in Kenya.](https://pubmed.ncbi.nlm.nih.gov/30922700/) (2019, Vaccine). Types: CEA. Money mentions: 12.
+- [A Review of Measles Outbreak Cost Estimates From the United States in the Postelimination Era (2004-2017): Estimates by Perspective and Cost Type.](https://pubmed.ncbi.nlm.nih.gov/31967305/) (2020, Clinical infectious diseases : an official publication of the Infectious Diseases Society of America). Types: CEA. Money mentions: 9.
+
+## Meningococcal meningitis
+
+**164 articles** with cost data (1980–2026). Countries: Global, Worldwide, United States, Europe, worldwide.
+
+### Cost per case mentions
+
+| Amount | PMID | Year | Context (excerpt) |
+|--------|------|------|-------------------|
+| $40,075 | [30763284](https://pubmed.ncbi.nlm.nih.gov/30763284/) | 2019 | .001) or visit the intensive care unit (49.2% vs. 2.4%; P < 0.001), and were associated with significantly higher mean h |
+| $2827 | [30763284](https://pubmed.ncbi.nlm.nih.gov/30763284/) | 2019 | it the intensive care unit (49.2% vs. 2.4%; P < 0.001), and were associated with significantly higher mean hospitalizati |
+| $9867 | [30763284](https://pubmed.ncbi.nlm.nih.gov/30763284/) | 2019 | 75 vs. $2827; P < 0.001). The hospitalization cost per case remained significantly higher when excluding the initial hos |
+| $3312 | [30763284](https://pubmed.ncbi.nlm.nih.gov/30763284/) | 2019 | 27; P < 0.001). The hospitalization cost per case remained significantly higher when excluding the initial hospitalizati |
+| US$59 | [11348706](https://pubmed.ncbi.nlm.nih.gov/11348706/) | 2001 | performed during 1997. The preventive strategy prevented 59% of the cases compared to 49% for the emergency strategy. Th |
+| US$133 | [11348706](https://pubmed.ncbi.nlm.nih.gov/11348706/) | 2001 | strategy prevented 59% of the cases compared to 49% for the emergency strategy. The cost per case prevented was US$59 fo |
+| US$0.20 | [11348706](https://pubmed.ncbi.nlm.nih.gov/11348706/) | 2001 | y strategy. The cost per case prevented was US$59 for the preventive strategy and US$133 for the reactive strategy, and  |
+
+### Vaccine cost mentions
+
+| Amount | PMID | Year | Context (excerpt) |
+|--------|------|------|-------------------|
+| $75 | [25131732](https://pubmed.ncbi.nlm.nih.gov/25131732/) | 2014 | developed. A 4-dose vaccination schedule, 97% coverage, 90% effectiveness, 66% strain coverage, 10-year duration of prot |
+| $46.6 million | [25131732](https://pubmed.ncbi.nlm.nih.gov/25131732/) | 2014 | o prevent 4.6 invasive MenB disease cases over the lifetime of an Ontario birth cohort, equivalent to 10 QALYs gained. T |
+| $318,383 | [25131732](https://pubmed.ncbi.nlm.nih.gov/25131732/) | 2014 | ases over the lifetime of an Ontario birth cohort, equivalent to 10 QALYs gained. The estimated program cost of C$46.6 m |
+| $1.5 million | [38348600](https://pubmed.ncbi.nlm.nih.gov/38348600/) | 2024 | (MCV-4) could avoid 91, 286, and 455 more meningococcal cases. The ICERs were estimated at approximately $250 thousand/Q |
+| $3.9 | [38348600](https://pubmed.ncbi.nlm.nih.gov/38348600/) | 2024 | exceeding the threshold of three times GDP per capita. The alternative strategies were not cost-effective. However, if v |
+| $9.9 | [38348600](https://pubmed.ncbi.nlm.nih.gov/38348600/) | 2024 | reshold of three times GDP per capita. The alternative strategies were not cost-effective. However, if vaccine prices we |
+| $12 | [38348600](https://pubmed.ncbi.nlm.nih.gov/38348600/) | 2024 | s GDP per capita. The alternative strategies were not cost-effective. However, if vaccine prices were reduced to $3.9 fo |
+| $18 million | [15867028](https://pubmed.ncbi.nlm.nih.gov/15867028/) | 2005 | s, a decrease of 46% in the expected burden of disease. Before program costs are counted, adolescent vaccination would r |
+| $50 million | [15867028](https://pubmed.ncbi.nlm.nih.gov/15867028/) | 2005 | isease. Before program costs are counted, adolescent vaccination would reduce direct disease costs by $18 million and de |
+| $82.50 | [15867028](https://pubmed.ncbi.nlm.nih.gov/15867028/) | 2005 | illion and decrease productivity losses by $50 million. At a cost per vaccination (average public-private price per dose |
+
+### Key articles for review
+
+- [Potential impact of vaccination against Neisseria meningitidis on Neisseria gonorrhoeae in the United States: results from a decision-analysis model.](https://pubmed.ncbi.nlm.nih.gov/25483706/) (2014, Human vaccines & immunotherapeutics). Types: other. Money mentions: 14.
+- [Healthcare Resource Utilization and Cost of Invasive Meningococcal Disease in Ontario, Canada.](https://pubmed.ncbi.nlm.nih.gov/30763284/) (2019, The Pediatric infectious disease journal). Types: COI. Money mentions: 10.
+- [Treatment costs of long-term invasive meningococcal disease sequelae: A literature review and Delphi study in Brazil.](https://pubmed.ncbi.nlm.nih.gov/39978116/) (2025, The Brazilian journal of infectious diseases : an official publication of the Brazilian Society of Infectious Diseases). Types: other. Money mentions: 12.
+- [The cost-effectiveness of alternative vaccination strategies for polyvalent meningococcal vaccines in Burkina Faso: A transmission dynamic modeling study.](https://pubmed.ncbi.nlm.nih.gov/29364884/) (2018, PLoS medicine). Types: CEA. Money mentions: 10.
+- [Cost-effectiveness Comparison of Monovalent C Versus Quadrivalent ACWY Meningococcal Conjugate Vaccination in Canada.](https://pubmed.ncbi.nlm.nih.gov/28027288/) (2017, The Pediatric infectious disease journal). Types: CEA, COI. Money mentions: 7.
+
+## Rubella
+
+**148 articles** with cost data (1976–2025). Countries: United States, worldwide, middle-income, India, Zambia.
+
+### Cost per case mentions
+
+| Amount | PMID | Year | Context (excerpt) |
+|--------|------|------|-------------------|
+| US $9.9 million | [31107215](https://pubmed.ncbi.nlm.nih.gov/31107215/) | 2019 | period, 12,427 measles cases and 24,627 rubella cases were recorded; 27 infants had congenital rubella syndrome (CRS). T |
+| US $439 | [31107215](https://pubmed.ncbi.nlm.nih.gov/31107215/) | 2019 | 4,627 rubella cases were recorded; 27 infants had congenital rubella syndrome (CRS). The cost of the outbreaks was US $9 |
+| US $132 | [31107215](https://pubmed.ncbi.nlm.nih.gov/31107215/) | 2019 | ere recorded; 27 infants had congenital rubella syndrome (CRS). The cost of the outbreaks was US $9.9 million. Cost per  |
+| US $44,051 | [31107215](https://pubmed.ncbi.nlm.nih.gov/31107215/) | 2019 | had congenital rubella syndrome (CRS). The cost of the outbreaks was US $9.9 million. Cost per case was US $439 for meas |
+| US$188 | [15689089](https://pubmed.ncbi.nlm.nih.gov/15689089/) | 2004 | a large proportion of the total cost as a lot of parents took leave when their children were ill. The estimates of total |
+| US$3.3 million | [15689089](https://pubmed.ncbi.nlm.nih.gov/15689089/) | 2004 | estimates of total cost represent approximately US$188 per varicella case per year. In comparison, the cost of a vaccina |
+| US$104 | [15689089](https://pubmed.ncbi.nlm.nih.gov/15689089/) | 2004 | per varicella case per year. In comparison, the cost of a vaccination program was found to be US$3.3 million per annum.  |
+| US$2 | [15689089](https://pubmed.ncbi.nlm.nih.gov/15689089/) | 2004 | r annum. The cost per case averted was US$104. From a societal point of view, for every dollar invested in a vaccination |
+
+### Vaccine cost mentions
+
+| Amount | PMID | Year | Context (excerpt) |
+|--------|------|------|-------------------|
+| $548.19 | [38924461](https://pubmed.ncbi.nlm.nih.gov/38924461/) | 2024 | ted a 2-dose MMR vaccination program would save $119.24 to prevent one measles case, and a second dose could prevent 9,2 |
+| $96 million | [3923849](https://pubmed.ncbi.nlm.nih.gov/3923849/) | 1985 | imately +14.5 million. Expenditures for immunization, including vaccine administration costs and the costs associated wi |
+| $269.8 billion | [36686400](https://pubmed.ncbi.nlm.nih.gov/36686400/) | 2023 | nsitivity analysis were conducted to account for uncertainty in future vaccine pricing and delivery costs. The total cos |
+| $247.1 | [36686400](https://pubmed.ncbi.nlm.nih.gov/36686400/) | 2023 | unt for uncertainty in future vaccine pricing and delivery costs. The total cost of immunization programs is $269.8 bill |
+| $311.8 | [36686400](https://pubmed.ncbi.nlm.nih.gov/36686400/) | 2023 | ncertainty in future vaccine pricing and delivery costs. The total cost of immunization programs is $269.8 billion (95%  |
+| $152.8 billion | [36686400](https://pubmed.ncbi.nlm.nih.gov/36686400/) | 2023 | re vaccine pricing and delivery costs. The total cost of immunization programs is $269.8 billion (95% confidence interva |
+| $114.9 billion | [36686400](https://pubmed.ncbi.nlm.nih.gov/36686400/) | 2023 | of immunization programs is $269.8 billion (95% confidence interval: $247.1 - $311.8), of which $152.8 billion is consid |
+| $2.1 billion | [36686400](https://pubmed.ncbi.nlm.nih.gov/36686400/) | 2023 | of which $152.8 billion is considered as routine vaccine cost, $114.9 billion is routine delivery cost. Non- routine cos |
+| $89.9 billion | [36686400](https://pubmed.ncbi.nlm.nih.gov/36686400/) | 2023 | n is routine delivery cost. Non- routine cost for LICs and LMICs totaled $2.1 billion. The incremental cost of achieving |
+| $27.7 | [36686400](https://pubmed.ncbi.nlm.nih.gov/36686400/) | 2023 | livery cost. Non- routine cost for LICs and LMICs totaled $2.1 billion. The incremental cost of achieving coverage goals |
+
+### Key articles for review
+
+- [Achieving immunization agenda 2030 coverage targets for 14 pathogens: Projected product and immunization delivery costs for 194 Countries, 2021-2030.](https://pubmed.ncbi.nlm.nih.gov/36686400/) (2023, Vaccine: X). Types: other. Money mentions: 12.
+- [Economic burden of varicella in Singapore--a cost benefit estimate of implementation of a routine varicella vaccination.](https://pubmed.ncbi.nlm.nih.gov/15689089/) (2004, The Southeast Asian journal of tropical medicine and public health). Types: COI, CBA. Money mentions: 5.
+- [Estimated economic impact of vaccinations in 73 low- and middle-income countries, 2001-2020.](https://pubmed.ncbi.nlm.nih.gov/28867843/) (2017, Bulletin of the World Health Organization). Types: COI. Money mentions: 7.
+- [Assessment of Economic Burden of Concurrent Measles and Rubella Outbreaks, Romania, 2011-2012.](https://pubmed.ncbi.nlm.nih.gov/31107215/) (2019, Emerging infectious diseases). Types: COI. Money mentions: 4.
+- [Economic evaluation of second measles containing vaccine (MCV) dose: a systematic review of available evidence.](https://pubmed.ncbi.nlm.nih.gov/38924461/) (2024, Expert review of vaccines). Types: CBA. Money mentions: 3.
+
+## Yellow fever
+
+**48 articles** with cost data (1980–2025). Countries: worldwide, Worldwide, US, India, Brazil.
+
+### Vaccine cost mentions
+
+| Amount | PMID | Year | Context (excerpt) |
+|--------|------|------|-------------------|
+| US$ 308.94 | [40692505](https://pubmed.ncbi.nlm.nih.gov/40692505/) | 2025 | ranged from US$ 3.5 million (US Virgin Islands, 2014-2015) to US$ 83.6 billion (Region of the Americas, 2013-2015). Dire |
+| US$ 33.7 million | [40692505](https://pubmed.ncbi.nlm.nih.gov/40692505/) | 2025 | Islands, 2014-2015) to US$ 83.6 billion (Region of the Americas, 2013-2015). Direct medical costs varied from US$ 308.94 |
+| US$ 888,000 | [40692505](https://pubmed.ncbi.nlm.nih.gov/40692505/) | 2025 | ical costs varied from US$ 308.94 (Tamil Nadu, India, 2006) to US$ 33.7 million (Réunion Island, 2005-2006). Vector cont |
+| US$ 466 million | [40692505](https://pubmed.ncbi.nlm.nih.gov/40692505/) | 2025 | u, India, 2006) to US$ 33.7 million (Réunion Island, 2005-2006). Vector control program costs ranged from US$ 888,000 an |
+| $7158 | [30974312](https://pubmed.ncbi.nlm.nih.gov/30974312/) | 2019 | 2015 US dollars). Vaccination was considered cost-effective from both perspectives (ie, between 1- and 3-fold the gross  |
+| $2.75 | [30974312](https://pubmed.ncbi.nlm.nih.gov/30974312/) | 2019 | d cost-effective from both perspectives (ie, between 1- and 3-fold the gross domestic product per capita, $7158) and rem |
+| $4.66 | [30974312](https://pubmed.ncbi.nlm.nih.gov/30974312/) | 2019 | rom both perspectives (ie, between 1- and 3-fold the gross domestic product per capita, $7158) and remains so if price p |
+| $269.8 billion | [36686400](https://pubmed.ncbi.nlm.nih.gov/36686400/) | 2023 | nsitivity analysis were conducted to account for uncertainty in future vaccine pricing and delivery costs. The total cos |
+| $247.1 | [36686400](https://pubmed.ncbi.nlm.nih.gov/36686400/) | 2023 | unt for uncertainty in future vaccine pricing and delivery costs. The total cost of immunization programs is $269.8 bill |
+| $311.8 | [36686400](https://pubmed.ncbi.nlm.nih.gov/36686400/) | 2023 | ncertainty in future vaccine pricing and delivery costs. The total cost of immunization programs is $269.8 billion (95%  |
+
+### Key articles for review
+
+- [Achieving immunization agenda 2030 coverage targets for 14 pathogens: Projected product and immunization delivery costs for 194 Countries, 2021-2030.](https://pubmed.ncbi.nlm.nih.gov/36686400/) (2023, Vaccine: X). Types: other. Money mentions: 12.
+- [The Public Health Benefits and Economic Value of Routine Yellow Fever Vaccination in Colombia.](https://pubmed.ncbi.nlm.nih.gov/30974312/) (2019, Value in health regional issues). Types: CEA. Money mentions: 7.
+- [Burden of Chikungunya Fever and Its Economic and Social Impacts Worldwide: A Systematic Review.](https://pubmed.ncbi.nlm.nih.gov/40692505/) (2025, Tropical medicine & international health : TM & IH). Types: CEA, COI. Money mentions: 6.
+- [Estimated economic impact of vaccinations in 73 low- and middle-income countries, 2001-2020.](https://pubmed.ncbi.nlm.nih.gov/28867843/) (2017, Bulletin of the World Health Organization). Types: COI. Money mentions: 7.
+- [Incremental costs of introducing jet injection technology for delivery of routine childhood vaccinations: comparative analysis from Brazil, India, and South Africa.](https://pubmed.ncbi.nlm.nih.gov/21115059/) (2011, Vaccine). Types: other. Money mentions: 6.
+
+## Methodology
+
+Articles were retrieved via NCBI E-utilities (PubMed) using disease-specific search terms combined with economic/cost keywords. Cost data were extracted from abstracts using regex pattern matching for USD amounts. Study types were classified by keyword matching (CEA, COI, CBA, BIA). Countries/regions were identified by name matching.
+
+**Limitations**: (1) Only abstracts searched — many cost figures are in full text only. (2) Currency conversion and inflation adjustment not applied. (3) Regex extraction is approximate — manual verification needed. (4) Non-English articles excluded.

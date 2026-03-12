@@ -228,9 +228,8 @@ assign_outbreak_trajectory <- function(regions,
   purrr::map_dfr(seq_len(nrow(regions)), function(i) {
     region <- regions[i, ]
 
-    ## --- outbreak occurrence ---
-    # if (runif(1) >= region$outbreak_prob)
-    if (!region$Y) { # outbreak occurred
+    ## --- no outbreak: return NAs ---
+    if (!region$Y) {
       return(
         tibble::tibble(
           id = region$id,

@@ -4,11 +4,16 @@
 # 2. Re-allow directories we want to track
 !R/
 !data/
+!scripts/
+!.claude/
 
 # 3. Inside R/ and data/, track everything
 !R/**
 !data/**
+!scripts/**
+!.claude/**
 !*.qmd
+!CLAUDE.md
 
 # 4. Ignore R / IDE / session artifacts everywhere
 .Rproj.user/

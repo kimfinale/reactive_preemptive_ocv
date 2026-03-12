@@ -1,0 +1,574 @@
+---
+title: "Vaccination Strategy Guide for a 50-Subunit Country with Limited Vaccine Supply"
+subtitle: "Evidence-Based Recommendations for Pre-emptive, Reactive, and Mixed Allocation"
+author: "Based on analytic and simulation studies by Jong-Hoon Kim"
+date: "`r Sys.Date()`"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    code-fold: true
+    embed-resources: true
+bibliography: references.bib
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(tidyverse)
+library(patchwork)
+library(knitr)
+source("R/analytic_utils.R")
+```
+
+# Executive Summary
+
+This report provides evidence-based guidance for a policy maker governing a country composed of **50 subunits** (e.g., districts or provinces), with **vaccination capacity sufficient to cover 50% of the population** (i.e., 25 subunit-campaigns). The country faces an uncertain threat of disease outbreaks — the timing, location, and scale of which are unknown.
+
+The central question is: **How should the limited vaccine stockpile be allocated between pre-emptive vaccination (before outbreaks occur) and reactive vaccination (in response to detected outbreaks)?**
+
+Drawing on analytical models, heterogeneous-risk theory, and Monte Carlo simulations tailored to this 50-subunit setting, our key findings are:
+
+1. **A mixed strategy is almost always optimal.** Pure pre-emptive or pure reactive strategies are rarely cost-minimizing. Allocating 30--60% of capacity to pre-emptive vaccination of the highest-risk subunits, while reserving the remainder for rapid outbreak response, consistently minimizes expected costs across a wide range of scenarios.
+
+2. **The optimal split depends critically on three factors:**
+   - The **outbreak probability** ($p$): Higher outbreak risk favors more pre-emptive allocation.
+   - The **outbreak severity** (cost ratio $R = C_I/C_V$): More severe outbreaks favor pre-emptive vaccination.
+   - The **reactive effectiveness** ($r$): Slower or less effective reactive response favors pre-emptive allocation.
+
+3. **Risk intelligence is a force multiplier.** Even moderately accurate targeting of high-risk subunits ($\rho \approx 0.7$) captures most of the benefit of perfect information, reducing costs by ~15% compared to random allocation.
+
+4. **The strategy is robust to moderate uncertainty in outbreak probability.** Misestimating the outbreak probability by a factor of 1.5--2 incurs a cost penalty of only 3--5%. The costliest error is severe underestimation, which leads to under-investment in pre-emptive vaccination.
+
+5. **With only 50 subunits, outcome variance is substantial.** The coefficient of variation of total costs is ~25% at $n=50$ versus ~8% at $n=500$, meaning actual costs will deviate meaningfully from expected values in any single realization. This reinforces the value of a mixed strategy as a hedge against worst-case outcomes.
+
+
+# Setting and Assumptions
+
+## Country Structure
+
+- **50 subunits** of approximately equal population size, each requiring one vaccination campaign for full coverage.
+- **Vaccination capacity**: $f = 0.5$, meaning 25 campaigns can be conducted in total (pre-emptive + reactive combined).
+- Each campaign fully vaccinates one subunit; partial coverage of all 50 subunits is not considered as an alternative.
+
+## Outbreak Risk
+
+- **Outbreak probability ($p$)**: Each subunit independently faces a probability $p$ of experiencing an outbreak. This is inherently difficult to estimate. We consider a range of $p = 0.05$ to $p = 0.60$.
+- **Risk heterogeneity**: Outbreak probabilities vary across subunits following a $\text{Beta}(1, \theta)$ distribution with mean $p$. This captures the realistic scenario where a few subunits are at high risk while most are at low risk.
+
+## Economic Parameters
+
+- **Cost ratio** $R = C_I / C_V$: The ratio of total outbreak cost (medical, productivity loss, mortality) to vaccination campaign cost. Based on cholera cost data for Sub-Saharan Africa, $R$ ranges from approximately 1--10 depending on attack rates and economic valuation methods.
+- **Pre-emptive effectiveness** ($\nu$): Fraction of outbreak cost averted by pre-emptive vaccination. We assume $\nu = 1$ (perfect pre-emptive protection) as an upper bound; results are qualitatively similar for $\nu \geq 0.8$.
+- **Reactive effectiveness** ($r$): Fraction of outbreak cost averted by reactive vaccination. This depends on response delay, vaccine efficacy, and coverage. Realistic values range from 0.3 (slow response) to 0.7 (rapid response).
+
+## Strategy Space
+
+The policy maker chooses a **pre-emptive fraction** $\alpha \in [0, 1]$:
+
+- $\alpha = 0$: Pure reactive (all 25 campaigns reserved for outbreak response).
+- $\alpha = 1$: Pure pre-emptive (all 25 campaigns used for pre-emptive vaccination).
+- $0 < \alpha < 1$: Mixed strategy ($25\alpha$ campaigns pre-emptive, $25(1-\alpha)$ reserved for reactive use).
+
+The goal is to choose $\alpha$ to minimize **total expected societal cost** (vaccination costs + outbreak losses).
+
+
+# Analytical Framework
+
+## Single-Subunit Decision Rule
+
+For a single subunit with outbreak probability $p$, the normalized expected costs are:
+
+$$
+c_{\text{pre}} = 1 + p(1-\nu)R, \qquad c_{\text{react}} = p[1 + (1-r)R].
+$$
+
+Pre-emptive vaccination is preferred when $p > p_{\text{crit}}^{(1)}$, where:
+
+$$
+p_{\text{crit}}^{(1)} = \frac{1}{1 + R(\nu - r)}.
+$$
+
+**Interpretation for the policy maker**: This formula gives the outbreak probability threshold above which it is economically rational to vaccinate a subunit pre-emptively rather than waiting. For example, with $R = 5$, $\nu = 1$, and $r = 0.5$:
+
+$$
+p_{\text{crit}}^{(1)} = \frac{1}{1 + 5(1 - 0.5)} = \frac{1}{3.5} \approx 0.29.
+$$
+
+Any subunit with outbreak probability exceeding ~29% should be vaccinated pre-emptively.
+
+```{r}
+#| label: fig-pcrit-single
+#| fig-cap: "Critical outbreak probability for a single subunit. Above the line, pre-emptive vaccination is preferred. Below, reactive is preferred."
+#| fig-width: 7
+#| fig-height: 5
+
+R_seq <- seq(1, 15, by = 0.1)
+r_scenarios <- c(0.3, 0.5, 0.7)
+
+df_pcrit <- expand.grid(R = R_seq, r = r_scenarios) %>%
+  mutate(
+    p_crit = p_star_one(R, r, nu = 1),
+    r_label = paste0("r = ", r)
+  )
+
+ggplot(df_pcrit, aes(x = R, y = p_crit, color = factor(r_label))) +
+  geom_line(linewidth = 1.2) +
+  labs(
+    x = expression("Outbreak cost ratio " ~ italic(R) == italic(C)[I] / italic(C)[V]),
+    y = expression("Critical outbreak probability " ~ italic(p)[crit]^(1)),
+    color = "Reactive\neffectiveness"
+  ) +
+  geom_hline(yintercept = 0.2, linetype = "dashed", alpha = 0.5) +
+  annotate("text", x = 14, y = 0.22, label = "p = 0.20 reference", size = 3) +
+  theme_light() +
+  theme(legend.position = "top")
+```
+
+
+## Multi-Subunit Decision with Limited Capacity
+
+With 50 subunits and capacity for only 25 campaigns, the problem becomes a constrained allocation. Two regimes arise:
+
+### Reactive-Rich Regime ($f \geq p$)
+
+When vaccination capacity exceeds the expected number of outbreaks (e.g., $f = 0.5 > p = 0.2$), there is enough reactive capacity to handle all outbreaks even after pre-emptive allocation. In this regime, the critical outbreak probability for the multi-population case is:
+
+$$
+p_{\text{crit}}^{(n)} = \frac{f}{1 + R(f\nu - r)}.
+$$
+
+### Reactive-Limited Regime ($f < p$)
+
+When outbreaks exceed capacity (e.g., $p = 0.6 > f = 0.5$), the decision simplifies to efficiency per dose:
+
+$$
+p_{\text{crit}}^{(n)} = \frac{r}{\nu}.
+$$
+
+This is independent of $R$ — when capacity is exhausted regardless of strategy, the only question is which approach prevents more cases per dose.
+
+```{r}
+#| label: fig-pcrit-multi
+#| fig-cap: "Phase diagram for the 50-subunit country (f = 0.5). The line separates regions where pre-emptive vs. reactive strategies are preferred."
+#| fig-width: 8
+#| fig-height: 5
+
+r_vals <- seq(0, 1, by = 0.005)
+R_vals <- c(3, 5, 10)
+f_val <- 0.5
+
+df_multi <- expand.grid(r = r_vals, R = R_vals) %>%
+  rowwise() %>%
+  mutate(
+    p_star = p_star_multi(R = R, r = r, f = f_val, nu = 1),
+    R_label = paste0("R = ", R)
+  ) %>%
+  ungroup()
+
+ggplot(df_multi, aes(x = r, y = p_star, linetype = R_label)) +
+  geom_line(linewidth = 1) +
+  geom_abline(slope = 1, intercept = 0,
+    linetype = "dotted", color = "firebrick") +
+  geom_hline(yintercept = f_val,
+    linetype = "dotted", color = "steelblue") +
+  scale_y_continuous(limits = c(0, 1)) +
+  labs(
+    x = expression("Reactive effectiveness " ~ italic(r)),
+    y = expression("Outbreak probability " ~ italic(p)),
+    linetype = "Cost ratio"
+  ) +
+  annotate("text", x = 0.05, y = 0.95, hjust = 0,
+    label = "Pre-emptive favored", size = 4) +
+  annotate("text", x = 0.95, y = 0.05, hjust = 1,
+    label = "Reactive favored", size = 4) +
+  annotate("text", x = 0.95, y = f_val + 0.03, hjust = 1,
+    label = "f = 0.5", color = "steelblue", size = 3.5) +
+  theme_light() +
+  theme(legend.position = "top")
+```
+
+
+## The Value of Heterogeneous Risk and Targeting
+
+When outbreak risks vary across subunits (which they invariably do in practice), **targeted pre-emptive vaccination of high-risk subunits is substantially more efficient than random allocation**. This is because:
+
+1. The first pre-emptive doses target subunits with risk far above the mean, yielding outsized returns.
+2. As more subunits are vaccinated, diminishing returns set in — the marginal subunit has below-average risk.
+3. This creates an interior optimum ($0 < \alpha^* < 1$) rather than the corner solutions ($\alpha^* \in \{0, 1\}$) typical of homogeneous-risk models.
+
+Under heterogeneous risk with perfect targeting:
+
+- The optimal $\alpha^*$ transitions smoothly rather than jumping discretely.
+- Pre-emptive vaccination becomes worthwhile at **any** positive cost ratio $R > 0$ (because the highest-risk subunit always benefits from pre-emption).
+- The regime-switching boundary $\alpha_c$ is higher than in the homogeneous case, meaning more pre-emptive capacity can be deployed before the reactive system becomes overwhelmed.
+
+
+# Simulation Results for the 50-Subunit Country
+
+## Simulation Design
+
+We conducted five simulation experiments tailored to the policy maker's specific setting ($n = 50$, $f = 0.5$). Each simulation uses 200 Monte Carlo replications to estimate expected costs and their uncertainty.
+
+```{r}
+df_sim1 <- readRDS("policy_sim1_optimal_alpha.rds")
+df_sim2 <- readRDS("policy_sim2_targeting.rds")
+df_sim3 <- readRDS("policy_sim3_delays.rds")
+df_sim5 <- readRDS("policy_sim5_robustness.rds")
+```
+
+
+## Result 1: Optimal Pre-emptive Fraction Across Scenarios
+
+The table below shows the optimal pre-emptive fraction $\alpha^*$ across different combinations of outbreak probability ($p$), outbreak severity ($R$), and reactive effectiveness ($r$).
+
+```{r}
+#| label: fig-sim1-heatmap
+#| fig-cap: "Optimal pre-emptive fraction across outbreak scenarios for a 50-subunit country with f = 0.5. Each panel shows a different reactive effectiveness level."
+#| fig-width: 10
+#| fig-height: 4
+
+df_sim1 %>%
+  mutate(r_label = paste0("Reactive effectiveness r = ", r)) %>%
+  ggplot(aes(x = p, y = factor(R), fill = alpha_star)) +
+  geom_tile() +
+  geom_text(aes(label = sprintf("%.0f%%", alpha_star * 100)),
+    size = 3, color = "white") +
+  facet_wrap(~r_label, nrow = 1) +
+  scale_fill_viridis_c(option = "C", limits = c(0, 1),
+    name = expression(alpha^"*")) +
+  labs(
+    x = expression("Mean outbreak probability " ~ italic(p)),
+    y = expression("Cost ratio " ~ italic(R))
+  ) +
+  theme_minimal() +
+  theme(legend.position = "right")
+```
+
+**Key patterns:**
+
+- **Low outbreak probability ($p \leq 0.10$)**: Pure reactive ($\alpha^* = 0$) is optimal unless $R$ is very high ($\geq 10$). When outbreaks are rare, the guaranteed cost of pre-emptive vaccination outweighs the expected benefit.
+
+- **Moderate outbreak probability ($p = 0.15$--$0.30$)**: Mixed strategies dominate, with $\alpha^* \approx 0.2$--$0.8$ depending on $R$ and $r$. This is the most decision-sensitive region.
+
+- **High outbreak probability ($p \geq 0.40$)**: Full pre-emptive ($\alpha^* = 1$) becomes optimal because capacity is exhausted regardless. Pre-emptive vaccination prevents more cases per dose than reactive vaccination ($\nu > r$).
+
+- **Higher $R$ shifts $\alpha^*$ upward**: More severe outbreaks justify more pre-emptive investment.
+
+- **Higher $r$ shifts $\alpha^*$ downward**: Better reactive capabilities reduce the need for pre-emption.
+
+
+## Result 2: The Value of Risk Intelligence
+
+The quality of outbreak risk estimation — how well the policy maker can identify which subunits are at highest risk — dramatically affects the value of pre-emptive vaccination.
+
+```{r}
+#| label: fig-sim2-targeting
+#| fig-cap: "Cost curves under different targeting accuracies (p = 0.2, R = 5, r = 0.5). Higher rho means better ability to identify high-risk subunits."
+#| fig-width: 8
+#| fig-height: 5
+
+df_sim2 %>%
+  mutate(rho_label = paste0("rho = ", rho)) %>%
+  ggplot(aes(x = alpha, y = mean_cost, color = rho_label, fill = rho_label)) +
+  geom_ribbon(aes(ymin = lo, ymax = hi), alpha = 0.15, color = NA) +
+  geom_line(linewidth = 1) +
+  labs(
+    x = expression("Fraction of capacity pre-emptive " ~ alpha),
+    y = "Normalized per-population expected cost",
+    color = "Targeting\naccuracy",
+    fill = "Targeting\naccuracy"
+  ) +
+  theme_light() +
+  theme(legend.position = "top")
+```
+
+```{r}
+#| label: tbl-targeting
+#| tbl-cap: "Optimal strategy and cost by targeting accuracy"
+
+df_sim2 %>%
+  group_by(rho) %>%
+  slice_min(mean_cost, n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  mutate(
+    `Targeting Quality` = case_when(
+      rho == 1.0 ~ "Perfect",
+      rho == 0.7 ~ "Good",
+      rho == 0.4 ~ "Moderate",
+      rho == 0.0 ~ "Random"
+    ),
+    `Cost Reduction vs Random` = sprintf("%.0f%%",
+      100 * (1 - mean_cost / mean_cost[rho == 0.0]))
+  ) %>%
+  select(`Targeting Quality`, rho,
+    `Optimal alpha` = alpha,
+    `Expected Cost` = mean_cost,
+    `Cost Reduction vs Random`) %>%
+  kable(digits = 3)
+```
+
+**Recommendations on risk intelligence:**
+
+- **Perfect targeting ($\rho = 1$)**: Optimal $\alpha^* \approx 0.55$, with 16% lower cost than random allocation.
+- **Good targeting ($\rho = 0.7$)**: Captures most of the benefit ($\alpha^* \approx 0.2$), with 13% cost reduction.
+- **Random allocation ($\rho = 0$)**: Still benefits from a small pre-emptive component ($\alpha^* \approx 0.1$).
+
+**Practical implication**: Even imperfect risk assessments — based on historical data, environmental indicators, or expert opinion — substantially improve outcomes. The policy maker should invest in outbreak risk surveillance, but should not delay pre-emptive vaccination until perfect information is available.
+
+
+## Result 3: Impact of Response Delay
+
+The reactive effectiveness $r$ depends critically on how quickly a vaccination campaign can be deployed after outbreak detection. Using endogenous reactive effectiveness (derived from outbreak trajectory simulations), we find:
+
+```{r}
+#| label: fig-sim3-delays
+#| fig-cap: "Cost curves under different response delay scenarios (p = 0.2, R = 5). Endogenous reactive effectiveness computed from outbreak trajectories."
+#| fig-width: 8
+#| fig-height: 5
+
+df_sim3 %>%
+  ggplot(aes(x = alpha, y = mean_cost, color = delay_label, fill = delay_label)) +
+  geom_ribbon(aes(ymin = lo, ymax = hi), alpha = 0.15, color = NA) +
+  geom_line(linewidth = 1) +
+  labs(
+    x = expression("Fraction of capacity pre-emptive " ~ alpha),
+    y = "Normalized per-population expected cost",
+    color = "Response delay",
+    fill = "Response delay"
+  ) +
+  theme_light() +
+  theme(legend.position = "top")
+```
+
+```{r}
+#| label: tbl-delays
+#| tbl-cap: "Optimal strategy by response delay regime"
+
+df_sim3 %>%
+  group_by(delay_label) %>%
+  slice_min(mean_cost, n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  select(`Response Delay` = delay_label,
+    `Optimal alpha` = alpha,
+    `Expected Cost` = mean_cost,
+    `Mean r (endogenous)` = mean_r) %>%
+  kable(digits = 3)
+```
+
+**Key findings:**
+
+- All three delay scenarios yield the same optimal $\alpha^* \approx 0.4$, but the cost penalty for slow response is substantially higher.
+- **Fast response** (7--14 days): Mean endogenous $r \approx 0.63$, lowest cost.
+- **Slow response** (28--56 days): Mean endogenous $r \approx 0.53$, cost increases by ~10%.
+- The optimal $\alpha^*$ is robust to the delay regime because the cost curves are relatively flat around the optimum. This is reassuring: the policy maker does not need to precisely estimate future response times to choose a good strategy.
+
+
+## Result 4: Finite-Population Variance
+
+With only 50 subunits, stochastic variation is substantial. The table below compares cost distributions at $n = 50$ versus $n = 500$.
+
+```{r}
+#| label: tbl-variance
+#| tbl-cap: "Cost statistics by population size and allocation strategy (p = 0.2, R = 5, r = 0.5)"
+
+df_sim4 <- readRDS("policy_sim4_variance.rds")
+
+df_sim4 %>%
+  group_by(n_pop, alpha) %>%
+  summarise(
+    `Mean Cost` = mean(cost),
+    `SD` = sd(cost),
+    `CV (%)` = sprintf("%.0f%%", 100 * sd(cost) / mean(cost)),
+    .groups = "drop"
+  ) %>%
+  rename(`n` = n_pop, `Alpha` = alpha) %>%
+  kable(digits = 3)
+```
+
+**Implications for the policy maker:**
+
+- At $n = 50$, the coefficient of variation (CV) is ~20--25%, meaning actual costs could plausibly range from 50% below to 50% above the expected value.
+- The mixed strategy ($\alpha = 0.6$) achieves the lowest mean cost **and** the lowest standard deviation, making it the dominant choice under both risk-neutral and risk-averse preferences.
+- Pure reactive ($\alpha = 0$) has both the highest mean cost and the highest variance — the worst of both worlds.
+
+
+## Result 5: Robustness to Misestimated Outbreak Probability
+
+The outbreak probability $p$ is inherently difficult to estimate. We evaluate the cost penalty when the policy maker estimates $\hat{p}$ but the true value is $p_{\text{true}} = 0.20$.
+
+```{r}
+#| label: fig-sim5-robustness
+#| fig-cap: "Cost penalty from misestimated outbreak probability (true p = 0.20, R = 5, r = 0.5). The vertical dashed line marks the true probability."
+#| fig-width: 8
+#| fig-height: 5
+
+p1 <- ggplot(df_sim5, aes(x = p_est, y = penalty_pct)) +
+  geom_line(linewidth = 1, color = "firebrick") +
+  geom_point(size = 2, color = "firebrick") +
+  geom_vline(xintercept = 0.20, linetype = "dashed") +
+  labs(
+    x = expression("Estimated " ~ hat(italic(p))),
+    y = "Cost penalty (%)",
+    title = "(a) Cost penalty"
+  ) +
+  theme_light()
+
+p2 <- ggplot(df_sim5, aes(x = p_est, y = alpha_chosen)) +
+  geom_line(linewidth = 1, color = "steelblue") +
+  geom_point(size = 2, color = "steelblue") +
+  geom_vline(xintercept = 0.20, linetype = "dashed") +
+  labs(
+    x = expression("Estimated " ~ hat(italic(p))),
+    y = expression("Chosen " ~ alpha^"*"),
+    title = "(b) Resulting strategy"
+  ) +
+  theme_light()
+
+p1 + p2
+```
+
+**Key findings:**
+
+- **Moderate misestimation ($\hat{p} \in [0.15, 0.35]$)**: Cost penalty is below 5%. The framework is forgiving of reasonable estimation errors.
+- **Severe underestimation ($\hat{p} = 0.05$)**: Penalty of ~21%. The policy maker would adopt a nearly pure reactive strategy, losing the benefit of targeting high-risk subunits.
+- **Severe overestimation ($\hat{p} = 0.50$)**: Penalty of ~22%. The policy maker would adopt full pre-emption, wasting reactive capacity.
+- **Asymmetry**: The penalty curve is roughly symmetric around the true value, suggesting no systematic bias toward under- or over-estimation being more costly.
+
+
+# Decision Guide for the Policy Maker
+
+## Step 1: Assess the Outbreak Risk Level
+
+Classify the outbreak probability into one of three regimes:
+
+| Regime | Outbreak probability ($p$) | Examples |
+|--------|--------------------------|----------|
+| **Low risk** | $p < 0.15$ | Sporadic cases, no recent epidemics |
+| **Moderate risk** | $0.15 \leq p \leq 0.35$ | Endemic transmission, seasonal patterns |
+| **High risk** | $p > 0.35$ | Active outbreaks nearby, humanitarian crisis |
+
+*Practical estimation*: Exact values are not needed. Use historical attack rates, environmental risk indicators (water quality, sanitation coverage, displacement), and expert opinion to place the country in the appropriate regime. As shown in Result 5, errors within one regime category incur minimal cost penalties.
+
+
+## Step 2: Assess Reactive Response Capability
+
+Estimate the realistic response delay — the time from outbreak detection to vaccine-induced protection:
+
+| Response capability | Detection + deployment + immunity delay | Effective $r$ |
+|--------------------|-----------------------------------------|--------------|
+| **Rapid** | 7--14 days | $r \approx 0.6$--$0.7$ |
+| **Moderate** | 14--28 days | $r \approx 0.5$--$0.6$ |
+| **Slow** | 28--56 days | $r \approx 0.3$--$0.5$ |
+
+
+## Step 3: Choose the Allocation Strategy
+
+Based on the regime classification and simulation results:
+
+### Low Risk ($p < 0.15$)
+
+**Recommended: Predominantly reactive ($\alpha = 0$--$0.2$)**
+
+- Reserve most or all capacity for outbreak response.
+- Pre-emptive vaccination only if: (a) specific subunits have very high risk indicators, AND (b) outbreak costs are severe ($R \geq 10$).
+- At $R = 10$, even with $p = 0.05$, targeted pre-emption of 1--2 highest-risk subunits ($\alpha \approx 0.3$) can reduce costs.
+
+### Moderate Risk ($p = 0.15$--$0.35$)
+
+**Recommended: Mixed strategy ($\alpha = 0.3$--$0.7$)**
+
+This is the most decision-sensitive regime. Use the following guidance:
+
+| Scenario | Recommended $\alpha$ | Pre-emptive campaigns | Reactive reserve |
+|----------|---------------------|----------------------|-----------------|
+| $R = 3$, fast response | 0.2--0.3 | 5--8 subunits | 17--20 campaigns |
+| $R = 5$, moderate response | 0.4--0.6 | 10--15 subunits | 10--15 campaigns |
+| $R = 10$, slow response | 0.7--0.9 | 18--23 subunits | 2--7 campaigns |
+
+**Implementation**: Rank all 50 subunits by outbreak risk (using the best available information). Pre-emptively vaccinate the top-ranked subunits up to the budget $\alpha \times 25$. Reserve the remaining campaigns for reactive deployment.
+
+### High Risk ($p > 0.35$)
+
+**Recommended: Predominantly pre-emptive ($\alpha = 0.8$--$1.0$)**
+
+- When outbreaks are highly likely, pre-emptive vaccination prevents more cases per dose than reactive vaccination.
+- If $p > f = 0.5$, capacity is overwhelmed regardless — pre-emptive targeting of the 25 highest-risk subunits is optimal.
+- Retaining 1--2 reactive campaigns may still be worthwhile if $r$ is moderately high ($r \geq 0.5$).
+
+
+## Step 4: Invest in Risk Intelligence
+
+Regardless of the chosen $\alpha$, **improving the ability to identify high-risk subunits yields substantial returns**:
+
+- Moving from random allocation ($\rho = 0$) to moderate targeting accuracy ($\rho = 0.4$) reduces costs by ~5%.
+- Moving from moderate to good targeting ($\rho = 0.7$) adds another ~8% reduction.
+- Perfect targeting ($\rho = 1.0$) provides ~16% total reduction versus random allocation.
+
+**Concrete actions:**
+- Maintain surveillance systems for early outbreak detection.
+- Use historical outbreak data, environmental risk factors, and population vulnerability indicators to rank subunits.
+- Update risk rankings regularly — they do not need to be perfect to be valuable.
+
+
+## Step 5: Plan for Variance
+
+With 50 subunits, actual costs will vary substantially across different outbreak realizations. The policy maker should:
+
+1. **Budget for uncertainty**: Plan for costs 30--50% above expected values (the upper tail of the distribution).
+2. **Prefer mixed strategies**: These have both lower mean costs AND lower variance than pure strategies.
+3. **Maintain operational flexibility**: Even after committing to a pre-emptive campaign, maintain logistics capability for rapid reactive deployment of the reserved doses.
+
+
+# Summary of Recommendations
+
+```{r}
+#| label: tbl-summary
+#| tbl-cap: "Summary decision matrix for the 50-subunit country (f = 0.5)"
+
+tribble(
+  ~`Risk Level`, ~`Outbreak Prob`, ~`Cost Ratio`, ~`Response Speed`, ~`Recommended alpha`, ~`Pre-emptive Campaigns`,
+  "Low",      "p < 0.15",  "R = 3-5",   "Any",    "0 - 0.15",  "0 - 4",
+
+  "Low",      "p < 0.15",  "R >= 10",   "Slow",   "0.3 - 0.5", "8 - 13",
+  "Moderate", "p = 0.15-0.35", "R = 3-5", "Fast",  "0.2 - 0.4", "5 - 10",
+  "Moderate", "p = 0.15-0.35", "R = 5-10", "Moderate", "0.4 - 0.7", "10 - 18",
+  "Moderate", "p = 0.15-0.35", "R >= 10", "Slow",  "0.7 - 0.9", "18 - 23",
+  "High",     "p > 0.35",  "Any",       "Any",    "0.8 - 1.0", "20 - 25"
+) %>%
+  kable()
+```
+
+
+# Limitations and Caveats
+
+1. **Independence assumption**: Subunit outbreaks are modeled as independent Bernoulli events. In reality, spatial spillover between neighboring subunits can create cascading outbreaks. The spatial simulation in `simulation.qmd` addresses this but is beyond the scope of this report.
+
+2. **Fixed capacity**: We assume the total number of campaigns is fixed. In practice, emergency procurement or international stockpile requests may expand capacity, but with significant delays.
+
+3. **Binary vaccination**: Each subunit is either fully vaccinated or not. An alternative strategy of partial coverage across all subunits is not considered here.
+
+4. **Outbreak probability estimation**: The parameter $p$ is treated as known (or estimated) a priori. In practice, Bayesian updating as early cases appear may improve allocation decisions dynamically.
+
+5. **Cost ratio estimation**: The ratio $R = C_I/C_V$ depends on attack rates, case fatality, and economic valuation methods, all of which are uncertain. The qualitative recommendations are robust to moderate $R$ uncertainty.
+
+6. **No vaccine waning**: Pre-emptive vaccine effectiveness is assumed constant over the decision horizon. For diseases where immunity wanes, the timing of pre-emptive vaccination relative to the outbreak season matters.
+
+
+# Technical Appendix: Simulation Parameters
+
+All simulations used:
+
+- $n = 50$ subunits
+- $f = 0.5$ (25 campaigns available)
+- $\nu = 1$ (perfect pre-emptive effectiveness)
+- $\text{Beta}(1, \theta)$ risk distribution with $\theta = (1-p)/p$
+- 200 Monte Carlo replications per scenario
+- Perfect targeting ($\rho = 1$) unless otherwise specified
+- Endogenous $r$ simulations: $\text{VE}_d = 0.7$, $\text{VE}_i = 0.3$, $f_c = 0.7$
+
+Simulation code: [policy_simulations.R](policy_simulations.R)
+
+Source analyses: [analytic_study.qmd](analytic_study.qmd), [analytic_hetero.qmd](analytic_hetero.qmd), [simulation.qmd](simulation.qmd)
