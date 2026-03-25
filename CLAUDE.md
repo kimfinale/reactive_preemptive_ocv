@@ -42,7 +42,7 @@ The central question: given vaccination capacity covering fraction **f** of
 n subunits, what fraction **α** to allocate pre-emptively vs. hold for reactive use?
 
 Key parameters:
-- **R = C_I / C_V** — cost ratio (infection cost per subunit / vaccination cost per subunit)
+- **R = C_I / C_V** — cost ratio (per person: C_V = vaccine + delivery cost, C_I = attack rate × cost per case)
 - **p** — outbreak probability per subunit
 - **r** — reactive effectiveness (fraction of cases averted by reactive campaign)
 - **α** — pre-emptive fraction (α=0 pure reactive, α=1 pure pre-emptive)
