@@ -1388,7 +1388,7 @@ For each strategy, coverage fraction $f$, and pre-emptive fraction $\alpha$:
 # efficiency (cases per 1k doses), sim_cost (per-capita cost in C_V units),
 # and counts of covered/uncovered locations.
 compute_impact_mixed <- function(df, score, alpha, effective_people, r,
-                                 nu = 1, R = 500) {
+                                 nu = 1, R = 500, oracle = FALSE) {
     n <- nrow(df)
 
     pre_doses <- alpha * effective_people
@@ -1398,14 +1398,29 @@ compute_impact_mixed <- function(df, score, alpha, effective_people, r,
     # NOTE: greedy whole-location allocation. Leftover doses that cannot fully
     # cover the next location are unused (no partial coverage). This slightly
     # underestimates impact; the effect is small when locations are numerous.
-    ranked_idx <- order(score, decreasing = TRUE)
-
-    if (pre_doses > 0) {
-        cum_pop <- cumsum(df$pop_sum[ranked_idx])
-        n_pre <- sum(cum_pop <= pre_doses)
-        pre_idx <- if (n_pre > 0) ranked_idx[seq_len(n_pre)] else integer(0)
+    if (oracle) {
+        # Oracle: only pre-emptively vaccinate outbreak locations
+        ob_idx <- which(df$any_outbreak == 1)
+        if (length(ob_idx) > 0 && pre_doses > 0) {
+            ob_ranked <- ob_idx[order(df$est_cases[ob_idx], decreasing = TRUE)]
+            cum_pop <- cumsum(df$pop_sum[ob_ranked])
+            n_pre <- sum(cum_pop <= pre_doses)
+            pre_idx <- if (n_pre > 0) ob_ranked[seq_len(n_pre)] else integer(0)
+        } else {
+            pre_idx <- integer(0)
+        }
+        # Unused pre-emptive budget redirected to reactive
+        doses_pre <- sum(df$pop_sum[pre_idx])
+        react_doses <- react_doses + (pre_doses - doses_pre)
     } else {
-        pre_idx <- integer(0)
+        ranked_idx <- order(score, decreasing = TRUE)
+        if (pre_doses > 0) {
+            cum_pop <- cumsum(df$pop_sum[ranked_idx])
+            n_pre <- sum(cum_pop <= pre_doses)
+            pre_idx <- if (n_pre > 0) ranked_idx[seq_len(n_pre)] else integer(0)
+        } else {
+            pre_idx <- integer(0)
+        }
     }
 
     cases_averted_pre <- nu * sum(df$est_cases[pre_idx])
@@ -1490,8 +1505,8 @@ impact_curves <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
 
         # True Oracle
         oracle_c <- map_dfr(alpha_grid_impact, function(a) {
-            score <- df_c$est_cases
-            compute_impact_mixed(df_c, score, a, eff_people, r_val, nu_val, R_val) |>
+            compute_impact_mixed(df_c, df_c$est_cases, a, eff_people, r_val, nu_val, R_val,
+                                 oracle = TRUE) |>
                 mutate(strategy = "Oracle")
         })
 
@@ -1572,6 +1587,29 @@ ggplot(impact_curves, aes(x = alpha, y = eff_total_per_1k, colour = strategy)) +
     ) +
     theme_minimal(base_size = 11) +
     theme(legend.position = "bottom")
+
+# Total OCV doses used
+ggplot(impact_curves, aes(x = alpha, y = doses_total, colour = strategy)) +
+    geom_line(linewidth = 0.7) +
+    geom_point(size = 1.2) +
+    geom_vline(
+        data = theo_vlines,
+        aes(xintercept = alpha_star_theo),
+        linetype = "dashed", colour = "black", linewidth = 0.4, alpha = 0.5
+    ) +
+    facet_grid(country ~ sprintf("f = %.1f", f),
+        scales = "free_y",
+        labeller = labeller(country = COUNTRY_LABELS)
+    ) +
+    scale_colour_manual(values = STRATEGY_COLOURS) +
+    labs(
+        x = expression(alpha ~ "(pre-emptive fraction)"),
+        y = "Total OCV doses used",
+        colour = "Strategy",
+        title = "Total OCV doses used by strategy, alpha, country, and f"
+    ) +
+    theme_minimal(base_size = 11) +
+    theme(legend.position = "bottom")
 ```
 
 ```{r run-mixed-strategies}
@@ -1597,8 +1635,8 @@ results_all <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
 
         # True Oracle: only vaccinates outbreak locations (score = any_outbreak * pop)
         oracle <- map_dfr(alpha_vals, function(a) {
-            score <- df_c$est_cases
-            compute_impact_mixed(df_c, score, a, eff_people, r_val, nu_val, R_val) |>
+            compute_impact_mixed(df_c, df_c$est_cases, a, eff_people, r_val, nu_val, R_val,
+                                 oracle = TRUE) |>
                 mutate(strategy = "Oracle")
         })
 
@@ -2098,8 +2136,8 @@ single_year_results <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
 
             # True Oracle: only vaccinates outbreak locations
             oracle <- map_dfr(alpha_vals, function(a) {
-                score <- sim_1y$est_cases
-                compute_impact_mixed(sim_1y, score, a, eff_people, r_val, nu_val, R_val) |>
+                compute_impact_mixed(sim_1y, sim_1y$est_cases, a, eff_people, r_val, nu_val, R_val,
+                                     oracle = TRUE) |>
                     mutate(strategy = "Oracle")
             })
 
