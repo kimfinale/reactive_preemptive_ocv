@@ -1499,7 +1499,14 @@ results_all <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
             pull(alpha_star_pw)
         if (length(a_star_pw) == 0) a_star_pw <- 0.5
 
-        # Individual-location deterministic strategies
+        # True Oracle: only vaccinates outbreak locations (score = any_outbreak * pop)
+        oracle <- map_dfr(alpha_vals, function(a) {
+            score <- df_c$any_outbreak * df_c$pop_sum
+            compute_impact_mixed(df_c, score, a, eff_people, r_val, nu_val, R_val) |>
+                mutate(strategy = "Oracle")
+        })
+
+        # Score-based deterministic strategies
         det <- expand_grid(
             strategy = c("Model-ranked", "RF-ranked", "Count-ranked", "Perfect ranking"),
             alpha = alpha_vals
@@ -1534,7 +1541,7 @@ results_all <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
                 dplyr::select(-rep)
         })
 
-        bind_rows(det, rand) |>
+        bind_rows(oracle, det, rand) |>
             mutate(f = fv, alpha_star = a_star_pw)
     }) |> mutate(country = ctry)
 })
@@ -1993,7 +2000,14 @@ single_year_results <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
                 pull(alpha_star_pw)
             if (length(a_star_pw) == 0) a_star_pw <- 0.5
 
-            # Individual-location deterministic strategies
+            # True Oracle: only vaccinates outbreak locations
+            oracle <- map_dfr(alpha_vals, function(a) {
+                score <- sim_1y$any_outbreak * sim_1y$pop_sum
+                compute_impact_mixed(sim_1y, score, a, eff_people, r_val, nu_val, R_val) |>
+                    mutate(strategy = "Oracle")
+            })
+
+            # Score-based deterministic strategies
             det <- expand_grid(
                 strategy = c("Model-ranked", "RF-ranked", "Count-ranked", "Perfect ranking"),
                 alpha = alpha_vals
@@ -2027,7 +2041,7 @@ single_year_results <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
                     dplyr::select(-rep)
             })
 
-            bind_rows(det, rand) |>
+            bind_rows(oracle, det, rand) |>
                 mutate(f = fv, alpha_star = a_star_pw)
         }) |>
             mutate(
