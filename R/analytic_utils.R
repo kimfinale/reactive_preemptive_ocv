@@ -814,3 +814,92 @@ compute_total_cost <- function(cells_dt,
                            C_total = C_outbreak + C_pre + C_reactive)]
     )
 }
+
+# --- rho-parameterized population-weighted MC cost ---
+# Generates noisy scores from true outbreak probabilities via a Gaussian copula:
+#   lambda_i = -log(1 - p_i), S_i = lambda_i + N(0, sigma)
+# sigma is chosen so that Spearman(S, lambda) ~ target rho.
+cost_popweighted_rho <- function(alpha, f, pop, prob, R, r, AR, rho, nu = 1,
+                                 n_mc = 300, seed = 42, ...) {
+    n <- length(pop)
+    P_total <- sum(pop)
+    pre_budget <- alpha * f * P_total
+    react_budget <- (1 - alpha) * f * P_total
+
+    lambda <- -log(1 - pmin(prob, 1 - 1e-10))
+
+    if (rho >= 0.999) {
+        sigma <- 0
+    } else if (rho <= 0.001) {
+        sigma <- 1e6
+    } else {
+        sigma <- calibrate_sigma_for_rho(lambda, rho_target = rho, seed = seed)
+    }
+
+    costs <- numeric(n_mc)
+    for (s in seq_len(n_mc)) {
+        set.seed(seed + s)
+
+        if (sigma > 0) {
+            sc <- lambda + rnorm(n, 0, sigma)
+        } else {
+            sc <- lambda
+        }
+
+        ranked <- order(sc, decreasing = TRUE)
+        cum_pop <- cumsum(pop[ranked])
+        n_pre <- sum(cum_pop <= pre_budget)
+        pre_idx <- if (n_pre > 0) ranked[seq_len(n_pre)] else integer(0)
+        rem_idx <- setdiff(seq_len(n), pre_idx)
+
+        Y <- rbinom(n, 1, prob)
+
+        pop_pre <- sum(pop[pre_idx])
+        burden_pre_residual <- sum(Y[pre_idx] * pop[pre_idx]) * (1 - nu)
+
+        ob_rem <- rem_idx[Y[rem_idx] == 1]
+        pop_react <- 0
+        burden_react_residual <- 0
+        burden_uncovered <- 0
+
+        if (length(ob_rem) > 0) {
+            if (react_budget > 0) {
+                ob_order <- ob_rem[order(pop[ob_rem], decreasing = TRUE)]
+                cum_pop_r <- cumsum(pop[ob_order])
+                n_react <- sum(cum_pop_r <= react_budget)
+                if (n_react > 0) {
+                    react_sel <- ob_order[seq_len(n_react)]
+                    pop_react <- sum(pop[react_sel])
+                    burden_react_residual <- pop_react * (1 - r)
+                    if (n_react < length(ob_order)) {
+                        burden_uncovered <- sum(pop[ob_order[(n_react + 1):length(ob_order)]])
+                    }
+                } else {
+                    burden_uncovered <- sum(pop[ob_rem])
+                }
+            } else {
+                burden_uncovered <- sum(pop[ob_rem])
+            }
+        }
+
+        vax_cost <- pop_pre + pop_react
+        illness <- R * AR * (burden_pre_residual + burden_react_residual + burden_uncovered)
+        costs[s] <- (vax_cost + illness) / P_total
+    }
+    mean(costs)
+}
+
+# Grid-search optimizer for rho-parameterized alpha*
+get_alpha_star_rho <- function(f, pop, prob, R, r, AR, rho, nu = 1,
+                               n_mc = 300, seed = 42, grid_len = 51) {
+    alpha_grid <- seq(0, 1, length.out = grid_len)
+    costs <- sapply(alpha_grid, function(a) {
+        cost_popweighted_rho(a, f, pop, prob, R, r, AR, rho, nu,
+            n_mc = n_mc, seed = seed
+        )
+    })
+    list(
+        alpha_star = alpha_grid[which.min(costs)],
+        cost_star = min(costs), alpha_grid = alpha_grid, cost_grid = costs
+    )
+}

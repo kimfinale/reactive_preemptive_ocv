@@ -59,7 +59,7 @@ library(randomForest) # random forest
 library(gbm) # gradient boosting
 library(class) # k-NN
 source("R/analytic_utils.R")
-source("R/spatial_setup.R") # for make_patches() — contiguous patch allocation
+source("R/spatial_setup.R")
 ```
 
 
@@ -408,9 +408,7 @@ $f \in \{0.3, 0.5, 0.7\}$.
 
 ```{r build-sim-data}
 # ATTACK_RATE: fraction of population that becomes a case per outbreak-year.
-# Used to compute est_cases (counterfactual burden) for impact metrics.
-# Note: R already incorporates AR (R = AR × cost_per_case / C_V), so
-# ATTACK_RATE does NOT appear in cost functions.
+# Used in cost functions (illness cost = R × AR × pop) and for est_cases.
 ATTACK_RATE <- 0.005
 
 DOSES_PER_PERSON <- 1 # single-dose OCV
@@ -720,11 +718,11 @@ n_trials <- length(eval_years)
 # Shared colour palette for strategies
 STRATEGY_COLOURS <- c(
     "Oracle" = "firebrick", "Model-ranked" = "steelblue",
-    "RF-ranked" = "darkorchid", "RF-contiguous" = "darkorange",
+    "RF-ranked" = "darkorchid",
     "Count-ranked" = "darkgreen", "Random" = "grey50"
 )
 STRATEGY_LEVELS <- c(
-    "Oracle", "Model-ranked", "RF-ranked", "RF-contiguous",
+    "Oracle", "Model-ranked", "RF-ranked",
     "Count-ranked", "Random"
 )
 ```
@@ -764,18 +762,19 @@ fit_betabinom <- function(k_obs, n_trials) {
 # --- Population-weighted MC cost function ---
 # R is defined at the INDIVIDUAL level:
 #   C_V = cost per person vaccinated (vaccine + delivery)
-#   C_I = attack_rate × cost_per_case (expected infection cost per person exposed)
+#   C_I = cost per infection
 #   R = C_I / C_V
+#   AR = attack rate (fraction of population infected during an outbreak)
 #
-# Per-location cost convention (in C_V units, matching cost_beta()):
+# Per-location cost convention (in C_V units):
 #   - Vaccinating location i:  pop_i
-#   - Unprotected outbreak:    R × pop_i  (= pop_i × C_I / C_V)
-#   - Pre-emptive + outbreak:  pop_i + (1-ν) × R × pop_i
-#   - Reactive + outbreak:     pop_i + (1-r) × R × pop_i
+#   - Unprotected outbreak:    R × AR × pop_i
+#   - Pre-emptive + outbreak:  pop_i + (1-ν) × R × AR × pop_i
+#   - Reactive + outbreak:     pop_i + (1-r) × R × AR × pop_i
 #   - No action, no outbreak:  0
 # Normalized by P_total → per-capita cost.
 
-cost_popweighted_mc <- function(alpha, f, pop, prob, score, R, r, nu = 1,
+cost_popweighted_mc <- function(alpha, f, pop, prob, score, R, r, AR, nu = 1,
                                 n_mc = 300, seed = 42, ...) {
     n <- length(pop)
     P_total <- sum(pop)
@@ -825,92 +824,9 @@ cost_popweighted_mc <- function(alpha, f, pop, prob, score, R, r, nu = 1,
             }
         }
 
-        # Cost = vaccination + R × illness burden
+        # Cost = vaccination + R × AR × illness burden
         vax_cost <- pop_pre + pop_react
-        illness <- R * (burden_pre_residual + burden_react_residual + burden_uncovered)
-        costs[s] <- (vax_cost + illness) / P_total
-    }
-    mean(costs)
-}
-
-# --- rho-parameterized version ---
-# Instead of using actual strategy scores, this generates noisy scores from the
-# true outbreak probabilities via a Gaussian copula:
-#   λ_i = -log(1 - p_i)  (transform prob to exponential scale)
-#   S_i = λ_i + N(0, σ)  (add calibrated noise)
-# σ is chosen so that Spearman(S, λ) ≈ target ρ. This lets us compute
-# the cost curve as a function of ρ alone, without needing a specific strategy.
-# Same per-location cost convention as cost_popweighted_mc() above.
-cost_popweighted_rho <- function(alpha, f, pop, prob, R, r, rho, nu = 1,
-                                 n_mc = 300, seed = 42, ...) {
-    n <- length(pop)
-    P_total <- sum(pop)
-    pre_budget <- alpha * f * P_total
-    react_budget <- (1 - alpha) * f * P_total
-
-    lambda <- -log(1 - pmin(prob, 1 - 1e-10))
-
-    if (rho >= 0.999) {
-        sigma <- 0
-    } else if (rho <= 0.001) {
-        sigma <- 1e6
-    } else {
-        sigma <- calibrate_sigma_for_rho(lambda, rho_target = rho, seed = seed)
-    }
-
-    costs <- numeric(n_mc)
-    for (s in seq_len(n_mc)) {
-        set.seed(seed + s)
-
-        # Noisy targeting score
-        if (sigma > 0) {
-            sc <- lambda + rnorm(n, 0, sigma)
-        } else {
-            sc <- lambda
-        }
-
-        # Pre-emptive: rank by noisy score
-        ranked <- order(sc, decreasing = TRUE)
-        cum_pop <- cumsum(pop[ranked])
-        n_pre <- sum(cum_pop <= pre_budget)
-        pre_idx <- if (n_pre > 0) ranked[seq_len(n_pre)] else integer(0)
-        rem_idx <- setdiff(seq_len(n), pre_idx)
-
-        # Draw outbreak realization
-        Y <- rbinom(n, 1, prob)
-
-        # Pre-emptive locations
-        pop_pre <- sum(pop[pre_idx])
-        burden_pre_residual <- sum(Y[pre_idx] * pop[pre_idx]) * (1 - nu)
-
-        # Reactive allocation
-        ob_rem <- rem_idx[Y[rem_idx] == 1]
-        pop_react <- 0
-        burden_react_residual <- 0
-        burden_uncovered <- 0
-
-        if (length(ob_rem) > 0) {
-            if (react_budget > 0) {
-                ob_order <- ob_rem[order(pop[ob_rem], decreasing = TRUE)]
-                cum_pop_r <- cumsum(pop[ob_order])
-                n_react <- sum(cum_pop_r <= react_budget)
-                if (n_react > 0) {
-                    react_sel <- ob_order[seq_len(n_react)]
-                    pop_react <- sum(pop[react_sel])
-                    burden_react_residual <- pop_react * (1 - r)
-                    if (n_react < length(ob_order)) {
-                        burden_uncovered <- sum(pop[ob_order[(n_react + 1):length(ob_order)]])
-                    }
-                } else {
-                    burden_uncovered <- sum(pop[ob_rem])
-                }
-            } else {
-                burden_uncovered <- sum(pop[ob_rem])
-            }
-        }
-
-        vax_cost <- pop_pre + pop_react
-        illness <- R * (burden_pre_residual + burden_react_residual + burden_uncovered)
+        illness <- R * AR * (burden_pre_residual + burden_react_residual + burden_uncovered)
         costs[s] <- (vax_cost + illness) / P_total
     }
     mean(costs)
@@ -919,11 +835,11 @@ cost_popweighted_rho <- function(alpha, f, pop, prob, R, r, rho, nu = 1,
 # --- Grid-search optimizer for pop-weighted alpha* (score-based) ---
 # Sweeps alpha over [0,1] and returns the alpha that minimizes
 # cost_popweighted_mc (using actual strategy scores for targeting).
-get_alpha_star_pw <- function(f, pop, prob, score, R, r, nu = 1,
+get_alpha_star_pw <- function(f, pop, prob, score, R, r, AR, nu = 1,
                               n_mc = 300, seed = 42, grid_len = 51) {
     alpha_grid <- seq(0, 1, length.out = grid_len)
     costs <- sapply(alpha_grid, function(a) {
-        cost_popweighted_mc(a, f, pop, prob, score, R, r, nu,
+        cost_popweighted_mc(a, f, pop, prob, score, R, r, AR, nu,
             n_mc = n_mc, seed = seed
         )
     })
@@ -933,167 +849,6 @@ get_alpha_star_pw <- function(f, pop, prob, score, R, r, nu = 1,
     )
 }
 
-# --- Grid-search optimizer for rho-parameterized alpha* ---
-# Same as get_alpha_star_pw but uses cost_popweighted_rho (noisy scores
-# calibrated to a target rho, rather than actual strategy scores).
-get_alpha_star_rho <- function(f, pop, prob, R, r, rho, nu = 1,
-                               n_mc = 300, seed = 42, grid_len = 51) {
-    alpha_grid <- seq(0, 1, length.out = grid_len)
-    costs <- sapply(alpha_grid, function(a) {
-        cost_popweighted_rho(a, f, pop, prob, R, r, rho, nu,
-            n_mc = n_mc, seed = seed
-        )
-    })
-    list(
-        alpha_star = alpha_grid[which.min(costs)],
-        cost_star = min(costs), alpha_grid = alpha_grid, cost_grid = costs
-    )
-}
-
-# --- Contiguous-patch allocation helpers ---
-# These functions implement the "RF-contiguous" strategy: instead of greedily
-# selecting individual top-ranked locations, pre-emptive doses are allocated to
-# contiguous spatial patches (grown from high-score seeds via make_patches()).
-# Reactive allocation remains individual-location-based.
-
-# Build contiguous patches for one country's locations.
-# Converts name-based nbr_list to integer-indexed adj, filters to within-country
-# neighbours, then calls make_patches() to grow contiguous patches.
-build_country_patches <- function(df_c, score, nbr_list,
-                                  n_seeds = NULL, patch_size = NULL,
-                                  grow_mode = "best", seed_rng = 42) {
-    locs <- df_c$location
-    n <- length(locs)
-    loc_idx <- setNames(seq_len(n), locs)
-
-    if (is.null(n_seeds)) n_seeds <- max(3L, as.integer(n / 20))
-    if (is.null(patch_size)) patch_size <- max(5L, as.integer(n / 15))
-
-    # Integer-indexed adjacency, within-country only
-    adj_int <- lapply(locs, function(loc) {
-        nbrs <- nbr_list[[loc]]
-        if (is.null(nbrs)) {
-            return(integer(0))
-        }
-        nbrs_in <- nbrs[nbrs %in% locs]
-        as.integer(loc_idx[nbrs_in])
-    })
-
-    patch_out <- make_patches(
-        score = score, adj = adj_int,
-        n_seeds = n_seeds, patch_size = patch_size,
-        grow_mode = grow_mode, seed_rng = seed_rng
-    )
-    patch_out$n_patches <- sum(lengths(patch_out$patches) > 0)
-    patch_out
-}
-
-# Population-weighted MC cost with contiguous-patch pre-emptive allocation.
-# Patches are ranked by mean score; whole patches allocated until budget.
-cost_popweighted_mc_contiguous <- function(alpha, f, pop, prob, score,
-                                           R, r, nu = 1,
-                                           patch_out,
-                                           n_mc = 300, seed = 42, ...) {
-    n <- length(pop)
-    P_total <- sum(pop)
-    total_budget <- f * P_total
-    pre_budget <- alpha * total_budget
-
-    # Patch-based pre-emptive: rank patches by mean score, allocate whole patches
-    patches <- patch_out$patches[lengths(patch_out$patches) > 0]
-    if (length(patches) > 0 && pre_budget > 0) {
-        patch_scores <- sapply(patches, function(idx) mean(score[idx]))
-        patch_pops <- sapply(patches, function(idx) sum(pop[idx]))
-        patch_order <- order(patch_scores, decreasing = TRUE)
-        cum_patch_pop <- cumsum(patch_pops[patch_order])
-        n_pre_patches <- sum(cum_patch_pop <= pre_budget)
-        pre_idx <- if (n_pre_patches > 0) {
-            unlist(patches[patch_order[seq_len(n_pre_patches)]])
-        } else {
-            integer(0)
-        }
-    } else {
-        pre_idx <- integer(0)
-    }
-    rem_idx <- setdiff(seq_len(n), pre_idx)
-    doses_used_pre <- sum(pop[pre_idx])
-
-    # Reactive budget is fixed at (1 - alpha) * total, same as all other strategies.
-    # If patches can't fill the pre-emptive budget, those doses are wasted
-    # (the "contiguity penalty"), NOT transferred to reactive.
-    react_budget <- (1 - alpha) * total_budget
-
-    costs <- numeric(n_mc)
-    for (s in seq_len(n_mc)) {
-        set.seed(seed + s)
-        Y <- rbinom(n, 1, prob)
-
-        # Vaccination cost: charge the full committed pre-emptive budget,
-        # not just deployed doses. Logistics costs (cold chain, transport)
-        # are incurred once budget is committed, regardless of whether the
-        # contiguity constraint prevents deploying all doses.
-        pop_pre_cost <- pre_budget
-        burden_pre_residual <- sum(Y[pre_idx] * pop[pre_idx]) * (1 - nu)
-
-        ob_rem <- rem_idx[Y[rem_idx] == 1]
-        pop_react <- 0
-        burden_react_residual <- 0
-        burden_uncovered <- 0
-
-        if (length(ob_rem) > 0 && react_budget > 0) {
-            ob_order <- ob_rem[order(pop[ob_rem], decreasing = TRUE)]
-            cum_pop_r <- cumsum(pop[ob_order])
-            n_react <- sum(cum_pop_r <= react_budget)
-            if (n_react > 0) {
-                react_sel <- ob_order[seq_len(n_react)]
-                pop_react <- sum(pop[react_sel])
-                burden_react_residual <- pop_react * (1 - r)
-                if (n_react < length(ob_order)) {
-                    burden_uncovered <- sum(pop[ob_order[(n_react + 1):length(ob_order)]])
-                }
-            } else {
-                burden_uncovered <- sum(pop[ob_rem])
-            }
-        } else if (length(ob_rem) > 0) {
-            burden_uncovered <- sum(pop[ob_rem])
-        }
-
-        vax_cost <- pop_pre_cost + pop_react
-        illness <- R * (burden_pre_residual + burden_react_residual + burden_uncovered)
-        costs[s] <- (vax_cost + illness) / P_total
-    }
-    mean(costs)
-}
-
-# Grid-search optimizer for contiguous-patch alpha*
-get_alpha_star_pw_contiguous <- function(f, pop, prob, score, R, r, nu = 1,
-                                         patch_out, n_mc = 300, seed = 42,
-                                         grid_len = 51) {
-    alpha_grid <- seq(0, 1, length.out = grid_len)
-    costs <- sapply(alpha_grid, function(a) {
-        cost_popweighted_mc_contiguous(a, f, pop, prob, score, R, r, nu,
-            patch_out = patch_out,
-            n_mc = n_mc, seed = seed
-        )
-    })
-    list(
-        alpha_star = alpha_grid[which.min(costs)],
-        cost_star = min(costs), alpha_grid = alpha_grid, cost_grid = costs
-    )
-}
-
-# --- Equal-weight analytical cost (Beta distribution) ---
-# These functions assume all locations have equal weight (no population
-# heterogeneity). Outbreak probabilities follow Beta(a,b).
-#
-# mean_risk_pre: E[p | p > q] where q = Beta quantile at (1 - f_pre).
-# This is the average outbreak probability among pre-emptively targeted
-# locations when the top f_pre fraction is selected.
-mean_risk_pre <- function(f_pre, a, b) {
-    if (f_pre <= 0) {
-        return(0)
-    }
-    if (f_pre >= 1) {
         return(a / (a + b))
     }
     q <- qbeta(1 - f_pre, a, b)
@@ -1140,14 +895,13 @@ compute_strategy_rhos <- function(df_c) {
     rho_rf <- cor(df_c$pred_rf, df_c$n_outbreak_years, method = "spearman")
     tibble(
         strategy = c(
-            "Oracle", "Model-ranked", "RF-ranked", "RF-contiguous",
+            "Oracle", "Model-ranked", "RF-ranked",
             "Count-ranked", "Random"
         ),
         rho = c(
             cor(df_c$est_cases, df_c$n_outbreak_years, method = "spearman"),
             cor(df_c$pred_prob, df_c$n_outbreak_years, method = "spearman"),
             rho_rf,
-            rho_rf, # same underlying scores as RF-ranked
             cor(df_c$hist_count, df_c$n_outbreak_years, method = "spearman"),
             rho_random
         )
@@ -1353,25 +1107,6 @@ rho_by_country |>
     )
 ```
 
-```{r build-patches}
-# Pre-build contiguous patches per country using RF scores.
-# Patches are reused across all alpha/f/year combinations.
-country_patches <- setNames(lapply(SELECTED_COUNTRIES, function(ctry) {
-    df_c <- sim_df_all |> filter(country == ctry)
-    patch_out <- build_country_patches(df_c,
-        score = df_c$pred_rf,
-        nbr_list = nbr_list, seed_rng = 42
-    )
-    cat(sprintf(
-        "%s: %d patches, covering %d/%d locations (%.0f%%)\n",
-        COUNTRY_LABELS[ctry], patch_out$n_patches,
-        sum(patch_out$patch_id > 0), nrow(df_c),
-        100 * mean(patch_out$patch_id > 0)
-    ))
-    patch_out
-}), SELECTED_COUNTRIES)
-```
-
 ```{r popweighted-alpha-star}
 # Compute population-weighted alpha* for each strategy x country x f
 # This uses Monte Carlo: for each alpha, draw outbreaks from Bernoulli(obs_rate),
@@ -1379,7 +1114,6 @@ country_patches <- setNames(lapply(SELECTED_COUNTRIES, function(ctry) {
 pw_alpha_results <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
     df_c <- sim_df_all |> filter(country == ctry)
     bb <- bb_fits[[ctry]]
-    patch_out_c <- country_patches[[ctry]]
     cat(sprintf("\n=== %s (n=%d, p=%.3f) ===\n", ctry, nrow(df_c), bb$p))
 
     map_dfr(f_values, function(fv) {
@@ -1392,7 +1126,7 @@ pw_alpha_results <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
         )
         strat_results <- imap_dfr(strategies, function(score, strat_name) {
             res <- get_alpha_star_pw(fv, df_c$pop_sum, df_c$obs_rate, score,
-                R_val, r_val,
+                R_val, r_val, ATTACK_RATE,
                 n_mc = 300
             )
             cat(sprintf("  f=%.1f %-14s: alpha*_pw = %.2f\n", fv, strat_name, res$alpha_star))
@@ -1402,32 +1136,13 @@ pw_alpha_results <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
             )
         })
 
-        # RF-contiguous: patch-based allocation
-        res_contig <- get_alpha_star_pw_contiguous(
-            fv, df_c$pop_sum, df_c$obs_rate, df_c$pred_rf,
-            R_val, r_val,
-            patch_out = patch_out_c, n_mc = 300
-        )
-        cat(sprintf(
-            "  f=%.1f %-14s: alpha*_pw = %.2f\n", fv, "RF-contiguous",
-            res_contig$alpha_star
-        ))
-        strat_results <- bind_rows(
-            strat_results,
-            tibble(
-                strategy = "RF-contiguous", f = fv,
-                alpha_star_pw = res_contig$alpha_star,
-                cost_star_pw = res_contig$cost_star
-            )
-        )
-
         # Random: use uniform scores (average over multiple seeds)
         set.seed(42)
         random_scores <- replicate(20, runif(nrow(df_c)), simplify = FALSE)
         rand_costs <- sapply(seq(0, 1, length.out = 51), function(a) {
             mean(sapply(random_scores, function(sc) {
                 cost_popweighted_mc(a, fv, df_c$pop_sum, df_c$obs_rate, sc,
-                    R_val, r_val,
+                    R_val, r_val, ATTACK_RATE,
                     n_mc = 100
                 )
             }))
@@ -1483,7 +1198,6 @@ alpha_grid_pw <- seq(0, 1, length.out = 51)
 
 pw_cost_curves <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
     df_c <- sim_df_all |> filter(country == ctry)
-    patch_out_c <- country_patches[[ctry]]
     map_dfr(f_values, function(fv) {
         # Individual-location strategies
         strategies <- list(
@@ -1495,7 +1209,7 @@ pw_cost_curves <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
         indiv_curves <- imap_dfr(strategies, function(score, strat_name) {
             costs <- sapply(alpha_grid_pw, function(a) {
                 cost_popweighted_mc(a, fv, df_c$pop_sum, df_c$obs_rate, score,
-                    R_val, r_val,
+                    R_val, r_val, ATTACK_RATE,
                     n_mc = 200
                 )
             })
@@ -1505,25 +1219,13 @@ pw_cost_curves <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
             )
         })
 
-        # RF-contiguous: patch-based allocation cost curve
-        contig_costs <- sapply(alpha_grid_pw, function(a) {
-            cost_popweighted_mc_contiguous(a, fv, df_c$pop_sum, df_c$obs_rate,
-                df_c$pred_rf, R_val, r_val,
-                patch_out = patch_out_c, n_mc = 200
-            )
-        })
-        contig_curve <- tibble(
-            alpha = alpha_grid_pw, cost = contig_costs,
-            strategy = "RF-contiguous", f = fv, country = ctry
-        )
-
         # Random: average over 20 random score vectors for stability
         set.seed(42)
         rand_scores <- replicate(20, runif(nrow(df_c)), simplify = FALSE)
         rand_costs <- sapply(alpha_grid_pw, function(a) {
             mean(sapply(rand_scores, function(sc) {
                 cost_popweighted_mc(a, fv, df_c$pop_sum, df_c$obs_rate, sc,
-                    R_val, r_val,
+                    R_val, r_val, ATTACK_RATE,
                     n_mc = 100
                 )
             }))
@@ -1533,79 +1235,16 @@ pw_cost_curves <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
             strategy = "Random", f = fv, country = ctry
         )
 
-        bind_rows(indiv_curves, contig_curve, rand_curve)
+        bind_rows(indiv_curves, rand_curve)
     })
 })
-
-# Compute theoretical alpha* using the rho-parameterized cost function.
-# For each strategy, we plug its empirical rho into get_alpha_star_rho() to
-# get the alpha* that the analytical framework would predict. This lets us
-# compare "what rho alone predicts" vs "what the actual scores yield" (MC alpha*).
-theoretical_alpha <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
-    df_c <- sim_df_all |> filter(country == ctry)
-    rho_c <- rho_by_country |> filter(country == ctry)
-    map_dfr(f_values, function(fv) {
-        map_dfr(seq_len(nrow(rho_c)), function(i) {
-            rho_val <- rho_c$rho[i]
-            strat <- rho_c$strategy[i]
-            # Clamp rho to [0, 1] for the theoretical curve
-            rho_clamped <- max(0, min(1, rho_val))
-            res <- get_alpha_star_rho(fv, df_c$pop_sum, df_c$obs_rate,
-                R_val, r_val, rho_clamped,
-                n_mc = 200
-            )
-            tibble(
-                country = ctry, strategy = strat, f = fv,
-                rho = rho_val, alpha_star_theo = res$alpha_star,
-                cost_star_theo = res$cost_star
-            )
-        })
-    })
-})
-
-# Look up cost at theoretical alpha* by interpolating each strategy's cost curve
-# Filter to strategies present in pw_cost_curves (excludes Random)
-theo_pts <- theoretical_alpha |>
-    filter(strategy %in% unique(pw_cost_curves$strategy)) |>
-    left_join(
-        pw_cost_curves |>
-            group_by(country, strategy, f) |>
-            summarise(curve = list(tibble(alpha, cost)), .groups = "drop"),
-        by = c("country", "strategy", "f")
-    ) |>
-    rowwise() |>
-    mutate(cost_at_theo = approx(curve$alpha, curve$cost, xout = alpha_star_theo)$y) |>
-    ungroup() |>
-    dplyr::select(-curve)
-
-# MC-based optimal alpha points (diamonds)
-opt_pts <- alpha_comparison |>
-    dplyr::select(country, strategy, f, alpha_star_pw, cost_star_pw) |>
-    rename(alpha = alpha_star_pw, cost = cost_star_pw)
-
-# Prepare vline data: theoretical alpha* per strategy/country/f
-vline_data <- theo_pts |>
-    filter(strategy != "Random") |>
-    dplyr::select(country, strategy, f, alpha_star_theo)
 
 ggplot(pw_cost_curves, aes(x = alpha, y = cost, colour = strategy)) +
     geom_line(linewidth = 0.7) +
-    # Theoretical optimal alpha (vertical dotted lines)
-    geom_vline(
-        data = vline_data,
-        aes(xintercept = alpha_star_theo, colour = strategy),
-        linetype = "dotted", linewidth = 0.5, alpha = 0.6
-    ) +
     # MC-based optimal alpha (diamonds)
     geom_point(
         data = opt_pts, aes(x = alpha, y = cost),
         size = 2.5, shape = 18
-    ) +
-    # Theoretical alpha* from rho (triangles)
-    geom_point(
-        data = theo_pts |> filter(strategy != "Random"),
-        aes(x = alpha_star_theo, y = cost_at_theo),
-        size = 3, shape = 17, alpha = 0.7
     ) +
     facet_grid(country ~ sprintf("f = %.1f", f),
         scales = "free_y",
@@ -1618,7 +1257,7 @@ ggplot(pw_cost_curves, aes(x = alpha, y = cost, colour = strategy)) +
         colour = "Strategy",
         title = "Population-weighted cost curves by strategy, country, and f",
         subtitle = sprintf(
-            "R = %.0f, r = %.1f; diamonds = MC optimal, triangles = theoretical (from rho), dotted = theoretical alpha*",
+            "R = %.0f, r = %.1f; diamonds = MC optimal alpha*",
             R_val, r_val
         )
     ) +
@@ -1767,98 +1406,6 @@ compute_impact_mixed <- function(df, score, alpha, effective_people, r_eff,
     )
 }
 
-# Contiguous-patch variant of compute_impact_mixed().
-# Pre-emptive allocation ranks patches by mean score and allocates whole patches.
-# Reactive allocation remains individual-location-based (same as above).
-compute_impact_contiguous <- function(df, score, alpha, effective_people, r_eff,
-                                      R_cost = 5, patch_out) {
-    n <- nrow(df)
-    pre_budget <- alpha * effective_people
-
-    # Patch-based pre-emptive: rank patches by mean score, allocate whole patches
-    patches <- patch_out$patches[lengths(patch_out$patches) > 0]
-    if (length(patches) > 0 && pre_budget > 0) {
-        patch_scores <- sapply(patches, function(idx) mean(score[idx]))
-        patch_pops <- sapply(patches, function(idx) sum(df$pop_sum[idx]))
-        patch_order <- order(patch_scores, decreasing = TRUE)
-        cum_patch_pop <- cumsum(patch_pops[patch_order])
-        n_pre_patches <- sum(cum_patch_pop <= pre_budget)
-        pre_idx <- if (n_pre_patches > 0) {
-            unlist(patches[patch_order[seq_len(n_pre_patches)]])
-        } else {
-            integer(0)
-        }
-    } else {
-        pre_idx <- integer(0)
-    }
-
-    cases_averted_pre <- sum(df$est_cases[pre_idx])
-    doses_pre <- sum(df$pop_sum[pre_idx])
-
-    # Reactive budget is fixed at (1 - alpha) * capacity, same as all strategies.
-    # Unfilled pre-emptive doses are wasted (contiguity penalty).
-    react_doses <- (1 - alpha) * effective_people
-
-    # Reactive: same as compute_impact_mixed (individual-location)
-    remaining_idx <- setdiff(seq_len(n), pre_idx)
-    outbreak_remaining <- remaining_idx[df$any_outbreak[remaining_idx] == 1]
-
-    if (length(outbreak_remaining) > 0 && react_doses > 0) {
-        ob_order <- outbreak_remaining[
-            order(df$est_cases[outbreak_remaining], decreasing = TRUE)
-        ]
-        cum_pop_react <- cumsum(df$pop_sum[ob_order])
-        n_react <- sum(cum_pop_react <= react_doses)
-        react_idx <- if (n_react > 0) ob_order[seq_len(n_react)] else integer(0)
-        cases_averted_react <- r_eff * sum(df$est_cases[react_idx])
-        doses_react <- sum(df$pop_sum[react_idx])
-    } else {
-        react_idx <- integer(0)
-        cases_averted_react <- 0
-        doses_react <- 0
-    }
-
-    total_cases_cf <- sum(df$est_cases)
-    cases_averted_total <- cases_averted_pre + cases_averted_react
-
-    uncov_idx <- setdiff(outbreak_remaining, react_idx)
-    pop_burden_uncovered <- sum(df$pop_sum[uncov_idx])
-    pop_burden_react_residual <- sum(df$pop_sum[react_idx]) * (1 - r_eff)
-    P_total <- sum(df$pop_sum)
-
-    tibble(
-        alpha = alpha,
-        total_cases_cf = total_cases_cf,
-        cases_averted_pre = cases_averted_pre,
-        cases_averted_react = cases_averted_react,
-        cases_averted_total = cases_averted_total,
-        pct_averted = ifelse(total_cases_cf > 0,
-            100 * cases_averted_total / total_cases_cf, 0
-        ),
-        doses_pre = doses_pre,
-        doses_react = doses_react,
-        doses_total = doses_pre + doses_react,
-        eff_pre_per_1k = ifelse(doses_pre > 0,
-            cases_averted_pre / doses_pre * 1000, 0
-        ),
-        eff_react_per_1k = ifelse(doses_react > 0,
-            cases_averted_react / doses_react * 1000, 0
-        ),
-        eff_total_per_1k = ifelse(doses_pre + doses_react > 0,
-            cases_averted_total / (doses_pre + doses_react) * 1000, 0
-        ),
-        cases_remaining = total_cases_cf - cases_averted_total,
-        # Charge full committed pre-emptive budget (not just deployed doses)
-        # to account for logistics costs of the contiguity constraint
-        sim_cost = (pre_budget + doses_react +
-            R_cost * (pop_burden_uncovered + pop_burden_react_residual)) /
-            P_total,
-        n_pre = length(pre_idx),
-        n_react = length(react_idx),
-        n_outbreak_remaining = length(outbreak_remaining),
-        n_uncovered = length(outbreak_remaining) - length(react_idx)
-    )
-}
 ```
 
 ```{r run-mixed-strategies}
@@ -1871,7 +1418,6 @@ set.seed(42)
 results_all <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
     df_c <- sim_df_all |> filter(country == ctry)
     P_total_c <- sum(df_c$pop_sum)
-    patch_out_c <- country_patches[[ctry]]
 
     map_dfr(f_values, function(fv) {
         eff_people <- fv * P_total_c
@@ -1903,14 +1449,6 @@ results_all <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
             dplyr::select(result) |>
             unnest(result)
 
-        # RF-contiguous: patch-based pre-emptive allocation
-        contig <- map_dfr(alpha_vals, function(a) {
-            compute_impact_contiguous(df_c, df_c$pred_rf, a, eff_people, r_val,
-                patch_out = patch_out_c
-            ) |>
-                mutate(strategy = "RF-contiguous")
-        })
-
         # Random strategy: average over 50 replications
         n_rep <- 50
         rand <- map_dfr(alpha_vals, function(a) {
@@ -1926,7 +1464,7 @@ results_all <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
                 dplyr::select(-rep)
         })
 
-        bind_rows(det, contig, rand) |>
+        bind_rows(det, rand) |>
             mutate(f = fv, alpha_star = a_star_pw)
     }) |> mutate(country = ctry)
 })
@@ -1936,6 +1474,23 @@ results_all <- results_all |>
         strategy = factor(strategy, levels = STRATEGY_LEVELS),
         country_label = COUNTRY_LABELS[country]
     )
+
+# Save intermediate objects for the supplementary rho/contiguous analysis
+saveRDS(list(
+    sim_df_all       = sim_df_all,
+    bb_fits          = bb_fits,
+    rho_by_country   = rho_by_country,
+    alpha_comparison = alpha_comparison,
+    pw_cost_curves   = pw_cost_curves,
+    results_all      = results_all,
+    nbr_list         = nbr_list,
+    SELECTED_COUNTRIES = SELECTED_COUNTRIES,
+    COUNTRY_LABELS     = COUNTRY_LABELS,
+    STRATEGY_COLOURS   = STRATEGY_COLOURS,
+    STRATEGY_LEVELS    = STRATEGY_LEVELS,
+    R_val = R_val, r_val = r_val,
+    ATTACK_RATE = ATTACK_RATE, f_values = f_values
+), "data/vaccine_sim_for_supplementary.rds")
 
 # Summary table per country x f
 for (ctry in SELECTED_COUNTRIES) {
@@ -2333,7 +1888,6 @@ single_years <- eval_years
 single_year_results <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
     df_c <- sim_df_all |> filter(country == ctry)
     P_total_c <- sum(df_c$pop_sum)
-    patch_out_c <- country_patches[[ctry]]
 
     map_dfr(single_years, function(yr) {
         # Outbreak outcomes for this single year
@@ -2389,15 +1943,6 @@ single_year_results <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
                 dplyr::select(result) |>
                 unnest(result)
 
-            # RF-contiguous: patch-based pre-emptive allocation
-            contig_1y <- map_dfr(alpha_vals, function(a) {
-                compute_impact_contiguous(sim_1y, sim_1y$pred_rf, a, eff_people,
-                    r_val,
-                    patch_out = patch_out_c
-                ) |>
-                    mutate(strategy = "RF-contiguous")
-            })
-
             # Random strategy: average over 50 replications
             rand <- map_dfr(alpha_vals, function(a) {
                 reps <- map_dfr(1:50, function(seed) {
@@ -2412,7 +1957,7 @@ single_year_results <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
                     dplyr::select(-rep)
             })
 
-            bind_rows(det, contig_1y, rand) |>
+            bind_rows(det, rand) |
                 mutate(f = fv, alpha_star = a_star_pw)
         }) |>
             mutate(
@@ -2650,97 +2195,6 @@ ggplot(
 ```
 
 
-## Targeting Accuracy and Optimal Allocation
-
-How does the quality of risk intelligence ($\rho$) affect the optimal
-pre-emptive fraction $\alpha^*$? For each country and coverage level $f$,
-we sweep $\rho$ from 0 (random targeting) to 1 (perfect foresight) and compute
-the pop-weighted $\alpha^*(\rho)$ curve. The empirical $\rho$ values for each
-strategy are overlaid.
-
-```{r rho-alpha-curve, fig.width=14, fig.height=10}
-# Sweep rho from 0 (random) to 1 (oracle) and compute the pop-weighted
-# alpha*(rho) for each country × f. This is the "decision curve": given
-# a surveillance system with targeting accuracy rho, what alpha should
-# you use? Strategy points are overlaid to show where they fall.
-rho_grid <- seq(0, 1, by = 0.05)
-
-rho_alpha_curves <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
-    df_c <- sim_df_all |> filter(country == ctry)
-    map_dfr(f_values, function(fv) {
-        map_dfr(rho_grid, function(rho_val) {
-            res <- get_alpha_star_rho(fv, df_c$pop_sum, df_c$obs_rate,
-                R_val, r_val,
-                rho = rho_val,
-                n_mc = 150, seed = 42
-            )
-            tibble(
-                rho = rho_val, alpha_star = res$alpha_star,
-                f = fv, country = ctry
-            )
-        })
-    })
-})
-rho_alpha_curves <- rho_alpha_curves |>
-    mutate(country_label = COUNTRY_LABELS[country])
-
-# Strategy points: empirical rho and pop-weighted alpha*
-strategy_pts <- alpha_comparison |>
-    dplyr::select(country, strategy, f, rho, alpha_star_pw) |>
-    mutate(country_label = COUNTRY_LABELS[country])
-
-ggplot(rho_alpha_curves, aes(x = rho, y = alpha_star)) +
-    geom_line(linewidth = 0.8, colour = "grey30") +
-    geom_point(
-        data = strategy_pts,
-        aes(x = rho, y = alpha_star_pw, colour = strategy),
-        size = 3
-    ) +
-    facet_grid(country_label ~ sprintf("f = %.1f", f)) +
-    scale_colour_manual(values = STRATEGY_COLOURS) +
-    labs(
-        x = expression("Targeting accuracy" ~ rho),
-        y = expression("Optimal" ~ alpha^"*" ~ "(pop-weighted)"),
-        colour = "Strategy",
-        title = expression("How targeting accuracy" ~ rho ~ "shifts optimal" ~ alpha^"*"),
-        subtitle = "Grey curve = theoretical; coloured points = empirical strategy positions"
-    ) +
-    theme_minimal(base_size = 11) +
-    theme(legend.position = "bottom")
-```
-
-### Cross-country comparison
-
-```{r cross-country-summary}
-# Summary table comparing key parameters across the 3 countries at f=0.5.
-# Shows how outbreak prevalence (p_hat), population, and targeting accuracy
-# (rho) jointly determine the optimal allocation strategy.
-country_summary <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
-    df_c <- sim_df_all |> filter(country == ctry)
-    bb <- bb_fits[[ctry]]
-    rhos <- alpha_comparison |> filter(country == ctry, f == 0.5)
-    tibble(
-        Country = COUNTRY_LABELS[ctry],
-        n_locations = nrow(df_c),
-        `P_total (M)` = round(sum(df_c$pop_sum) / 1e6, 1),
-        p_hat = round(bb$p, 3),
-        `Beta(a,b)` = sprintf("(%.2f, %.2f)", bb$a, bb$b),
-        `alpha*_ew (f=0.5)` = round(get_alpha_star_beta(R_val, 0.5, bb$a, bb$b, r_val), 3),
-        `alpha*_pw Model (f=0.5)` = round(
-            rhos |> filter(strategy == "Model-ranked") |> pull(alpha_star_pw), 3
-        ),
-        `rho_model` = round(
-            rhos |> filter(strategy == "Model-ranked") |> pull(rho), 3
-        )
-    )
-})
-
-knitr::kable(country_summary,
-    caption = "Cross-country comparison at f = 0.5"
-)
-```
-
-
 ## Policy Insights
 
 ```{r policy-insights}
@@ -2805,10 +2259,11 @@ cat("   locations vary greatly in population. The greedy allocation\n")
 cat("   by population means a few large locations can consume\n")
 cat("   the entire pre-emptive budget.\n")
 
-cat("\n4. rho IS LOW BUT CONSEQUENTIAL\n")
-cat("   Empirical rho for the model-ranked strategy is typically 0.05-0.15.\n")
-cat("   Even this modest targeting accuracy meaningfully shifts alpha*\n")
-cat("   relative to random (rho=0).\n")
+cat("
+4. rho IS LOW BUT CONSEQUENTIAL
+")
+cat("   See Supplementary Analysis for the full rho sweep.
+")
 
 cat("\n5. COST CURVES ARE FLAT NEAR alpha*\n")
 cat("   Moderate deviations from alpha* incur small cost penalties.\n")
@@ -2840,11 +2295,9 @@ The multi-country simulation reveals five actionable findings for OCV stockpile 
    dominance is strong; at $R \geq 10$, pre-emptive allocation becomes
    worthwhile even with imperfect targeting.
 
-5. **The $\rho$--$\alpha^*$ curve provides a decision tool.** For a given country
-   and $f$, the $\alpha^*(\rho)$ curve shows how much pre-emptive allocation is
-   justified at each level of targeting accuracy. Current empirical $\rho$ values
-   (0.05--0.15) sit in the region where small improvements in targeting can
-   meaningfully shift the optimal allocation.
+5. **The $ho$--$lpha^*$ curve provides a decision tool** — see the
+   Supplementary Analysis for the full targeting accuracy sweep and
+   cross-country comparison.
 
 
 ## Suggested Additional Analyses
