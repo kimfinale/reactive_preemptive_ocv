@@ -28,11 +28,11 @@ vaccination** under a fixed vaccine supply. The analysis:
 **Scenario parameters**:
 
 - Countries: COD (DRC, high-risk), NGA (Nigeria, medium-risk), CMR (Cameroon, low-risk)
-- Single-dose OCV for both pre-emptive and reactive use ($\nu = 1$, $r = 0.6$)
-- Cost ratio $R = C_I / C_V = 5$, where $C_V$ = vaccine + delivery cost per person and $C_I$ = attack rate $\times$ cost per case (expected infection cost per person in an outbreak area)
+- Single-dose OCV for both pre-emptive and reactive use ($\nu = 1$, $r \in {0.2, 0.4, 0.6}$)
+- Cost ratio $R = C_I / C_V$, where $C_V$ is cost of vaccination per person and $C_I$ is cost of infection per person (accounting for severity of the disease). Total cost of vaccinating a population with size $n$ would be $n C_V$ and total cost of infection would be $n A C_I$, where $A$ is the attack rate (or cumulative incidence) in the population expressed as a proportion.
 - Coverage fraction varied: $f \in \{0.3, 0.5, 0.7\}$ (doses adjusted accordingly)
 - Evaluation window: 2016--2018 (3 years, matching model prediction horizon $k = 3$)
-- $\alpha$: fraction of supply allocated pre-emptively; $1 - \alpha$ held for reactive
+- $\alpha$: fraction of supply allocated to the pre-emptive vaccination; $1 - \alpha$ held for reactive vaccination
 
 | Strategy | Ranking basis |
 |----------|--------------|
@@ -43,8 +43,7 @@ vaccination** under a fixed vaccine supply. The analysis:
 | Oracle | Actual 2016--2018 outbreak burden (perfect foresight) |
 
 
-## Setup
-
+# Setup
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
 library(tidyverse)
@@ -55,12 +54,12 @@ library(patchwork)
 library(pROC)
 library(scales)
 library(knitr)
-library(mgcv)           # GAM
-library(randomForest)   # random forest
-library(gbm)            # gradient boosting
-library(class)          # k-NN
+library(mgcv) # GAM
+library(randomForest) # random forest
+library(gbm) # gradient boosting
+library(class) # k-NN
 source("R/analytic_utils.R")
-source("R/spatial_setup.R")    # for make_patches() — contiguous patch allocation
+source("R/spatial_setup.R") # for make_patches() — contiguous patch allocation
 ```
 
 
@@ -92,7 +91,7 @@ outbreak_events <- ts23 |>
     )
 
 all_years <- 2010:2023
-all_locs  <- unique(ts23$location)
+all_locs <- unique(ts23$location)
 
 # loc_year_full: complete (location × year) panel with n_active = number of
 # outbreaks ACTIVE (ongoing) in that year. Used for the outcome variable.
@@ -152,28 +151,26 @@ shp_admin23 <- shp_named %>%
 
 cat("ADM2/3 polygons:", nrow(shp_admin23), "\n")
 
-# Build a spatial neighbour list: for each polygon, find the K_NBR_MAX nearest
-# neighbours by Euclidean distance between polygon centroids.
+# Build a spatial neighbour list: for each polygon, find all neighbours
+# whose centroid is within DIST_LIMIT_KM km (geodesic distance).
 # Used for the nbr_hist feature (spatial contagion signal).
-K_NBR_MAX <- 10L
-coords_mat <- shp_admin23 %>%
+DIST_LIMIT_KM <- 50
+centroids_sf <- shp_admin23 %>%
     st_make_valid() %>%
-    st_point_on_surface() %>%
-    st_coordinates()
-rownames(coords_mat) <- shp_admin23$location
+    st_point_on_surface()
 
-# Full pairwise distance matrix; set diagonal to Inf so a location
-# is never its own neighbour
-dist_mat_sp <- as.matrix(dist(coords_mat))
+# Pairwise geodesic distance matrix (meters); convert to km
+dist_mat_sp <- st_distance(centroids_sf) |> units::drop_units()
+dist_mat_sp <- dist_mat_sp / 1000 # m -> km
 rownames(dist_mat_sp) <- colnames(dist_mat_sp) <- shp_admin23$location
 diag(dist_mat_sp) <- Inf
 
-# For each location, store its K nearest neighbours (sorted by distance)
+# For each location, store neighbours within the distance limit (sorted)
 nbr_list <- setNames(
-    lapply(
-        shp_admin23$location,
-        function(loc) names(sort(dist_mat_sp[loc, ]))[seq_len(K_NBR_MAX)]
-    ),
+    lapply(shp_admin23$location, function(loc) {
+        d <- dist_mat_sp[loc, ]
+        names(sort(d[d <= DIST_LIMIT_KM]))
+    }),
     shp_admin23$location
 )
 ```
@@ -202,24 +199,30 @@ continent-wide raster sum ($\approx$ 3.65 M) $\times$ 344 $\approx$ 1.26
 billion, matching Africa's 2017 population.
 
 ```{r population-extraction}
-POP_SCALE <- 344  # pixel area in km² ≈ (0.167° × 111 km)²
+POP_SCALE <- 344 # pixel area in km² ≈ (0.167° × 111 km)²
 
 shp_pop <- shp_admin23 |>
     st_make_valid() |>
     st_transform(crs(pop_raster))
 
 # Sum mean-population values within each polygon, then scale to actual counts
-pop_by_adm2 <- exactextractr::exact_extract(pop_raster, shp_pop, fun = "sum",
-                                            progress = FALSE)
+pop_by_adm2 <- exactextractr::exact_extract(pop_raster, shp_pop,
+    fun = "sum",
+    progress = FALSE
+)
 pop_by_adm2 <- pop_by_adm2 * POP_SCALE
 
 shp_admin23$pop_sum <- pop_by_adm2
 
-cat("Polygons with population > 0:",
-    sum(!is.na(pop_by_adm2) & pop_by_adm2 > 0), "of", nrow(shp_admin23), "\n")
+cat(
+    "Polygons with population > 0:",
+    sum(!is.na(pop_by_adm2) & pop_by_adm2 > 0), "of", nrow(shp_admin23), "\n"
+)
 cat("Total population:", format(round(sum(pop_by_adm2, na.rm = TRUE)), big.mark = ","), "\n")
-cat("Range:", format(round(min(pop_by_adm2, na.rm = TRUE)), big.mark = ","), "-",
-    format(round(max(pop_by_adm2, na.rm = TRUE)), big.mark = ","), "\n")
+cat(
+    "Range:", format(round(min(pop_by_adm2, na.rm = TRUE)), big.mark = ","), "-",
+    format(round(max(pop_by_adm2, na.rm = TRUE)), big.mark = ","), "\n"
+)
 ```
 
 
@@ -243,12 +246,11 @@ occurrence during 2016--2018.
 #   k_val  — prediction horizon (years); outcome = any outbreak in next k years
 #   L_val  — lead-time gap between feature window end and test period start
 #            (default 0 = predict the immediately following years)
-#   n_nbr  — number of spatial neighbours for the nbr_hist feature
 #
 # valid_splits: the set of years s where both the feature window [s-T+1, s]
 # and the test window [s+L+1, s+L+k] fit within all_years.
 # E.g., T=5, k=3, L=0, all_years=2010:2023 → valid s = 2014:2020.
-build_model_df <- function(T_val, k_val, L_val = 0L, n_nbr = 10L,
+build_model_df <- function(T_val, k_val, L_val = 0L,
                            nbr_map = nbr_list) {
     # Determine which years can serve as split points:
     # need T years of history before s, and k+L years of future after s.
@@ -259,8 +261,8 @@ build_model_df <- function(T_val, k_val, L_val = 0L, n_nbr = 10L,
 
     map_dfr(valid_splits, function(s) {
         # Feature windows:
-        window_yrs <- seq(s - T_val + 1L, s)  # recent T years for hist_count
-        hist_yrs <- seq(min(all_years), s)     # all years up to s for lambda_hat
+        window_yrs <- seq(s - T_val + 1L, s) # recent T years for hist_count
+        hist_yrs <- seq(min(all_years), s) # all years up to s for lambda_hat
         # Outcome window: k years after the lead gap
         test_yrs <- seq(s + L_val + 1L, s + L_val + k_val)
 
@@ -290,16 +292,19 @@ build_model_df <- function(T_val, k_val, L_val = 0L, n_nbr = 10L,
             ) |>
             replace_na(list(lambda_hat = 0))
 
-        # Feature 3: nbr_hist — mean hist_count of the n_nbr nearest neighbours
+        # Feature 3: nbr_hist — mean hist_count of neighbours within distance limit
         # (spatial contagion signal: locations near recent outbreaks are riskier)
         sv <- setNames(hc$hist_count, hc$location)
         nbr_df <- hc |>
             mutate(nbr_hist = map_dbl(location, function(loc) {
                 nbrs <- nbr_map[[loc]]
-                if (is.null(nbrs)) return(0)
-                nbrs <- nbrs[seq_len(min(n_nbr, length(nbrs)))]
+                if (is.null(nbrs) || length(nbrs) == 0L) {
+                    return(0)
+                }
                 nbrs <- nbrs[nbrs %in% names(sv)]
-                if (length(nbrs) == 0L) return(0)
+                if (length(nbrs) == 0L) {
+                    return(0)
+                }
                 mean(sv[nbrs])
             })) |>
             dplyr::select(location, nbr_hist)
@@ -337,7 +342,7 @@ df_model <- build_model_df(T_val = T_val, k_val = k_val)
 # increase sample size. This means features from [2010,2014] predict 2015-2017.
 # Prediction: split_year=2015 → features from [2011,2015], outcome = 2016-2018.
 train_data <- df_model |> filter(split_year < 2015)
-pred_data  <- df_model |> filter(split_year == 2015)
+pred_data <- df_model |> filter(split_year == 2015)
 
 cat("Training observations:", nrow(train_data), "\n")
 cat("Prediction locations:", nrow(pred_data), "\n")
@@ -360,18 +365,25 @@ pred_data <- pred_data |>
 # to logistic regression for the "RF-ranked" strategy.
 set.seed(42)
 rf_fit_all <- randomForest(factor(obs) ~ hist_count + lambda_hat + nbr_hist,
-                           data = train_data, ntree = 500)
+    data = train_data, ntree = 500
+)
 pred_data <- pred_data |>
     mutate(pred_rf = predict(rf_fit_all, newdata = pred_data, type = "prob")[, "1"])
 
-cat("Observed outbreak prevalence (2016-2018):",
-    round(100 * mean(pred_data$obs), 1), "%\n")
-cat("Predicted probability range (logistic):",
+cat(
+    "Observed outbreak prevalence (2016-2018):",
+    round(100 * mean(pred_data$obs), 1), "%\n"
+)
+cat(
+    "Predicted probability range (logistic):",
     round(min(pred_data$pred_prob), 4), "-",
-    round(max(pred_data$pred_prob), 4), "\n")
-cat("Predicted probability range (RF):",
+    round(max(pred_data$pred_prob), 4), "\n"
+)
+cat(
+    "Predicted probability range (RF):",
     round(min(pred_data$pred_rf), 4), "-",
-    round(max(pred_data$pred_rf), 4), "\n")
+    round(max(pred_data$pred_rf), 4), "\n"
+)
 
 summary(fit_final)$coefficients |>
     as.data.frame() |>
@@ -399,9 +411,9 @@ $f \in \{0.3, 0.5, 0.7\}$.
 # Used to compute est_cases (counterfactual burden) for impact metrics.
 # Note: R already incorporates AR (R = AR × cost_per_case / C_V), so
 # ATTACK_RATE does NOT appear in cost functions.
-ATTACK_RATE <- 0.01
+ATTACK_RATE <- 0.005
 
-DOSES_PER_PERSON <- 1  # single-dose OCV
+DOSES_PER_PERSON <- 1 # single-dose OCV
 
 # Evaluation window matches the prediction horizon (k=3 → 2016-2018)
 eval_years <- 2016:2018
@@ -414,7 +426,7 @@ outbreak_eval <- loc_year_full |>
     group_by(location) |>
     summarise(
         n_outbreak_years = sum(n_active > 0),
-        any_outbreak     = as.integer(n_outbreak_years > 0),
+        any_outbreak = as.integer(n_outbreak_years > 0),
         .groups = "drop"
     )
 
@@ -456,13 +468,19 @@ for (ctry in SELECTED_COUNTRIES) {
     P_c <- sum(df_c$pop_sum)
     cat(sprintf("\n=== %s ===\n", COUNTRY_LABELS[ctry]))
     cat(sprintf("Locations: %d\n", nrow(df_c)))
-    cat(sprintf("  with outbreaks (%d-%d): %d (%.1f%%)\n",
+    cat(sprintf(
+        "  with outbreaks (%d-%d): %d (%.1f%%)\n",
         min(eval_years), max(eval_years),
-        sum(df_c$any_outbreak), 100 * mean(df_c$any_outbreak)))
-    cat(sprintf("Total population: %s (%.1f M)\n",
-        format(round(P_c), big.mark = ","), P_c / 1e6))
-    cat(sprintf("Counterfactual cases: %s\n",
-        format(round(sum(df_c$est_cases)), big.mark = ",")))
+        sum(df_c$any_outbreak), 100 * mean(df_c$any_outbreak)
+    ))
+    cat(sprintf(
+        "Total population: %s (%.1f M)\n",
+        format(round(P_c), big.mark = ","), P_c / 1e6
+    ))
+    cat(sprintf(
+        "Counterfactual cases: %s\n",
+        format(round(sum(df_c$est_cases)), big.mark = ",")
+    ))
 }
 
 # Keep sim_df as COD for backward compatibility in remaining single-country code
@@ -483,53 +501,65 @@ flexible model improves targeting accuracy ($\rho$) for DRC.
 # All use the same 3 features (hist_count, lambda_hat, nbr_hist) and same
 # train/test split. The goal is to see whether nonlinear methods improve
 # targeting accuracy (rho) over logistic regression.
-cod_locs <- sim_df_all |> filter(country == "COD") |> pull(location)
+cod_locs <- sim_df_all |>
+    filter(country == "COD") |>
+    pull(location)
 train_cod <- train_data |> filter(location %in% cod_locs)
-pred_cod  <- pred_data  |> filter(location %in% cod_locs)
+pred_cod <- pred_data |> filter(location %in% cod_locs)
 
 features <- c("hist_count", "lambda_hat", "nbr_hist")
 X_train <- train_cod[, features] |> as.data.frame()
 y_train <- train_cod$obs
-X_pred  <- pred_cod[, features]  |> as.data.frame()
+X_pred <- pred_cod[, features] |> as.data.frame()
 
 # Outcome for rho evaluation: observed outbreak years in 2016-2018
 cod_sim <- sim_df_all |> filter(country == "COD")
 
-cat(sprintf("DRC training: %d obs, prediction: %d locations\n",
-    nrow(train_cod), nrow(pred_cod)))
-cat(sprintf("Outcome prevalence (train): %.1f%%, (test 2016-18): %.1f%%\n",
-    100 * mean(y_train), 100 * mean(cod_sim$any_outbreak)))
+cat(sprintf(
+    "DRC training: %d obs, prediction: %d locations\n",
+    nrow(train_cod), nrow(pred_cod)
+))
+cat(sprintf(
+    "Outcome prevalence (train): %.1f%%, (test 2016-18): %.1f%%\n",
+    100 * mean(y_train), 100 * mean(cod_sim$any_outbreak)
+))
 
 # --- 1. Logistic regression (baseline — already fitted) ---
 pred_logistic <- pred_cod$pred_prob
 
 # --- 2. GAM with smooths ---
-n_unique_hc  <- length(unique(train_cod$hist_count))
+n_unique_hc <- length(unique(train_cod$hist_count))
 n_unique_lam <- length(unique(train_cod$lambda_hat))
 n_unique_nbr <- length(unique(train_cod$nbr_hist))
-k_hc  <- min(10, n_unique_hc  - 1)
+k_hc <- min(10, n_unique_hc - 1)
 k_lam <- min(10, n_unique_lam - 1)
 k_nbr <- min(10, n_unique_nbr - 1)
-gam_fit <- gam(obs ~ s(hist_count, k = k_hc) + s(lambda_hat, k = k_lam) +
-                     s(nbr_hist, k = k_nbr),
-               data = train_cod, family = binomial, method = "REML")
+gam_fit <- gam(
+    obs ~ s(hist_count, k = k_hc) + s(lambda_hat, k = k_lam) +
+        s(nbr_hist, k = k_nbr),
+    data = train_cod, family = binomial, method = "REML"
+)
 pred_gam <- predict(gam_fit, newdata = X_pred, type = "response")
 
 # --- 3. Random forest ---
 set.seed(42)
 rf_fit <- randomForest(factor(obs) ~ hist_count + lambda_hat + nbr_hist,
-                       data = train_cod, ntree = 500)
+    data = train_cod, ntree = 500
+)
 pred_rf <- predict(rf_fit, newdata = X_pred, type = "prob")[, "1"]
 
 # --- 4. Gradient boosting (GBM) ---
 set.seed(42)
 gbm_fit <- gbm(obs ~ hist_count + lambda_hat + nbr_hist,
-                data = train_cod, distribution = "bernoulli",
-                n.trees = 500, interaction.depth = 3, shrinkage = 0.05,
-                bag.fraction = 0.8, verbose = FALSE)
+    data = train_cod, distribution = "bernoulli",
+    n.trees = 500, interaction.depth = 3, shrinkage = 0.05,
+    bag.fraction = 0.8, verbose = FALSE
+)
 best_iter <- gbm.perf(gbm_fit, method = "OOB", plot.it = FALSE)
-pred_gbm <- predict(gbm_fit, newdata = X_pred, n.trees = best_iter,
-                     type = "response")
+pred_gbm <- predict(gbm_fit,
+    newdata = X_pred, n.trees = best_iter,
+    type = "response"
+)
 
 # --- 5. k-NN (k = 10, probability mode) ---
 # Scale features for distance-based method
@@ -538,13 +568,15 @@ scale_params <- list(
     scale  = apply(X_train, 2, sd) + 1e-10
 )
 X_train_sc <- scale(X_train, center = scale_params$center, scale = scale_params$scale)
-X_pred_sc  <- scale(X_pred,  center = scale_params$center, scale = scale_params$scale)
+X_pred_sc <- scale(X_pred, center = scale_params$center, scale = scale_params$scale)
 
-knn_fit <- knn(train = X_train_sc, test = X_pred_sc, cl = factor(y_train),
-               k = 10, prob = TRUE)
+knn_fit <- knn(
+    train = X_train_sc, test = X_pred_sc, cl = factor(y_train),
+    k = 10, prob = TRUE
+)
 # knn() returns the class + attr(,"prob") = proportion of winning class
 knn_raw_prob <- attr(knn_fit, "prob")
-knn_class    <- as.integer(as.character(knn_fit))
+knn_class <- as.integer(as.character(knn_fit))
 # Convert to P(outbreak): if class = 1, prob is correct; if class = 0, flip
 pred_knn <- ifelse(knn_class == 1, knn_raw_prob, 1 - knn_raw_prob)
 
@@ -552,13 +584,14 @@ pred_knn <- ifelse(knn_class == 1, knn_raw_prob, 1 - knn_raw_prob)
 classifier_preds <- tibble(
     location = pred_cod$location,
     Logistic = pred_logistic,
-    GAM      = as.numeric(pred_gam),
+    GAM = as.numeric(pred_gam),
     `Random Forest` = pred_rf,
-    GBM      = pred_gbm,
-    kNN      = pred_knn
+    GBM = pred_gbm,
+    kNN = pred_knn
 ) |>
     left_join(cod_sim |> dplyr::select(location, n_outbreak_years, any_outbreak, est_cases),
-              by = "location")
+        by = "location"
+    )
 ```
 
 ### Targeting accuracy ($\rho$) by classifier
@@ -574,11 +607,14 @@ rho_table <- tibble(
     Method = classifier_methods,
     rho_spearman = map_dbl(classifier_methods, function(m) {
         cor(classifier_preds[[m]], classifier_preds$n_outbreak_years,
-            method = "spearman")
+            method = "spearman"
+        )
     }),
     AUC = map_dbl(classifier_methods, function(m) {
         as.numeric(pROC::auc(pROC::roc(classifier_preds$any_outbreak,
-                                        classifier_preds[[m]], quiet = TRUE)))
+            classifier_preds[[m]],
+            quiet = TRUE
+        )))
     })
 )
 
@@ -591,7 +627,9 @@ baseline_rho <- tibble(
     ),
     AUC = c(
         as.numeric(pROC::auc(pROC::roc(cod_sim$any_outbreak,
-                                        cod_sim$hist_count, quiet = TRUE))),
+            cod_sim$hist_count,
+            quiet = TRUE
+        ))),
         0.5
     )
 )
@@ -599,28 +637,38 @@ baseline_rho <- tibble(
 rho_table <- bind_rows(rho_table, baseline_rho) |>
     arrange(desc(rho_spearman))
 
-knitr::kable(rho_table, digits = 3,
+knitr::kable(rho_table,
+    digits = 3,
     col.names = c("Method", "Spearman \u03c1", "AUC"),
-    caption = "DRC: Targeting accuracy by classification method (eval 2016-2018)")
+    caption = "DRC: Targeting accuracy by classification method (eval 2016-2018)"
+)
 ```
 
 ```{r fig-classifier-rho, fig.width=8, fig.height=5}
 rho_plot_df <- rho_table |>
-    mutate(Method = fct_reorder(Method, rho_spearman),
-           type = ifelse(Method %in% c("Count-ranked", "Random"),
-                         "Baseline", "Classifier"))
+    mutate(
+        Method = fct_reorder(Method, rho_spearman),
+        type = ifelse(Method %in% c("Count-ranked", "Random"),
+            "Baseline", "Classifier"
+        )
+    )
 
 ggplot(rho_plot_df, aes(x = Method, y = rho_spearman, fill = type)) +
     geom_col(width = 0.6, alpha = 0.85) +
     geom_text(aes(label = sprintf("%.3f", rho_spearman)),
-              hjust = -0.15, size = 3.5) +
+        hjust = -0.15, size = 3.5
+    ) +
     coord_flip() +
-    scale_fill_manual(values = c("Classifier" = "steelblue",
-                                  "Baseline" = "grey60")) +
+    scale_fill_manual(values = c(
+        "Classifier" = "steelblue",
+        "Baseline" = "grey60"
+    )) +
     scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
-    labs(x = NULL, y = expression("Spearman" ~ rho),
-         title = "DRC: Targeting accuracy by classification method",
-         subtitle = "Correlation between predicted risk and actual outbreak burden (2016-2018)") +
+    labs(
+        x = NULL, y = expression("Spearman" ~ rho),
+        title = "DRC: Targeting accuracy by classification method",
+        subtitle = "Correlation between predicted risk and actual outbreak burden (2016-2018)"
+    ) +
     theme_minimal(base_size = 12) +
     guides(fill = "none")
 ```
@@ -628,22 +676,31 @@ ggplot(rho_plot_df, aes(x = Method, y = rho_spearman, fill = type)) +
 ```{r fig-classifier-scatter, fig.width=14, fig.height=8}
 # Scatter: predicted probability vs actual outcomes for each classifier
 scatter_df <- classifier_preds |>
-    pivot_longer(cols = all_of(classifier_methods),
-                 names_to = "Method", values_to = "pred_prob_clf") |>
+    pivot_longer(
+        cols = all_of(classifier_methods),
+        names_to = "Method", values_to = "pred_prob_clf"
+    ) |>
     mutate(Method = factor(Method, levels = rho_table$Method))
 
 ggplot(scatter_df, aes(x = pred_prob_clf, y = n_outbreak_years)) +
     geom_jitter(aes(colour = factor(any_outbreak)),
-                alpha = 0.4, height = 0.1, width = 0, size = 1) +
-    geom_smooth(method = "loess", se = FALSE, colour = "black",
-                linewidth = 0.6) +
+        alpha = 0.4, height = 0.1, width = 0, size = 1
+    ) +
+    geom_smooth(
+        method = "loess", se = FALSE, colour = "black",
+        linewidth = 0.6
+    ) +
     facet_wrap(~Method, nrow = 2, scales = "free_x") +
-    scale_colour_manual(values = c("0" = "grey60", "1" = "firebrick"),
-                        labels = c("No outbreak", "Outbreak")) +
-    labs(x = "Predicted probability",
-         y = "Outbreak years (2016-2018)",
-         colour = NULL,
-         title = "DRC: Predicted risk vs observed outcomes by classifier") +
+    scale_colour_manual(
+        values = c("0" = "grey60", "1" = "firebrick"),
+        labels = c("No outbreak", "Outbreak")
+    ) +
+    labs(
+        x = "Predicted probability",
+        y = "Outbreak years (2016-2018)",
+        colour = NULL,
+        title = "DRC: Predicted risk vs observed outcomes by classifier"
+    ) +
     theme_minimal(base_size = 11) +
     theme(legend.position = "bottom")
 ```
@@ -655,18 +712,21 @@ ggplot(scatter_df, aes(x = pred_prob_clf, y = n_outbreak_years)) +
 
 ```{r scenario-params}
 # Vaccine parameters (single-dose OCV)
-nu_val <- 1     # pre-emptive VE: prevents outbreaks entirely
-r_val  <- 0.6   # reactive effectiveness
-R_val  <- 5     # cost ratio C_I / C_V (per-person: C_I = AR × cost_per_case)
+nu_val <- 1 # pre-emptive VE: prevents outbreaks entirely
+r_val <- 0.6 # reactive effectiveness
+R_val <- 5 # cost ratio C_I / C_V (per-person: C_I = AR × cost_per_case)
 n_trials <- length(eval_years)
 
 # Shared colour palette for strategies
 STRATEGY_COLOURS <- c(
     "Oracle" = "firebrick", "Model-ranked" = "steelblue",
     "RF-ranked" = "darkorchid", "RF-contiguous" = "darkorange",
-    "Count-ranked" = "darkgreen", "Random" = "grey50")
-STRATEGY_LEVELS <- c("Oracle", "Model-ranked", "RF-ranked", "RF-contiguous",
-                      "Count-ranked", "Random")
+    "Count-ranked" = "darkgreen", "Random" = "grey50"
+)
+STRATEGY_LEVELS <- c(
+    "Oracle", "Model-ranked", "RF-ranked", "RF-contiguous",
+    "Count-ranked", "Random"
+)
 ```
 
 ### Helper functions
@@ -681,7 +741,8 @@ STRATEGY_LEVELS <- c("Oracle", "Model-ranked", "RF-ranked", "RF-contiguous",
 # Returns: a, b, p = a/(a+b) (mean outbreak probability), convergence flag.
 fit_betabinom <- function(k_obs, n_trials) {
     ll <- function(par, k, n) {
-        a <- exp(par[1]); b <- exp(par[2])
+        a <- exp(par[1])
+        b <- exp(par[2])
         sum(lchoose(n, k) + lbeta(k + a, n - k + b) - lbeta(a, b))
     }
     # Method-of-moments initialization
@@ -689,11 +750,15 @@ fit_betabinom <- function(k_obs, n_trials) {
     v_init <- var(k_obs / n_trials)
     a_init <- max(p_init * (p_init * (1 - p_init) / max(v_init, 1e-6) - 1), 0.1)
     b_init <- max((1 - p_init) * (p_init * (1 - p_init) / max(v_init, 1e-6) - 1), 0.1)
-    fit <- optim(par = log(c(a_init, b_init)), fn = ll, k = k_obs, n = n_trials,
-                 method = "Nelder-Mead", control = list(fnscale = -1, maxit = 5000))
-    list(a = exp(fit$par[1]), b = exp(fit$par[2]),
-         p = exp(fit$par[1]) / (exp(fit$par[1]) + exp(fit$par[2])),
-         convergence = fit$convergence)
+    fit <- optim(
+        par = log(c(a_init, b_init)), fn = ll, k = k_obs, n = n_trials,
+        method = "Nelder-Mead", control = list(fnscale = -1, maxit = 5000)
+    )
+    list(
+        a = exp(fit$par[1]), b = exp(fit$par[2]),
+        p = exp(fit$par[1]) / (exp(fit$par[1]) + exp(fit$par[2])),
+        convergence = fit$convergence
+    )
 }
 
 # --- Population-weighted MC cost function ---
@@ -714,7 +779,7 @@ cost_popweighted_mc <- function(alpha, f, pop, prob, score, R, r, nu = 1,
                                 n_mc = 300, seed = 42, ...) {
     n <- length(pop)
     P_total <- sum(pop)
-    pre_budget  <- alpha * f * P_total
+    pre_budget <- alpha * f * P_total
     react_budget <- (1 - alpha) * f * P_total
 
     # Pre-emptive: rank by score, greedy allocation by population
@@ -762,7 +827,7 @@ cost_popweighted_mc <- function(alpha, f, pop, prob, score, R, r, nu = 1,
 
         # Cost = vaccination + R × illness burden
         vax_cost <- pop_pre + pop_react
-        illness  <- R * (burden_pre_residual + burden_react_residual + burden_uncovered)
+        illness <- R * (burden_pre_residual + burden_react_residual + burden_uncovered)
         costs[s] <- (vax_cost + illness) / P_total
     }
     mean(costs)
@@ -777,10 +842,10 @@ cost_popweighted_mc <- function(alpha, f, pop, prob, score, R, r, nu = 1,
 # the cost curve as a function of ρ alone, without needing a specific strategy.
 # Same per-location cost convention as cost_popweighted_mc() above.
 cost_popweighted_rho <- function(alpha, f, pop, prob, R, r, rho, nu = 1,
-                                  n_mc = 300, seed = 42, ...) {
+                                 n_mc = 300, seed = 42, ...) {
     n <- length(pop)
     P_total <- sum(pop)
-    pre_budget  <- alpha * f * P_total
+    pre_budget <- alpha * f * P_total
     react_budget <- (1 - alpha) * f * P_total
 
     lambda <- -log(1 - pmin(prob, 1 - 1e-10))
@@ -845,7 +910,7 @@ cost_popweighted_rho <- function(alpha, f, pop, prob, R, r, rho, nu = 1,
         }
 
         vax_cost <- pop_pre + pop_react
-        illness  <- R * (burden_pre_residual + burden_react_residual + burden_uncovered)
+        illness <- R * (burden_pre_residual + burden_react_residual + burden_uncovered)
         costs[s] <- (vax_cost + illness) / P_total
     }
     mean(costs)
@@ -855,26 +920,34 @@ cost_popweighted_rho <- function(alpha, f, pop, prob, R, r, rho, nu = 1,
 # Sweeps alpha over [0,1] and returns the alpha that minimizes
 # cost_popweighted_mc (using actual strategy scores for targeting).
 get_alpha_star_pw <- function(f, pop, prob, score, R, r, nu = 1,
-                               n_mc = 300, seed = 42, grid_len = 51) {
+                              n_mc = 300, seed = 42, grid_len = 51) {
     alpha_grid <- seq(0, 1, length.out = grid_len)
-    costs <- sapply(alpha_grid, function(a)
+    costs <- sapply(alpha_grid, function(a) {
         cost_popweighted_mc(a, f, pop, prob, score, R, r, nu,
-                            n_mc = n_mc, seed = seed))
-    list(alpha_star = alpha_grid[which.min(costs)],
-         cost_star = min(costs), alpha_grid = alpha_grid, cost_grid = costs)
+            n_mc = n_mc, seed = seed
+        )
+    })
+    list(
+        alpha_star = alpha_grid[which.min(costs)],
+        cost_star = min(costs), alpha_grid = alpha_grid, cost_grid = costs
+    )
 }
 
 # --- Grid-search optimizer for rho-parameterized alpha* ---
 # Same as get_alpha_star_pw but uses cost_popweighted_rho (noisy scores
 # calibrated to a target rho, rather than actual strategy scores).
 get_alpha_star_rho <- function(f, pop, prob, R, r, rho, nu = 1,
-                                n_mc = 300, seed = 42, grid_len = 51) {
+                               n_mc = 300, seed = 42, grid_len = 51) {
     alpha_grid <- seq(0, 1, length.out = grid_len)
-    costs <- sapply(alpha_grid, function(a)
+    costs <- sapply(alpha_grid, function(a) {
         cost_popweighted_rho(a, f, pop, prob, R, r, rho, nu,
-                              n_mc = n_mc, seed = seed))
-    list(alpha_star = alpha_grid[which.min(costs)],
-         cost_star = min(costs), alpha_grid = alpha_grid, cost_grid = costs)
+            n_mc = n_mc, seed = seed
+        )
+    })
+    list(
+        alpha_star = alpha_grid[which.min(costs)],
+        cost_star = min(costs), alpha_grid = alpha_grid, cost_grid = costs
+    )
 }
 
 # --- Contiguous-patch allocation helpers ---
@@ -887,26 +960,30 @@ get_alpha_star_rho <- function(f, pop, prob, R, r, rho, nu = 1,
 # Converts name-based nbr_list to integer-indexed adj, filters to within-country
 # neighbours, then calls make_patches() to grow contiguous patches.
 build_country_patches <- function(df_c, score, nbr_list,
-                                   n_seeds = NULL, patch_size = NULL,
-                                   grow_mode = "best", seed_rng = 42) {
+                                  n_seeds = NULL, patch_size = NULL,
+                                  grow_mode = "best", seed_rng = 42) {
     locs <- df_c$location
     n <- length(locs)
     loc_idx <- setNames(seq_len(n), locs)
 
-    if (is.null(n_seeds))    n_seeds    <- max(3L, as.integer(n / 20))
+    if (is.null(n_seeds)) n_seeds <- max(3L, as.integer(n / 20))
     if (is.null(patch_size)) patch_size <- max(5L, as.integer(n / 15))
 
     # Integer-indexed adjacency, within-country only
     adj_int <- lapply(locs, function(loc) {
         nbrs <- nbr_list[[loc]]
-        if (is.null(nbrs)) return(integer(0))
+        if (is.null(nbrs)) {
+            return(integer(0))
+        }
         nbrs_in <- nbrs[nbrs %in% locs]
         as.integer(loc_idx[nbrs_in])
     })
 
-    patch_out <- make_patches(score = score, adj = adj_int,
-                               n_seeds = n_seeds, patch_size = patch_size,
-                               grow_mode = grow_mode, seed_rng = seed_rng)
+    patch_out <- make_patches(
+        score = score, adj = adj_int,
+        n_seeds = n_seeds, patch_size = patch_size,
+        grow_mode = grow_mode, seed_rng = seed_rng
+    )
     patch_out$n_patches <- sum(lengths(patch_out$patches) > 0)
     patch_out
 }
@@ -914,24 +991,27 @@ build_country_patches <- function(df_c, score, nbr_list,
 # Population-weighted MC cost with contiguous-patch pre-emptive allocation.
 # Patches are ranked by mean score; whole patches allocated until budget.
 cost_popweighted_mc_contiguous <- function(alpha, f, pop, prob, score,
-                                            R, r, nu = 1,
-                                            patch_out,
-                                            n_mc = 300, seed = 42, ...) {
+                                           R, r, nu = 1,
+                                           patch_out,
+                                           n_mc = 300, seed = 42, ...) {
     n <- length(pop)
     P_total <- sum(pop)
     total_budget <- f * P_total
-    pre_budget  <- alpha * total_budget
+    pre_budget <- alpha * total_budget
 
     # Patch-based pre-emptive: rank patches by mean score, allocate whole patches
     patches <- patch_out$patches[lengths(patch_out$patches) > 0]
     if (length(patches) > 0 && pre_budget > 0) {
         patch_scores <- sapply(patches, function(idx) mean(score[idx]))
-        patch_pops   <- sapply(patches, function(idx) sum(pop[idx]))
-        patch_order  <- order(patch_scores, decreasing = TRUE)
+        patch_pops <- sapply(patches, function(idx) sum(pop[idx]))
+        patch_order <- order(patch_scores, decreasing = TRUE)
         cum_patch_pop <- cumsum(patch_pops[patch_order])
         n_pre_patches <- sum(cum_patch_pop <= pre_budget)
-        pre_idx <- if (n_pre_patches > 0)
-            unlist(patches[patch_order[seq_len(n_pre_patches)]]) else integer(0)
+        pre_idx <- if (n_pre_patches > 0) {
+            unlist(patches[patch_order[seq_len(n_pre_patches)]])
+        } else {
+            integer(0)
+        }
     } else {
         pre_idx <- integer(0)
     }
@@ -956,7 +1036,9 @@ cost_popweighted_mc_contiguous <- function(alpha, f, pop, prob, score,
         burden_pre_residual <- sum(Y[pre_idx] * pop[pre_idx]) * (1 - nu)
 
         ob_rem <- rem_idx[Y[rem_idx] == 1]
-        pop_react <- 0; burden_react_residual <- 0; burden_uncovered <- 0
+        pop_react <- 0
+        burden_react_residual <- 0
+        burden_uncovered <- 0
 
         if (length(ob_rem) > 0 && react_budget > 0) {
             ob_order <- ob_rem[order(pop[ob_rem], decreasing = TRUE)]
@@ -966,8 +1048,9 @@ cost_popweighted_mc_contiguous <- function(alpha, f, pop, prob, score,
                 react_sel <- ob_order[seq_len(n_react)]
                 pop_react <- sum(pop[react_sel])
                 burden_react_residual <- pop_react * (1 - r)
-                if (n_react < length(ob_order))
+                if (n_react < length(ob_order)) {
                     burden_uncovered <- sum(pop[ob_order[(n_react + 1):length(ob_order)]])
+                }
             } else {
                 burden_uncovered <- sum(pop[ob_rem])
             }
@@ -976,7 +1059,7 @@ cost_popweighted_mc_contiguous <- function(alpha, f, pop, prob, score,
         }
 
         vax_cost <- pop_pre_cost + pop_react
-        illness  <- R * (burden_pre_residual + burden_react_residual + burden_uncovered)
+        illness <- R * (burden_pre_residual + burden_react_residual + burden_uncovered)
         costs[s] <- (vax_cost + illness) / P_total
     }
     mean(costs)
@@ -984,15 +1067,19 @@ cost_popweighted_mc_contiguous <- function(alpha, f, pop, prob, score,
 
 # Grid-search optimizer for contiguous-patch alpha*
 get_alpha_star_pw_contiguous <- function(f, pop, prob, score, R, r, nu = 1,
-                                          patch_out, n_mc = 300, seed = 42,
-                                          grid_len = 51) {
+                                         patch_out, n_mc = 300, seed = 42,
+                                         grid_len = 51) {
     alpha_grid <- seq(0, 1, length.out = grid_len)
-    costs <- sapply(alpha_grid, function(a)
+    costs <- sapply(alpha_grid, function(a) {
         cost_popweighted_mc_contiguous(a, f, pop, prob, score, R, r, nu,
-                                        patch_out = patch_out,
-                                        n_mc = n_mc, seed = seed))
-    list(alpha_star = alpha_grid[which.min(costs)],
-         cost_star = min(costs), alpha_grid = alpha_grid, cost_grid = costs)
+            patch_out = patch_out,
+            n_mc = n_mc, seed = seed
+        )
+    })
+    list(
+        alpha_star = alpha_grid[which.min(costs)],
+        cost_star = min(costs), alpha_grid = alpha_grid, cost_grid = costs
+    )
 }
 
 # --- Equal-weight analytical cost (Beta distribution) ---
@@ -1003,8 +1090,12 @@ get_alpha_star_pw_contiguous <- function(f, pop, prob, score, R, r, nu = 1,
 # This is the average outbreak probability among pre-emptively targeted
 # locations when the top f_pre fraction is selected.
 mean_risk_pre <- function(f_pre, a, b) {
-    if (f_pre <= 0) return(0)
-    if (f_pre >= 1) return(a / (a + b))
+    if (f_pre <= 0) {
+        return(0)
+    }
+    if (f_pre >= 1) {
+        return(a / (a + b))
+    }
     q <- qbeta(1 - f_pre, a, b)
     (a / ((a + b) * f_pre)) * (1 - pbeta(q, a + 1, b))
 }
@@ -1013,21 +1104,28 @@ mean_risk_pre <- function(f_pre, a, b) {
 # Pre-emptive targets the top alpha*f fraction; reactive covers remaining
 # outbreaks up to capacity (1-alpha)*f. See analytic_hetero.qmd for derivation.
 cost_beta <- function(alpha, f, a, b, R, r, nu = 1) {
-    alpha <- pmax(0, pmin(1, alpha)); p <- a / (a + b)
-    f_pre <- alpha * f; f_react_cap <- (1 - alpha) * f
+    alpha <- pmax(0, pmin(1, alpha))
+    p <- a / (a + b)
+    f_pre <- alpha * f
+    f_react_cap <- (1 - alpha) * f
     p_bar_pre <- vapply(f_pre, function(fp) mean_risk_pre(fp, a, b), numeric(1))
-    E_pre <- f_pre * p_bar_pre; c_pre_val <- f_pre + E_pre * (1 - nu) * R
-    E_rem <- p - E_pre; is_rich <- f_react_cap >= E_rem
+    E_pre <- f_pre * p_bar_pre
+    c_pre_val <- f_pre + E_pre * (1 - nu) * R
+    E_rem <- p - E_pre
+    is_rich <- f_react_cap >= E_rem
     c_react_val <- ifelse(is_rich, E_rem * (1 + (1 - r) * R),
-        f_react_cap * (1 + (1 - r) * R) + (E_rem - f_react_cap) * R)
+        f_react_cap * (1 + (1 - r) * R) + (E_rem - f_react_cap) * R
+    )
     c_pre_val + c_react_val
 }
 
 # get_alpha_star_beta: continuous optimizer for analytical alpha* (L-BFGS-B).
 get_alpha_star_beta <- function(R, f, a, b, r, nu = 1) {
-    optim(par = 0.5, fn = cost_beta,
+    optim(
+        par = 0.5, fn = cost_beta,
         f = f, a = a, b = b, R = R, r = r, nu = nu,
-        method = "L-BFGS-B", lower = 0, upper = 1)$par
+        method = "L-BFGS-B", lower = 0, upper = 1
+    )$par
 }
 
 # --- Compute empirical rho for each strategy ---
@@ -1041,13 +1139,15 @@ compute_strategy_rhos <- function(df_c) {
     }))
     rho_rf <- cor(df_c$pred_rf, df_c$n_outbreak_years, method = "spearman")
     tibble(
-        strategy = c("Oracle", "Model-ranked", "RF-ranked", "RF-contiguous",
-                      "Count-ranked", "Random"),
+        strategy = c(
+            "Oracle", "Model-ranked", "RF-ranked", "RF-contiguous",
+            "Count-ranked", "Random"
+        ),
         rho = c(
             cor(df_c$est_cases, df_c$n_outbreak_years, method = "spearman"),
             cor(df_c$pred_prob, df_c$n_outbreak_years, method = "spearman"),
             rho_rf,
-            rho_rf,  # same underlying scores as RF-ranked
+            rho_rf, # same underlying scores as RF-ranked
             cor(df_c$hist_count, df_c$n_outbreak_years, method = "spearman"),
             rho_random
         )
@@ -1067,8 +1167,10 @@ bb_fits <- setNames(lapply(SELECTED_COUNTRIES, function(ctry) {
     bb <- fit_betabinom(df_c$n_outbreak_years, n_trials)
     cat(sprintf("\n=== %s ===\n", COUNTRY_LABELS[ctry]))
     cat(sprintf("n locations: %d\n", nrow(df_c)))
-    cat(sprintf("Beta(%.3f, %.3f), mean p = %.3f, concentration = %.3f\n",
-        bb$a, bb$b, bb$p, bb$a + bb$b))
+    cat(sprintf(
+        "Beta(%.3f, %.3f), mean p = %.3f, concentration = %.3f\n",
+        bb$a, bb$b, bb$p, bb$a + bb$b
+    ))
     cat(sprintf("Convergence: %d\n", bb$convergence))
     bb
 }), SELECTED_COUNTRIES)
@@ -1092,12 +1194,18 @@ diag_plots <- lapply(SELECTED_COUNTRIES, function(ctry) {
     beta_cdf <- pbeta(x_grid, shape1 = bb$a, shape2 = bb$b)
 
     p_cdf <- ggplot() +
-        stat_ecdf(data = df_c, aes(x = obs_rate),
-                  colour = "darkorange", linewidth = 0.8, pad = FALSE) +
-        geom_line(data = tibble(x = x_grid, y = beta_cdf), aes(x, y),
-                  colour = "firebrick", linewidth = 0.8, linetype = "dashed") +
-        labs(x = "Outbreak rate", y = "CDF",
-             title = sprintf("%s — CDF vs %s (k=3)", COUNTRY_LABELS[ctry], beta_label)) +
+        stat_ecdf(
+            data = df_c, aes(x = obs_rate),
+            colour = "darkorange", linewidth = 0.8, pad = FALSE
+        ) +
+        geom_line(
+            data = tibble(x = x_grid, y = beta_cdf), aes(x, y),
+            colour = "firebrick", linewidth = 0.8, linetype = "dashed"
+        ) +
+        labs(
+            x = "Outbreak rate", y = "CDF",
+            title = sprintf("%s — CDF vs %s (k=3)", COUNTRY_LABELS[ctry], beta_label)
+        ) +
         theme_minimal(base_size = 10)
 
     bb_pmf <- sapply(0:n_trials, function(k) {
@@ -1107,15 +1215,20 @@ diag_plots <- lapply(SELECTED_COUNTRIES, function(ctry) {
     obs_counts <- tabulate(k_obs_c + 1L, nbins = n_trials + 1L) / length(k_obs_c)
     pmf_df <- tibble(
         k = rep(0:n_trials, 2), prob = c(obs_counts, bb_pmf),
-        source = rep(c("Observed", "Beta-Binomial"), each = n_trials + 1))
+        source = rep(c("Observed", "Beta-Binomial"), each = n_trials + 1)
+    )
 
     p_pmf <- ggplot(pmf_df, aes(x = k, y = prob, fill = source)) +
         geom_col(position = position_dodge(width = 0.7), width = 0.6, alpha = 0.8) +
-        scale_fill_manual(values = c("Observed" = "darkorange",
-                                     "Beta-Binomial" = "firebrick")) +
+        scale_fill_manual(values = c(
+            "Observed" = "darkorange",
+            "Beta-Binomial" = "firebrick"
+        )) +
         scale_x_continuous(breaks = 0:n_trials) +
-        labs(x = "Outbreak years", y = "Proportion", fill = NULL,
-             title = sprintf("%s — BB PMF (k=3)", COUNTRY_LABELS[ctry])) +
+        labs(
+            x = "Outbreak years", y = "Proportion", fill = NULL,
+            title = sprintf("%s — BB PMF (k=3)", COUNTRY_LABELS[ctry])
+        ) +
         theme_minimal(base_size = 10) +
         theme(legend.position = "bottom")
 
@@ -1164,13 +1277,21 @@ diag_plots_long <- lapply(SELECTED_COUNTRIES, function(ctry) {
 
     # CDF: obs_rate_long = k/9, so 10 possible values → much finer steps
     p_cdf <- ggplot() +
-        stat_ecdf(data = df_c, aes(x = obs_rate_long),
-                  colour = "darkorange", linewidth = 0.8, pad = FALSE) +
-        geom_line(data = tibble(x = x_grid, y = beta_cdf), aes(x, y),
-                  colour = "firebrick", linewidth = 0.8, linetype = "dashed") +
-        labs(x = "Outbreak rate", y = "CDF",
-             title = sprintf("%s — CDF vs %s (k=%d)", COUNTRY_LABELS[ctry],
-                             beta_label, n_long)) +
+        stat_ecdf(
+            data = df_c, aes(x = obs_rate_long),
+            colour = "darkorange", linewidth = 0.8, pad = FALSE
+        ) +
+        geom_line(
+            data = tibble(x = x_grid, y = beta_cdf), aes(x, y),
+            colour = "firebrick", linewidth = 0.8, linetype = "dashed"
+        ) +
+        labs(
+            x = "Outbreak rate", y = "CDF",
+            title = sprintf(
+                "%s — CDF vs %s (k=%d)", COUNTRY_LABELS[ctry],
+                beta_label, n_long
+            )
+        ) +
         theme_minimal(base_size = 10)
 
     # PMF: Beta-Binomial(n_long, a, b) vs observed counts
@@ -1181,15 +1302,20 @@ diag_plots_long <- lapply(SELECTED_COUNTRIES, function(ctry) {
     obs_counts <- tabulate(k_obs_c + 1L, nbins = n_long + 1L) / length(k_obs_c)
     pmf_df <- tibble(
         k = rep(0:n_long, 2), prob = c(obs_counts, bb_pmf),
-        source = rep(c("Observed", "Beta-Binomial"), each = n_long + 1))
+        source = rep(c("Observed", "Beta-Binomial"), each = n_long + 1)
+    )
 
     p_pmf <- ggplot(pmf_df, aes(x = k, y = prob, fill = source)) +
         geom_col(position = position_dodge(width = 0.7), width = 0.6, alpha = 0.8) +
-        scale_fill_manual(values = c("Observed" = "darkorange",
-                                     "Beta-Binomial" = "firebrick")) +
+        scale_fill_manual(values = c(
+            "Observed" = "darkorange",
+            "Beta-Binomial" = "firebrick"
+        )) +
         scale_x_continuous(breaks = 0:n_long) +
-        labs(x = "Outbreak years", y = "Proportion", fill = NULL,
-             title = sprintf("%s — BB PMF (k=%d)", COUNTRY_LABELS[ctry], n_long)) +
+        labs(
+            x = "Outbreak years", y = "Proportion", fill = NULL,
+            title = sprintf("%s — BB PMF (k=%d)", COUNTRY_LABELS[ctry], n_long)
+        ) +
         theme_minimal(base_size = 10) +
         theme(legend.position = "bottom")
 
@@ -1198,7 +1324,8 @@ diag_plots_long <- lapply(SELECTED_COUNTRIES, function(ctry) {
 wrap_plots(diag_plots_long, ncol = 1) +
     plot_annotation(title = sprintf(
         "Beta-Binomial diagnostics by country (full window: %d–%d, k = %d)",
-        min(long_years), max(long_years), n_long))
+        min(long_years), max(long_years), n_long
+    ))
 ```
 
 
@@ -1220,8 +1347,10 @@ rho_by_country <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
 
 rho_by_country |>
     pivot_wider(names_from = country, values_from = rho) |>
-    knitr::kable(digits = 3,
-        caption = "Spearman rho (targeting score vs. actual outbreak-years) by strategy and country")
+    knitr::kable(
+        digits = 3,
+        caption = "Spearman rho (targeting score vs. actual outbreak-years) by strategy and country"
+    )
 ```
 
 ```{r build-patches}
@@ -1229,12 +1358,16 @@ rho_by_country |>
 # Patches are reused across all alpha/f/year combinations.
 country_patches <- setNames(lapply(SELECTED_COUNTRIES, function(ctry) {
     df_c <- sim_df_all |> filter(country == ctry)
-    patch_out <- build_country_patches(df_c, score = df_c$pred_rf,
-                                        nbr_list = nbr_list, seed_rng = 42)
-    cat(sprintf("%s: %d patches, covering %d/%d locations (%.0f%%)\n",
+    patch_out <- build_country_patches(df_c,
+        score = df_c$pred_rf,
+        nbr_list = nbr_list, seed_rng = 42
+    )
+    cat(sprintf(
+        "%s: %d patches, covering %d/%d locations (%.0f%%)\n",
         COUNTRY_LABELS[ctry], patch_out$n_patches,
         sum(patch_out$patch_id > 0), nrow(df_c),
-        100 * mean(patch_out$patch_id > 0)))
+        100 * mean(patch_out$patch_id > 0)
+    ))
     patch_out
 }), SELECTED_COUNTRIES)
 ```
@@ -1259,22 +1392,34 @@ pw_alpha_results <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
         )
         strat_results <- imap_dfr(strategies, function(score, strat_name) {
             res <- get_alpha_star_pw(fv, df_c$pop_sum, df_c$obs_rate, score,
-                                      R_val, r_val, n_mc = 300)
+                R_val, r_val,
+                n_mc = 300
+            )
             cat(sprintf("  f=%.1f %-14s: alpha*_pw = %.2f\n", fv, strat_name, res$alpha_star))
-            tibble(strategy = strat_name, f = fv, alpha_star_pw = res$alpha_star,
-                   cost_star_pw = res$cost_star)
+            tibble(
+                strategy = strat_name, f = fv, alpha_star_pw = res$alpha_star,
+                cost_star_pw = res$cost_star
+            )
         })
 
         # RF-contiguous: patch-based allocation
         res_contig <- get_alpha_star_pw_contiguous(
             fv, df_c$pop_sum, df_c$obs_rate, df_c$pred_rf,
-            R_val, r_val, patch_out = patch_out_c, n_mc = 300)
-        cat(sprintf("  f=%.1f %-14s: alpha*_pw = %.2f\n", fv, "RF-contiguous",
-                    res_contig$alpha_star))
-        strat_results <- bind_rows(strat_results,
-            tibble(strategy = "RF-contiguous", f = fv,
-                   alpha_star_pw = res_contig$alpha_star,
-                   cost_star_pw = res_contig$cost_star))
+            R_val, r_val,
+            patch_out = patch_out_c, n_mc = 300
+        )
+        cat(sprintf(
+            "  f=%.1f %-14s: alpha*_pw = %.2f\n", fv, "RF-contiguous",
+            res_contig$alpha_star
+        ))
+        strat_results <- bind_rows(
+            strat_results,
+            tibble(
+                strategy = "RF-contiguous", f = fv,
+                alpha_star_pw = res_contig$alpha_star,
+                cost_star_pw = res_contig$cost_star
+            )
+        )
 
         # Random: use uniform scores (average over multiple seeds)
         set.seed(42)
@@ -1282,16 +1427,22 @@ pw_alpha_results <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
         rand_costs <- sapply(seq(0, 1, length.out = 51), function(a) {
             mean(sapply(random_scores, function(sc) {
                 cost_popweighted_mc(a, fv, df_c$pop_sum, df_c$obs_rate, sc,
-                                     R_val, r_val, n_mc = 100)
+                    R_val, r_val,
+                    n_mc = 100
+                )
             }))
         })
         rand_alpha_star <- seq(0, 1, length.out = 51)[which.min(rand_costs)]
         cat(sprintf("  f=%.1f %-14s: alpha*_pw = %.2f\n", fv, "Random", rand_alpha_star))
 
-        bind_rows(strat_results,
-                  tibble(strategy = "Random", f = fv,
-                         alpha_star_pw = rand_alpha_star,
-                         cost_star_pw = min(rand_costs)))
+        bind_rows(
+            strat_results,
+            tibble(
+                strategy = "Random", f = fv,
+                alpha_star_pw = rand_alpha_star,
+                cost_star_pw = min(rand_costs)
+            )
+        )
     }) |> mutate(country = ctry)
 })
 
@@ -1301,9 +1452,11 @@ pw_alpha_results <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
 ew_alpha_results <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
     bb <- bb_fits[[ctry]]
     map_dfr(f_values, function(fv) {
-        a_star <- optim(par = 0.5, fn = cost_beta,
+        a_star <- optim(
+            par = 0.5, fn = cost_beta,
             f = fv, a = bb$a, b = bb$b, R = R_val, r = r_val,
-            method = "L-BFGS-B", lower = 0, upper = 1)$par
+            method = "L-BFGS-B", lower = 0, upper = 1
+        )$par
         tibble(country = ctry, f = fv, alpha_star_ew = a_star)
     })
 })
@@ -1317,9 +1470,11 @@ alpha_comparison <- pw_alpha_results |>
 
 alpha_comparison |>
     dplyr::select(country, strategy, f, rho, alpha_star_pw, alpha_star_ew) |>
-    knitr::kable(digits = 3,
+    knitr::kable(
+        digits = 3,
         col.names = c("Country", "Strategy", "f", "\u03c1", "\u03b1*_pw", "\u03b1*_ew"),
-        caption = "Pop-weighted vs equal-weight optimal alpha by strategy and country")
+        caption = "Pop-weighted vs equal-weight optimal alpha by strategy and country"
+    )
 ```
 
 ```{r cost-curve-plot-pw, fig.width=14, fig.height=10}
@@ -1340,20 +1495,27 @@ pw_cost_curves <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
         indiv_curves <- imap_dfr(strategies, function(score, strat_name) {
             costs <- sapply(alpha_grid_pw, function(a) {
                 cost_popweighted_mc(a, fv, df_c$pop_sum, df_c$obs_rate, score,
-                                     R_val, r_val, n_mc = 200)
+                    R_val, r_val,
+                    n_mc = 200
+                )
             })
-            tibble(alpha = alpha_grid_pw, cost = costs,
-                   strategy = strat_name, f = fv, country = ctry)
+            tibble(
+                alpha = alpha_grid_pw, cost = costs,
+                strategy = strat_name, f = fv, country = ctry
+            )
         })
 
         # RF-contiguous: patch-based allocation cost curve
         contig_costs <- sapply(alpha_grid_pw, function(a) {
             cost_popweighted_mc_contiguous(a, fv, df_c$pop_sum, df_c$obs_rate,
-                                            df_c$pred_rf, R_val, r_val,
-                                            patch_out = patch_out_c, n_mc = 200)
+                df_c$pred_rf, R_val, r_val,
+                patch_out = patch_out_c, n_mc = 200
+            )
         })
-        contig_curve <- tibble(alpha = alpha_grid_pw, cost = contig_costs,
-                                strategy = "RF-contiguous", f = fv, country = ctry)
+        contig_curve <- tibble(
+            alpha = alpha_grid_pw, cost = contig_costs,
+            strategy = "RF-contiguous", f = fv, country = ctry
+        )
 
         # Random: average over 20 random score vectors for stability
         set.seed(42)
@@ -1361,11 +1523,15 @@ pw_cost_curves <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
         rand_costs <- sapply(alpha_grid_pw, function(a) {
             mean(sapply(rand_scores, function(sc) {
                 cost_popweighted_mc(a, fv, df_c$pop_sum, df_c$obs_rate, sc,
-                                     R_val, r_val, n_mc = 100)
+                    R_val, r_val,
+                    n_mc = 100
+                )
             }))
         })
-        rand_curve <- tibble(alpha = alpha_grid_pw, cost = rand_costs,
-                              strategy = "Random", f = fv, country = ctry)
+        rand_curve <- tibble(
+            alpha = alpha_grid_pw, cost = rand_costs,
+            strategy = "Random", f = fv, country = ctry
+        )
 
         bind_rows(indiv_curves, contig_curve, rand_curve)
     })
@@ -1381,14 +1547,18 @@ theoretical_alpha <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
     map_dfr(f_values, function(fv) {
         map_dfr(seq_len(nrow(rho_c)), function(i) {
             rho_val <- rho_c$rho[i]
-            strat   <- rho_c$strategy[i]
+            strat <- rho_c$strategy[i]
             # Clamp rho to [0, 1] for the theoretical curve
             rho_clamped <- max(0, min(1, rho_val))
             res <- get_alpha_star_rho(fv, df_c$pop_sum, df_c$obs_rate,
-                                       R_val, r_val, rho_clamped, n_mc = 200)
-            tibble(country = ctry, strategy = strat, f = fv,
-                   rho = rho_val, alpha_star_theo = res$alpha_star,
-                   cost_star_theo = res$cost_star)
+                R_val, r_val, rho_clamped,
+                n_mc = 200
+            )
+            tibble(
+                country = ctry, strategy = strat, f = fv,
+                rho = rho_val, alpha_star_theo = res$alpha_star,
+                cost_star_theo = res$cost_star
+            )
         })
     })
 })
@@ -1421,25 +1591,37 @@ vline_data <- theo_pts |>
 ggplot(pw_cost_curves, aes(x = alpha, y = cost, colour = strategy)) +
     geom_line(linewidth = 0.7) +
     # Theoretical optimal alpha (vertical dotted lines)
-    geom_vline(data = vline_data,
-               aes(xintercept = alpha_star_theo, colour = strategy),
-               linetype = "dotted", linewidth = 0.5, alpha = 0.6) +
+    geom_vline(
+        data = vline_data,
+        aes(xintercept = alpha_star_theo, colour = strategy),
+        linetype = "dotted", linewidth = 0.5, alpha = 0.6
+    ) +
     # MC-based optimal alpha (diamonds)
-    geom_point(data = opt_pts, aes(x = alpha, y = cost),
-               size = 2.5, shape = 18) +
+    geom_point(
+        data = opt_pts, aes(x = alpha, y = cost),
+        size = 2.5, shape = 18
+    ) +
     # Theoretical alpha* from rho (triangles)
-    geom_point(data = theo_pts |> filter(strategy != "Random"),
-               aes(x = alpha_star_theo, y = cost_at_theo),
-               size = 3, shape = 17, alpha = 0.7) +
-    facet_grid(country ~ sprintf("f = %.1f", f), scales = "free_y",
-               labeller = labeller(country = COUNTRY_LABELS)) +
+    geom_point(
+        data = theo_pts |> filter(strategy != "Random"),
+        aes(x = alpha_star_theo, y = cost_at_theo),
+        size = 3, shape = 17, alpha = 0.7
+    ) +
+    facet_grid(country ~ sprintf("f = %.1f", f),
+        scales = "free_y",
+        labeller = labeller(country = COUNTRY_LABELS)
+    ) +
     scale_colour_manual(values = STRATEGY_COLOURS) +
-    labs(x = expression(alpha ~ "(pre-emptive fraction)"),
-         y = "Pop-weighted cost per capita",
-         colour = "Strategy",
-         title = "Population-weighted cost curves by strategy, country, and f",
-         subtitle = sprintf("R = %.0f, r = %.1f; diamonds = MC optimal, triangles = theoretical (from rho), dotted = theoretical alpha*",
-                            R_val, r_val)) +
+    labs(
+        x = expression(alpha ~ "(pre-emptive fraction)"),
+        y = "Pop-weighted cost per capita",
+        colour = "Strategy",
+        title = "Population-weighted cost curves by strategy, country, and f",
+        subtitle = sprintf(
+            "R = %.0f, r = %.1f; diamonds = MC optimal, triangles = theoretical (from rho), dotted = theoretical alpha*",
+            R_val, r_val
+        )
+    ) +
     theme_minimal(base_size = 11) +
     theme(legend.position = "bottom")
 ```
@@ -1448,7 +1630,8 @@ ggplot(pw_cost_curves, aes(x = alpha, y = cost, colour = strategy)) +
 # For backward compatibility: COD equal-weight alpha_stars
 alpha_stars <- setNames(
     ew_alpha_results |> filter(country == "COD") |> pull(alpha_star_ew),
-    f_values)
+    f_values
+)
 
 # Per-country alpha* (pop-weighted, Model-ranked as default)
 alpha_stars_by_country <- alpha_comparison |>
@@ -1460,14 +1643,18 @@ alpha_stars_by_country <- alpha_comparison |>
 # through the optimal points for each strategy.
 alpha_compare_by_f <- lapply(f_values, function(fv) {
     a_stars_all <- alpha_comparison |>
-        filter(f == fv) |> pull(alpha_star_pw) |> unique()
+        filter(f == fv) |>
+        pull(alpha_star_pw) |>
+        unique()
     sort(unique(round(c(0, 0.25, 0.5, a_stars_all, 0.75, 1.0), 2)))
 })
 names(alpha_compare_by_f) <- f_values
 
 for (fv in f_values) {
-    cat(sprintf("f = %.1f: alpha values = %s\n",
-        fv, paste(alpha_compare_by_f[[as.character(fv)]], collapse = ", ")))
+    cat(sprintf(
+        "f = %.1f: alpha values = %s\n",
+        fv, paste(alpha_compare_by_f[[as.character(fv)]], collapse = ", ")
+    ))
 }
 ```
 
@@ -1497,7 +1684,7 @@ compute_impact_mixed <- function(df, score, alpha, effective_people, r_eff,
                                  R_cost = 5) {
     n <- nrow(df)
 
-    pre_doses   <- alpha * effective_people
+    pre_doses <- alpha * effective_people
     react_doses <- (1 - alpha) * effective_people
 
     # --- Pre-emptive allocation ---
@@ -1533,7 +1720,7 @@ compute_impact_mixed <- function(df, score, alpha, effective_people, r_eff,
         cases_averted_react <- r_eff * sum(df$est_cases[react_idx])
         doses_react <- sum(df$pop_sum[react_idx])
     } else {
-        react_idx   <- integer(0)
+        react_idx <- integer(0)
         cases_averted_react <- 0
         doses_react <- 0
     }
@@ -1549,31 +1736,34 @@ compute_impact_mixed <- function(df, score, alpha, effective_people, r_eff,
     P_total <- sum(df$pop_sum)
 
     tibble(
-        alpha               = alpha,
-        total_cases_cf      = total_cases_cf,
-        cases_averted_pre   = cases_averted_pre,
+        alpha = alpha,
+        total_cases_cf = total_cases_cf,
+        cases_averted_pre = cases_averted_pre,
         cases_averted_react = cases_averted_react,
         cases_averted_total = cases_averted_total,
-        pct_averted         = ifelse(total_cases_cf > 0,
+        pct_averted = ifelse(total_cases_cf > 0,
             100 * cases_averted_total / total_cases_cf, 0
         ),
-        doses_pre           = doses_pre,
-        doses_react         = doses_react,
-        doses_total         = doses_pre + doses_react,
-        eff_pre_per_1k      = ifelse(doses_pre > 0,
-            cases_averted_pre / doses_pre * 1000, 0),
-        eff_react_per_1k    = ifelse(doses_react > 0,
-            cases_averted_react / doses_react * 1000, 0),
-        eff_total_per_1k    = ifelse(doses_pre + doses_react > 0,
-            cases_averted_total / (doses_pre + doses_react) * 1000, 0),
-        cases_remaining     = total_cases_cf - cases_averted_total,
-        sim_cost            = (doses_pre + doses_react +
-                               R_cost * (pop_burden_uncovered + pop_burden_react_residual)) /
-                               P_total,
-        n_pre               = length(pre_idx),
-        n_react             = length(react_idx),
+        doses_pre = doses_pre,
+        doses_react = doses_react,
+        doses_total = doses_pre + doses_react,
+        eff_pre_per_1k = ifelse(doses_pre > 0,
+            cases_averted_pre / doses_pre * 1000, 0
+        ),
+        eff_react_per_1k = ifelse(doses_react > 0,
+            cases_averted_react / doses_react * 1000, 0
+        ),
+        eff_total_per_1k = ifelse(doses_pre + doses_react > 0,
+            cases_averted_total / (doses_pre + doses_react) * 1000, 0
+        ),
+        cases_remaining = total_cases_cf - cases_averted_total,
+        sim_cost = (doses_pre + doses_react +
+            R_cost * (pop_burden_uncovered + pop_burden_react_residual)) /
+            P_total,
+        n_pre = length(pre_idx),
+        n_react = length(react_idx),
         n_outbreak_remaining = length(outbreak_remaining),
-        n_uncovered         = length(outbreak_remaining) - length(react_idx)
+        n_uncovered = length(outbreak_remaining) - length(react_idx)
     )
 }
 
@@ -1581,7 +1771,7 @@ compute_impact_mixed <- function(df, score, alpha, effective_people, r_eff,
 # Pre-emptive allocation ranks patches by mean score and allocates whole patches.
 # Reactive allocation remains individual-location-based (same as above).
 compute_impact_contiguous <- function(df, score, alpha, effective_people, r_eff,
-                                       R_cost = 5, patch_out) {
+                                      R_cost = 5, patch_out) {
     n <- nrow(df)
     pre_budget <- alpha * effective_people
 
@@ -1589,12 +1779,15 @@ compute_impact_contiguous <- function(df, score, alpha, effective_people, r_eff,
     patches <- patch_out$patches[lengths(patch_out$patches) > 0]
     if (length(patches) > 0 && pre_budget > 0) {
         patch_scores <- sapply(patches, function(idx) mean(score[idx]))
-        patch_pops   <- sapply(patches, function(idx) sum(df$pop_sum[idx]))
-        patch_order  <- order(patch_scores, decreasing = TRUE)
+        patch_pops <- sapply(patches, function(idx) sum(df$pop_sum[idx]))
+        patch_order <- order(patch_scores, decreasing = TRUE)
         cum_patch_pop <- cumsum(patch_pops[patch_order])
         n_pre_patches <- sum(cum_patch_pop <= pre_budget)
-        pre_idx <- if (n_pre_patches > 0)
-            unlist(patches[patch_order[seq_len(n_pre_patches)]]) else integer(0)
+        pre_idx <- if (n_pre_patches > 0) {
+            unlist(patches[patch_order[seq_len(n_pre_patches)]])
+        } else {
+            integer(0)
+        }
     } else {
         pre_idx <- integer(0)
     }
@@ -1612,7 +1805,8 @@ compute_impact_contiguous <- function(df, score, alpha, effective_people, r_eff,
 
     if (length(outbreak_remaining) > 0 && react_doses > 0) {
         ob_order <- outbreak_remaining[
-            order(df$est_cases[outbreak_remaining], decreasing = TRUE)]
+            order(df$est_cases[outbreak_remaining], decreasing = TRUE)
+        ]
         cum_pop_react <- cumsum(df$pop_sum[ob_order])
         n_react <- sum(cum_pop_react <= react_doses)
         react_idx <- if (n_react > 0) ob_order[seq_len(n_react)] else integer(0)
@@ -1633,32 +1827,36 @@ compute_impact_contiguous <- function(df, score, alpha, effective_people, r_eff,
     P_total <- sum(df$pop_sum)
 
     tibble(
-        alpha               = alpha,
-        total_cases_cf      = total_cases_cf,
-        cases_averted_pre   = cases_averted_pre,
+        alpha = alpha,
+        total_cases_cf = total_cases_cf,
+        cases_averted_pre = cases_averted_pre,
         cases_averted_react = cases_averted_react,
         cases_averted_total = cases_averted_total,
-        pct_averted         = ifelse(total_cases_cf > 0,
-            100 * cases_averted_total / total_cases_cf, 0),
-        doses_pre           = doses_pre,
-        doses_react         = doses_react,
-        doses_total         = doses_pre + doses_react,
-        eff_pre_per_1k      = ifelse(doses_pre > 0,
-            cases_averted_pre / doses_pre * 1000, 0),
-        eff_react_per_1k    = ifelse(doses_react > 0,
-            cases_averted_react / doses_react * 1000, 0),
-        eff_total_per_1k    = ifelse(doses_pre + doses_react > 0,
-            cases_averted_total / (doses_pre + doses_react) * 1000, 0),
-        cases_remaining     = total_cases_cf - cases_averted_total,
+        pct_averted = ifelse(total_cases_cf > 0,
+            100 * cases_averted_total / total_cases_cf, 0
+        ),
+        doses_pre = doses_pre,
+        doses_react = doses_react,
+        doses_total = doses_pre + doses_react,
+        eff_pre_per_1k = ifelse(doses_pre > 0,
+            cases_averted_pre / doses_pre * 1000, 0
+        ),
+        eff_react_per_1k = ifelse(doses_react > 0,
+            cases_averted_react / doses_react * 1000, 0
+        ),
+        eff_total_per_1k = ifelse(doses_pre + doses_react > 0,
+            cases_averted_total / (doses_pre + doses_react) * 1000, 0
+        ),
+        cases_remaining = total_cases_cf - cases_averted_total,
         # Charge full committed pre-emptive budget (not just deployed doses)
         # to account for logistics costs of the contiguity constraint
-        sim_cost            = (pre_budget + doses_react +
-                               R_cost * (pop_burden_uncovered + pop_burden_react_residual)) /
-                               P_total,
-        n_pre               = length(pre_idx),
-        n_react             = length(react_idx),
+        sim_cost = (pre_budget + doses_react +
+            R_cost * (pop_burden_uncovered + pop_burden_react_residual)) /
+            P_total,
+        n_pre = length(pre_idx),
+        n_react = length(react_idx),
         n_outbreak_remaining = length(outbreak_remaining),
-        n_uncovered         = length(outbreak_remaining) - length(react_idx)
+        n_uncovered = length(outbreak_remaining) - length(react_idx)
     )
 }
 ```
@@ -1696,7 +1894,8 @@ results_all <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
                     "Model-ranked" = df_c$pred_prob,
                     "RF-ranked"    = df_c$pred_rf,
                     "Count-ranked" = df_c$hist_count,
-                    "Oracle"       = df_c$est_cases)
+                    "Oracle"       = df_c$est_cases
+                )
                 compute_impact_mixed(df_c, score, alpha, eff_people, r_val) |>
                     mutate(strategy = strategy)
             })) |>
@@ -1707,7 +1906,8 @@ results_all <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
         # RF-contiguous: patch-based pre-emptive allocation
         contig <- map_dfr(alpha_vals, function(a) {
             compute_impact_contiguous(df_c, df_c$pred_rf, a, eff_people, r_val,
-                                       patch_out = patch_out_c) |>
+                patch_out = patch_out_c
+            ) |>
                 mutate(strategy = "RF-contiguous")
         })
 
@@ -1749,9 +1949,12 @@ for (ctry in SELECTED_COUNTRIES) {
             knitr::kable(
                 digits = c(0, 2, 1, 2, 4),
                 col.names = c("Strategy", "\u03b1", "% averted", "Cases/1k doses", "Sim cost"),
-                caption = sprintf("%s, f = %.1f (alpha*_pw = %.2f)",
-                    COUNTRY_LABELS[ctry], fv, a_star_pw)
-            ) |> print()
+                caption = sprintf(
+                    "%s, f = %.1f (alpha*_pw = %.2f)",
+                    COUNTRY_LABELS[ctry], fv, a_star_pw
+                )
+            ) |>
+            print()
     }
 }
 ```
@@ -1774,8 +1977,10 @@ ggplot(
 ) +
     geom_line(linewidth = 0.7) +
     geom_point(size = 1.5) +
-    geom_vline(data = vline_df, aes(xintercept = alpha_star),
-               linetype = "dashed", colour = "grey40") +
+    geom_vline(
+        data = vline_df, aes(xintercept = alpha_star),
+        linetype = "dashed", colour = "grey40"
+    ) +
     facet_grid(country_label ~ sprintf("f = %.1f", f)) +
     scale_colour_manual(values = STRATEGY_COLOURS) +
     scale_y_continuous(limits = c(0, NA)) +
@@ -1802,38 +2007,50 @@ results_all |>
     mutate(
         component = recode(component,
             cases_averted_pre   = "Pre-emptive",
-            cases_averted_react = "Reactive"),
+            cases_averted_react = "Reactive"
+        ),
         alpha_lab = factor(sprintf("%.2f", alpha))
     ) |>
     ggplot(aes(x = alpha_lab, y = cases, fill = component)) +
     geom_col(width = 0.7) +
     facet_grid(country_label ~ sprintf("f = %.1f", f), scales = "free_y") +
     scale_fill_manual(
-        values = c("Pre-emptive" = "steelblue", "Reactive" = "darkorange")) +
+        values = c("Pre-emptive" = "steelblue", "Reactive" = "darkorange")
+    ) +
     scale_y_continuous(labels = label_comma()) +
-    labs(x = expression(alpha), y = "Cases averted", fill = "Component",
-         title = "Decomposition: pre-emptive vs reactive (Model-ranked)") +
+    labs(
+        x = expression(alpha), y = "Cases averted", fill = "Component",
+        title = "Decomposition: pre-emptive vs reactive (Model-ranked)"
+    ) +
     theme_minimal(base_size = 11) +
-    theme(legend.position = "bottom",
-          axis.text.x = element_text(angle = 45, hjust = 1))
+    theme(
+        legend.position = "bottom",
+        axis.text.x = element_text(angle = 45, hjust = 1)
+    )
 ```
 
 ### Simulation cost by country
 
 ```{r fig-sim-cost, fig.width=14, fig.height=10}
-ggplot(results_all,
-       aes(x = alpha, y = sim_cost, colour = strategy, group = strategy)) +
+ggplot(
+    results_all,
+    aes(x = alpha, y = sim_cost, colour = strategy, group = strategy)
+) +
     geom_line(linewidth = 0.7) +
     geom_point(size = 1.5) +
-    geom_vline(data = vline_df, aes(xintercept = alpha_star),
-               linetype = "dashed", colour = "grey40") +
+    geom_vline(
+        data = vline_df, aes(xintercept = alpha_star),
+        linetype = "dashed", colour = "grey40"
+    ) +
     facet_grid(country_label ~ sprintf("f = %.1f", f), scales = "free_y") +
     scale_colour_manual(values = STRATEGY_COLOURS) +
-    labs(x = expression(alpha ~ "(pre-emptive fraction)"),
-         y = "Sim cost per capita (doses + R \u00d7 cases)",
-         colour = "Strategy",
-         title = sprintf("Simulation cost by country, strategy, and f (R = %.0f)", R_val),
-         subtitle = "Dashed line = pop-weighted alpha* (Model-ranked)") +
+    labs(
+        x = expression(alpha ~ "(pre-emptive fraction)"),
+        y = "Sim cost per capita (doses + R \u00d7 cases)",
+        colour = "Strategy",
+        title = sprintf("Simulation cost by country, strategy, and f (R = %.0f)", R_val),
+        subtitle = "Dashed line = pop-weighted alpha* (Model-ranked)"
+    ) +
     theme_minimal(base_size = 11) +
     theme(legend.position = "bottom")
 ```
@@ -1853,24 +2070,33 @@ sensitivity_df <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
     expand_grid(R = R_sweep, r = r_sweep, f = f_values) |>
         mutate(
             alpha_star_val = pmap_dbl(list(R, r, f), function(R_, r_, f_) {
-                optim(par = 0.5, fn = cost_beta,
+                optim(
+                    par = 0.5, fn = cost_beta,
                     f = f_, a = bb$a, b = bb$b, R = R_, r = r_,
-                    method = "L-BFGS-B", lower = 0, upper = 1)$par
+                    method = "L-BFGS-B", lower = 0, upper = 1
+                )$par
             }),
             country = ctry
         )
 })
 
-ggplot(sensitivity_df,
-       aes(x = factor(R), y = alpha_star_val,
-           colour = factor(r), group = factor(r))) +
+ggplot(
+    sensitivity_df,
+    aes(
+        x = factor(R), y = alpha_star_val,
+        colour = factor(r), group = factor(r)
+    )
+) +
     geom_line(linewidth = 0.7) +
     geom_point(size = 1.8) +
     facet_grid(country ~ sprintf("f = %.1f", f),
-               labeller = labeller(country = COUNTRY_LABELS)) +
+        labeller = labeller(country = COUNTRY_LABELS)
+    ) +
     scale_colour_brewer(palette = "Set1", name = "r") +
-    labs(x = "Cost ratio R", y = expression(alpha^"*"),
-         title = expression("Sensitivity of" ~ alpha^"*" ~ "to R and r by country")) +
+    labs(
+        x = "Cost ratio R", y = expression(alpha^"*"),
+        title = expression("Sensitivity of" ~ alpha^"*" ~ "to R and r by country")
+    ) +
     theme_minimal(base_size = 11) +
     theme(legend.position = "bottom")
 ```
@@ -1885,8 +2111,10 @@ ggplot(sensitivity_df,
 f_map <- 0.5
 alpha_map <- 0.5
 map_theme <- theme_minimal(base_size = 10) +
-    theme(panel.grid = element_blank(), axis.text = element_blank(),
-          axis.ticks = element_blank(), legend.position = "bottom")
+    theme(
+        panel.grid = element_blank(), axis.text = element_blank(),
+        axis.ticks = element_blank(), legend.position = "bottom"
+    )
 outbreak_label <- sprintf("Outbreak (%d-%d)", min(eval_years), max(eval_years))
 
 map_panels <- lapply(SELECTED_COUNTRIES, function(ctry) {
@@ -1914,56 +2142,73 @@ map_panels <- lapply(SELECTED_COUNTRIES, function(ctry) {
     }
 
     df_map <- df_c |> mutate(
-        is_pre   = row_number() %in% pre_idx,
+        is_pre = row_number() %in% pre_idx,
         is_react = row_number() %in% react_idx,
         outbreak = any_outbreak == 1,
         # Base layer: outbreak status
         ob_fill = ifelse(outbreak, "Outbreak", "No outbreak"),
         # Overlay layer: vaccination type (NA = no vaccination overlay)
         vax_fill = case_when(
-            is_pre   ~ "Pre-emptive",
+            is_pre ~ "Pre-emptive",
             is_react ~ "Reactive",
-            TRUE     ~ NA_character_))
+            TRUE ~ NA_character_
+        )
+    )
 
     shp_c <- shp_admin23 |> filter(str_detect(location, ctry))
     shp_base <- shp_c |>
         left_join(df_map |> dplyr::select(location, ob_fill, vax_fill),
-                  by = "location") |>
+            by = "location"
+        ) |>
         mutate(ob_fill = replace_na(ob_fill, "No outbreak"))
     shp_vax_overlay <- shp_base |> filter(!is.na(vax_fill))
 
     # Left panel: outbreaks only
-    shp_ob <- shp_c |> left_join(df_c |> dplyr::select(location, any_outbreak),
-                                  by = "location") |>
+    shp_ob <- shp_c |>
+        left_join(df_c |> dplyr::select(location, any_outbreak),
+            by = "location"
+        ) |>
         mutate(outbreak_status = case_when(
             is.na(any_outbreak) ~ "Not in sim",
-            any_outbreak == 1 ~ outbreak_label, TRUE ~ "No outbreak"))
+            any_outbreak == 1 ~ outbreak_label, TRUE ~ "No outbreak"
+        ))
 
     p1 <- ggplot() +
         geom_sf(data = shp_c, fill = "grey92", colour = "grey70", linewidth = 0.1) +
-        geom_sf(data = shp_ob |> filter(outbreak_status != "Not in sim"),
-                aes(fill = outbreak_status), colour = "grey40", linewidth = 0.15) +
-        scale_fill_manual(values = setNames(c("firebrick", "grey80"),
-                          c(outbreak_label, "No outbreak")), name = NULL) +
-        labs(title = sprintf("%s — Outbreaks", COUNTRY_LABELS[ctry])) + map_theme
+        geom_sf(
+            data = shp_ob |> filter(outbreak_status != "Not in sim"),
+            aes(fill = outbreak_status), colour = "grey40", linewidth = 0.15
+        ) +
+        scale_fill_manual(values = setNames(
+            c("firebrick", "grey80"),
+            c(outbreak_label, "No outbreak")
+        ), name = NULL) +
+        labs(title = sprintf("%s — Outbreaks", COUNTRY_LABELS[ctry])) +
+        map_theme
 
     # Right panel: outbreak base + vaccination overlay (semi-transparent)
     p2 <- ggplot() +
         geom_sf(data = shp_c, fill = "grey92", colour = "grey70", linewidth = 0.1) +
         # Base: outbreak status (solid)
-        geom_sf(data = shp_base,
-                aes(fill = ob_fill), colour = "grey40", linewidth = 0.15) +
+        geom_sf(
+            data = shp_base,
+            aes(fill = ob_fill), colour = "grey40", linewidth = 0.15
+        ) +
         scale_fill_manual(
             values = c("Outbreak" = "firebrick", "No outbreak" = "grey80"),
-            name = "Outcome") +
+            name = "Outcome"
+        ) +
         # Overlay: vaccination with transparency via ggnewscale
         ggnewscale::new_scale_fill() +
-        geom_sf(data = shp_vax_overlay,
-                aes(fill = vax_fill), colour = "grey40", linewidth = 0.15,
-                alpha = 0.55) +
+        geom_sf(
+            data = shp_vax_overlay,
+            aes(fill = vax_fill), colour = "grey40", linewidth = 0.15,
+            alpha = 0.55
+        ) +
         scale_fill_manual(
             values = c("Pre-emptive" = "steelblue", "Reactive" = "darkorange"),
-            name = "Vaccination") +
+            name = "Vaccination"
+        ) +
         labs(title = sprintf("Model-ranked (\u03b1=%.1f, f=%.1f)", alpha_map, f_map)) +
         map_theme
 
@@ -1980,20 +2225,26 @@ wrap_plots(map_panels, ncol = 1)
 # re-ranks locations (e.g., using neighbour info). Red = actual outbreaks.
 rank_df <- sim_df_all |>
     group_by(country) |>
-    mutate(rank_model = rank(-pred_prob),
-           rank_count = rank(-hist_count, ties.method = "average"),
-           Outcome = factor(any_outbreak, levels = c(0, 1),
-                            labels = c("No outbreak", "Outbreak"))) |>
+    mutate(
+        rank_model = rank(-pred_prob),
+        rank_count = rank(-hist_count, ties.method = "average"),
+        Outcome = factor(any_outbreak,
+            levels = c(0, 1),
+            labels = c("No outbreak", "Outbreak")
+        )
+    ) |>
     ungroup()
 
 ggplot(rank_df, aes(x = rank_model, y = rank_count)) +
     geom_point(aes(colour = Outcome), alpha = 0.4, size = 1.2) +
     geom_abline(slope = 1, intercept = 0, linetype = "dashed", colour = "grey50") +
-    facet_wrap(~COUNTRY_LABELS[country], scales = "free", nrow = 1) +
+    facet_wrap(~ COUNTRY_LABELS[country], scales = "free", nrow = 1) +
     scale_colour_manual(values = c("No outbreak" = "grey60", "Outbreak" = "firebrick")) +
-    labs(x = "Model-ranked priority (1 = highest)",
-         y = "Count-ranked priority",
-         title = "Model vs count ranking by country") +
+    labs(
+        x = "Model-ranked priority (1 = highest)",
+        y = "Count-ranked priority",
+        title = "Model vs count ranking by country"
+    ) +
     theme_minimal(base_size = 11)
 ```
 
@@ -2001,25 +2252,37 @@ ggplot(rank_df, aes(x = rank_model, y = rank_count)) +
 
 ```{r summary-stats}
 cat("=== Multi-Country Scenario Summary ===\n\n")
-cat(sprintf("Evaluation window: %d-%d (%d years)\n",
-    min(eval_years), max(eval_years), length(eval_years)))
-cat(sprintf("R = %.1f, r = %.1f, nu = %.1f, AR = %.1f%%\n\n",
-    R_val, r_val, nu_val, 100 * ATTACK_RATE))
+cat(sprintf(
+    "Evaluation window: %d-%d (%d years)\n",
+    min(eval_years), max(eval_years), length(eval_years)
+))
+cat(sprintf(
+    "R = %.1f, r = %.1f, nu = %.1f, AR = %.1f%%\n\n",
+    R_val, r_val, nu_val, 100 * ATTACK_RATE
+))
 
 for (ctry in SELECTED_COUNTRIES) {
     df_c <- sim_df_all |> filter(country == ctry)
     bb <- bb_fits[[ctry]]
     P_c <- sum(df_c$pop_sum)
     cat(sprintf("--- %s ---\n", COUNTRY_LABELS[ctry]))
-    cat(sprintf("  Locations: %d (with outbreaks: %d, %.1f%%)\n",
-        nrow(df_c), sum(df_c$any_outbreak), 100 * mean(df_c$any_outbreak)))
+    cat(sprintf(
+        "  Locations: %d (with outbreaks: %d, %.1f%%)\n",
+        nrow(df_c), sum(df_c$any_outbreak), 100 * mean(df_c$any_outbreak)
+    ))
     cat(sprintf("  Population: %.1f M\n", P_c / 1e6))
     cat(sprintf("  Beta(%.3f, %.3f), p = %.3f\n", bb$a, bb$b, bb$p))
-    cat(sprintf("  Counterfactual cases: %s\n",
-        format(round(sum(df_c$est_cases)), big.mark = ",")))
-    cat(sprintf("  Pop-weighted alpha* (Model, f=0.5): %.2f\n",
-        alpha_comparison |> filter(country == ctry, strategy == "Model-ranked",
-                                     f == 0.5) |> pull(alpha_star_pw)))
+    cat(sprintf(
+        "  Counterfactual cases: %s\n",
+        format(round(sum(df_c$est_cases)), big.mark = ",")
+    ))
+    cat(sprintf(
+        "  Pop-weighted alpha* (Model, f=0.5): %.2f\n",
+        alpha_comparison |> filter(
+            country == ctry, strategy == "Model-ranked",
+            f == 0.5
+        ) |> pull(alpha_star_pw)
+    ))
     cat("\n")
 }
 
@@ -2032,12 +2295,16 @@ for (ctry in SELECTED_COUNTRIES) {
             pull(alpha_star_pw)
         if (length(a_star_pw) == 0) next
         row <- results_all |>
-            filter(country == ctry, f == fv, strategy == "Model-ranked",
-                   abs(alpha - a_star_pw) < 0.02) |>
+            filter(
+                country == ctry, f == fv, strategy == "Model-ranked",
+                abs(alpha - a_star_pw) < 0.02
+            ) |>
             slice_min(abs(alpha - a_star_pw), n = 1)
         if (nrow(row) > 0) {
-            cat(sprintf("    f=%.1f, alpha*=%.3f: %.0f cases averted (%.1f%%)\n",
-                fv, a_star_pw, row$cases_averted_total[1], row$pct_averted[1]))
+            cat(sprintf(
+                "    f=%.1f, alpha*=%.3f: %.0f cases averted (%.1f%%)\n",
+                fv, a_star_pw, row$cases_averted_total[1], row$pct_averted[1]
+            ))
         }
     }
 }
@@ -2075,8 +2342,10 @@ single_year_results <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
             transmute(location, any_outbreak_yr = as.integer(n_active > 0))
 
         sim_1y <- df_c |>
-            dplyr::select(location, hist_count, lambda_hat, nbr_hist,
-                          pred_prob, pred_rf, pop_sum, country) |>
+            dplyr::select(
+                location, hist_count, lambda_hat, nbr_hist,
+                pred_prob, pred_rf, pop_sum, country
+            ) |>
             left_join(outbreak_yr, by = "location") |>
             replace_na(list(any_outbreak_yr = 0L)) |>
             mutate(
@@ -2111,7 +2380,8 @@ single_year_results <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
                         "Model-ranked" = sim_1y$pred_prob,
                         "RF-ranked"    = sim_1y$pred_rf,
                         "Count-ranked" = sim_1y$hist_count,
-                        "Oracle"       = sim_1y$est_cases)
+                        "Oracle"       = sim_1y$est_cases
+                    )
                     compute_impact_mixed(sim_1y, score, alpha, eff_people, r_val) |>
                         mutate(strategy = strategy)
                 })) |>
@@ -2122,7 +2392,9 @@ single_year_results <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
             # RF-contiguous: patch-based pre-emptive allocation
             contig_1y <- map_dfr(alpha_vals, function(a) {
                 compute_impact_contiguous(sim_1y, sim_1y$pred_rf, a, eff_people,
-                                           r_val, patch_out = patch_out_c) |>
+                    r_val,
+                    patch_out = patch_out_c
+                ) |>
                     mutate(strategy = "RF-contiguous")
             })
 
@@ -2143,8 +2415,10 @@ single_year_results <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
             bind_rows(det, contig_1y, rand) |>
                 mutate(f = fv, alpha_star = a_star_pw)
         }) |>
-            mutate(year = yr, p_yr = p_yr,
-                   strategy = factor(strategy, levels = STRATEGY_LEVELS))
+            mutate(
+                year = yr, p_yr = p_yr,
+                strategy = factor(strategy, levels = STRATEGY_LEVELS)
+            )
     }) |> mutate(country = ctry)
 })
 
@@ -2157,7 +2431,8 @@ for (ctry in SELECTED_COUNTRIES) {
     for (yr in single_years) {
         p <- single_year_results |>
             filter(country == ctry, year == yr) |>
-            pull(p_yr) |> unique()
+            pull(p_yr) |>
+            unique()
         cat(sprintf("    %d: p = %.3f\n", yr, p))
     }
 }
@@ -2177,20 +2452,27 @@ vline_1y <- alpha_comparison |>
 walk(SELECTED_COUNTRIES, function(ctry) {
     df_plot <- single_year_results |> filter(country == ctry)
     vl <- vline_1y |> filter(country == ctry)
-    p <- ggplot(df_plot, aes(x = alpha, y = pct_averted,
-                              colour = strategy, group = strategy)) +
+    p <- ggplot(df_plot, aes(
+        x = alpha, y = pct_averted,
+        colour = strategy, group = strategy
+    )) +
         geom_line(linewidth = 0.7) +
         geom_point(size = 1.5) +
-        geom_vline(data = vl, aes(xintercept = alpha_star),
-                   linetype = "dashed", colour = "grey40") +
+        geom_vline(
+            data = vl, aes(xintercept = alpha_star),
+            linetype = "dashed", colour = "grey40"
+        ) +
         facet_grid(year ~ sprintf("f = %.1f", f)) +
         scale_colour_manual(values = STRATEGY_COLOURS) +
         scale_y_continuous(limits = c(0, NA)) +
-        labs(x = expression(alpha ~ "(pre-emptive fraction)"),
-             y = "% of cases averted", colour = "Strategy",
-             title = sprintf("%s: single-year burden averted", COUNTRY_LABELS[ctry]),
-             subtitle = "Each row = one year (2016-2018); dashed = pop-weighted alpha* (Model-ranked)") +
-        theme_minimal(base_size = 11) + theme(legend.position = "bottom")
+        labs(
+            x = expression(alpha ~ "(pre-emptive fraction)"),
+            y = "% of cases averted", colour = "Strategy",
+            title = sprintf("%s: single-year burden averted", COUNTRY_LABELS[ctry]),
+            subtitle = "Each row = one year (2016-2018); dashed = pop-weighted alpha* (Model-ranked)"
+        ) +
+        theme_minimal(base_size = 11) +
+        theme(legend.position = "bottom")
     print(p)
 })
 ```
@@ -2201,19 +2483,26 @@ walk(SELECTED_COUNTRIES, function(ctry) {
 walk(SELECTED_COUNTRIES, function(ctry) {
     df_plot <- single_year_results |> filter(country == ctry)
     vl <- vline_1y |> filter(country == ctry)
-    p <- ggplot(df_plot, aes(x = alpha, y = eff_total_per_1k,
-                              colour = strategy, group = strategy)) +
+    p <- ggplot(df_plot, aes(
+        x = alpha, y = eff_total_per_1k,
+        colour = strategy, group = strategy
+    )) +
         geom_line(linewidth = 0.7) +
         geom_point(size = 1.5) +
-        geom_vline(data = vl, aes(xintercept = alpha_star),
-                   linetype = "dashed", colour = "grey40") +
+        geom_vline(
+            data = vl, aes(xintercept = alpha_star),
+            linetype = "dashed", colour = "grey40"
+        ) +
         facet_grid(year ~ sprintf("f = %.1f", f), scales = "free_y") +
         scale_colour_manual(values = STRATEGY_COLOURS) +
-        labs(x = expression(alpha ~ "(pre-emptive fraction)"),
-             y = "Cases averted per 1,000 doses", colour = "Strategy",
-             title = sprintf("%s: single-year dose efficiency", COUNTRY_LABELS[ctry]),
-             subtitle = "Each row = one year; dashed = pop-weighted alpha* (Model-ranked)") +
-        theme_minimal(base_size = 11) + theme(legend.position = "bottom")
+        labs(
+            x = expression(alpha ~ "(pre-emptive fraction)"),
+            y = "Cases averted per 1,000 doses", colour = "Strategy",
+            title = sprintf("%s: single-year dose efficiency", COUNTRY_LABELS[ctry]),
+            subtitle = "Each row = one year; dashed = pop-weighted alpha* (Model-ranked)"
+        ) +
+        theme_minimal(base_size = 11) +
+        theme(legend.position = "bottom")
     print(p)
 })
 ```
@@ -2232,26 +2521,41 @@ walk(SELECTED_COUNTRIES, function(ctry) {
     vl <- vline_1y |> filter(country == ctry)
     p <- ggplot() +
         # Pop-weighted MC cost curves (expected cost, from 3-year analysis)
-        geom_line(data = cc_pw,
-                  aes(x = alpha, y = cost, colour = strategy),
-                  linetype = "dashed", linewidth = 0.5, alpha = 0.6) +
+        geom_line(
+            data = cc_pw,
+            aes(x = alpha, y = cost, colour = strategy),
+            linetype = "dashed", linewidth = 0.5, alpha = 0.6
+        ) +
         # Single-year simulation cost (actual outcomes)
-        geom_line(data = df_plot,
-                  aes(x = alpha, y = sim_cost, colour = strategy,
-                      group = interaction(strategy, year)),
-                  linewidth = 0.7) +
-        geom_point(data = df_plot,
-                   aes(x = alpha, y = sim_cost, colour = strategy), size = 1.5) +
-        geom_vline(data = vl, aes(xintercept = alpha_star),
-                   linetype = "dotted", colour = "grey40") +
+        geom_line(
+            data = df_plot,
+            aes(
+                x = alpha, y = sim_cost, colour = strategy,
+                group = interaction(strategy, year)
+            ),
+            linewidth = 0.7
+        ) +
+        geom_point(
+            data = df_plot,
+            aes(x = alpha, y = sim_cost, colour = strategy), size = 1.5
+        ) +
+        geom_vline(
+            data = vl, aes(xintercept = alpha_star),
+            linetype = "dotted", colour = "grey40"
+        ) +
         facet_grid(year ~ sprintf("f = %.1f", f), scales = "free_y") +
         scale_colour_manual(values = STRATEGY_COLOURS) +
-        labs(x = expression(alpha ~ "(pre-emptive fraction)"),
-             y = "Cost per capita", colour = "Strategy",
-             title = sprintf("%s: single-year cost vs pop-weighted expected cost (R = %.0f)",
-                             COUNTRY_LABELS[ctry], R_val),
-             subtitle = "Dashed = pop-weighted MC cost (3-year); solid = single-year sim; dotted = alpha*") +
-        theme_minimal(base_size = 11) + theme(legend.position = "bottom")
+        labs(
+            x = expression(alpha ~ "(pre-emptive fraction)"),
+            y = "Cost per capita", colour = "Strategy",
+            title = sprintf(
+                "%s: single-year cost vs pop-weighted expected cost (R = %.0f)",
+                COUNTRY_LABELS[ctry], R_val
+            ),
+            subtitle = "Dashed = pop-weighted MC cost (3-year); solid = single-year sim; dotted = alpha*"
+        ) +
+        theme_minimal(base_size = 11) +
+        theme(legend.position = "bottom")
     print(p)
 })
 ```
@@ -2279,22 +2583,29 @@ strategy_optima <- results_all |>
 strategy_optima <- strategy_optima |>
     rowwise() |>
     mutate(alpha_star_analytical = get_alpha_star_beta(
-        R_val, f, bb_fits[[country]]$a, bb_fits[[country]]$b, r_val)) |>
+        R_val, f, bb_fits[[country]]$a, bb_fits[[country]]$b, r_val
+    )) |>
     ungroup()
 
 # Join with pop-weighted alpha*
 strategy_optima <- strategy_optima |>
-    left_join(alpha_comparison |>
-                  dplyr::select(country, strategy, f, alpha_star_pw, rho),
-              by = c("country", "strategy", "f"))
+    left_join(
+        alpha_comparison |>
+            dplyr::select(country, strategy, f, alpha_star_pw, rho),
+        by = c("country", "strategy", "f")
+    )
 
 strategy_optima |>
-    dplyr::select(country, strategy, f, rho, alpha_star_emp,
-                  alpha_star_pw, alpha_star_analytical) |>
+    dplyr::select(
+        country, strategy, f, rho, alpha_star_emp,
+        alpha_star_pw, alpha_star_analytical
+    ) |>
     knitr::kable(
         digits = c(0, 0, 1, 2, 3, 3, 3),
-        col.names = c("Country", "Strategy", "f", "\u03c1",
-                       "\u03b1*_sim", "\u03b1*_pw", "\u03b1*_ew"),
+        col.names = c(
+            "Country", "Strategy", "f", "\u03c1",
+            "\u03b1*_sim", "\u03b1*_pw", "\u03b1*_ew"
+        ),
         caption = "Empirically optimal alpha (simulation) vs pop-weighted and equal-weight analytical"
     )
 ```
@@ -2303,26 +2614,37 @@ strategy_optima |>
 # Analytical alpha* reference points per country
 analytic_ref <- expand_grid(country = SELECTED_COUNTRIES, f = f_values) |>
     rowwise() |>
-    mutate(alpha = get_alpha_star_beta(
-        R_val, f, bb_fits[[country]]$a, bb_fits[[country]]$b, r_val),
-        country_label = COUNTRY_LABELS[country]) |>
+    mutate(
+        alpha = get_alpha_star_beta(
+            R_val, f, bb_fits[[country]]$a, bb_fits[[country]]$b, r_val
+        ),
+        country_label = COUNTRY_LABELS[country]
+    ) |>
     ungroup()
 
-ggplot(strategy_optima,
-       aes(x = factor(f), y = alpha_star_emp,
-           colour = strategy, group = strategy)) +
+ggplot(
+    strategy_optima,
+    aes(
+        x = factor(f), y = alpha_star_emp,
+        colour = strategy, group = strategy
+    )
+) +
     geom_point(size = 3) +
     geom_line(linewidth = 0.7) +
-    geom_point(data = analytic_ref, aes(x = factor(f), y = alpha),
-               inherit.aes = FALSE,
-               shape = 4, size = 4, stroke = 1.2, colour = "black") +
-    facet_wrap(~COUNTRY_LABELS[country], nrow = 1) +
+    geom_point(
+        data = analytic_ref, aes(x = factor(f), y = alpha),
+        inherit.aes = FALSE,
+        shape = 4, size = 4, stroke = 1.2, colour = "black"
+    ) +
+    facet_wrap(~ COUNTRY_LABELS[country], nrow = 1) +
     scale_colour_manual(values = STRATEGY_COLOURS) +
-    labs(x = "Coverage fraction f",
-         y = expression("Empirically optimal" ~ alpha^"*"),
-         colour = "Strategy",
-         title = "Empirically optimal alpha* by targeting quality and country",
-         subtitle = "Black x = equal-weight analytical alpha*") +
+    labs(
+        x = "Coverage fraction f",
+        y = expression("Empirically optimal" ~ alpha^"*"),
+        colour = "Strategy",
+        title = "Empirically optimal alpha* by targeting quality and country",
+        subtitle = "Black x = equal-weight analytical alpha*"
+    ) +
     theme_minimal(base_size = 12) +
     theme(legend.position = "bottom")
 ```
@@ -2348,10 +2670,14 @@ rho_alpha_curves <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
     map_dfr(f_values, function(fv) {
         map_dfr(rho_grid, function(rho_val) {
             res <- get_alpha_star_rho(fv, df_c$pop_sum, df_c$obs_rate,
-                                       R_val, r_val, rho = rho_val,
-                                       n_mc = 150, seed = 42)
-            tibble(rho = rho_val, alpha_star = res$alpha_star,
-                   f = fv, country = ctry)
+                R_val, r_val,
+                rho = rho_val,
+                n_mc = 150, seed = 42
+            )
+            tibble(
+                rho = rho_val, alpha_star = res$alpha_star,
+                f = fv, country = ctry
+            )
         })
     })
 })
@@ -2365,16 +2691,20 @@ strategy_pts <- alpha_comparison |>
 
 ggplot(rho_alpha_curves, aes(x = rho, y = alpha_star)) +
     geom_line(linewidth = 0.8, colour = "grey30") +
-    geom_point(data = strategy_pts,
-               aes(x = rho, y = alpha_star_pw, colour = strategy),
-               size = 3) +
+    geom_point(
+        data = strategy_pts,
+        aes(x = rho, y = alpha_star_pw, colour = strategy),
+        size = 3
+    ) +
     facet_grid(country_label ~ sprintf("f = %.1f", f)) +
     scale_colour_manual(values = STRATEGY_COLOURS) +
-    labs(x = expression("Targeting accuracy" ~ rho),
-         y = expression("Optimal" ~ alpha^"*" ~ "(pop-weighted)"),
-         colour = "Strategy",
-         title = expression("How targeting accuracy" ~ rho ~ "shifts optimal" ~ alpha^"*"),
-         subtitle = "Grey curve = theoretical; coloured points = empirical strategy positions") +
+    labs(
+        x = expression("Targeting accuracy" ~ rho),
+        y = expression("Optimal" ~ alpha^"*" ~ "(pop-weighted)"),
+        colour = "Strategy",
+        title = expression("How targeting accuracy" ~ rho ~ "shifts optimal" ~ alpha^"*"),
+        subtitle = "Grey curve = theoretical; coloured points = empirical strategy positions"
+    ) +
     theme_minimal(base_size = 11) +
     theme(legend.position = "bottom")
 ```
@@ -2397,14 +2727,17 @@ country_summary <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
         `Beta(a,b)` = sprintf("(%.2f, %.2f)", bb$a, bb$b),
         `alpha*_ew (f=0.5)` = round(get_alpha_star_beta(R_val, 0.5, bb$a, bb$b, r_val), 3),
         `alpha*_pw Model (f=0.5)` = round(
-            rhos |> filter(strategy == "Model-ranked") |> pull(alpha_star_pw), 3),
+            rhos |> filter(strategy == "Model-ranked") |> pull(alpha_star_pw), 3
+        ),
         `rho_model` = round(
-            rhos |> filter(strategy == "Model-ranked") |> pull(rho), 3)
+            rhos |> filter(strategy == "Model-ranked") |> pull(rho), 3
+        )
     )
 })
 
 knitr::kable(country_summary,
-    caption = "Cross-country comparison at f = 0.5")
+    caption = "Cross-country comparison at f = 0.5"
+)
 ```
 
 
@@ -2426,14 +2759,18 @@ for (ctry in SELECTED_COUNTRIES) {
         ungroup() |>
         dplyr::select(strategy, f, pct_averted) |>
         pivot_wider(names_from = strategy, values_from = pct_averted) |>
-        mutate(targeting_gain = Oracle - Random,
-               model_gap = Oracle - `Model-ranked`)
+        mutate(
+            targeting_gain = Oracle - Random,
+            model_gap = Oracle - `Model-ranked`
+        )
 
     cat(sprintf("  p = %.3f, Beta(%.2f, %.2f)\n", bb$p, bb$a, bb$b))
     for (i in seq_len(nrow(targeting_value))) {
         row <- targeting_value[i, ]
-        cat(sprintf("  f=%.1f: Oracle %.1f%% vs Random %.1f%% (gain +%.1f pp); Model %.1f%%\n",
-            row$f, row$Oracle, row$Random, row$targeting_gain, row$`Model-ranked`))
+        cat(sprintf(
+            "  f=%.1f: Oracle %.1f%% vs Random %.1f%% (gain +%.1f pp); Model %.1f%%\n",
+            row$f, row$Oracle, row$Random, row$targeting_gain, row$`Model-ranked`
+        ))
     }
 
     # 2. Alpha comparison
@@ -2444,8 +2781,10 @@ for (ctry in SELECTED_COUNTRIES) {
         filter(country == ctry, strategy == "Model-ranked", f == 0.5) |>
         pull(alpha_star_pw)
     a_ew <- get_alpha_star_beta(R_val, 0.5, bb$a, bb$b, r_val)
-    cat(sprintf("  Model rho = %.3f, alpha*_pw(f=0.5) = %.3f, alpha*_ew = %.3f\n\n",
-        rho_model, a_pw, a_ew))
+    cat(sprintf(
+        "  Model rho = %.3f, alpha*_pw(f=0.5) = %.3f, alpha*_ew = %.3f\n\n",
+        rho_model, a_pw, a_ew
+    ))
 }
 
 cat("=== CROSS-COUNTRY PATTERNS ===\n\n")
