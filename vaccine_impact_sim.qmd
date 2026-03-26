@@ -1490,7 +1490,7 @@ impact_curves <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
 
         # True Oracle
         oracle_c <- map_dfr(alpha_grid_impact, function(a) {
-            score <- df_c$any_outbreak * df_c$pop_sum
+            score <- df_c$est_cases
             compute_impact_mixed(df_c, score, a, eff_people, r_val, nu_val, R_val) |>
                 mutate(strategy = "Oracle")
         })
@@ -1597,7 +1597,7 @@ results_all <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
 
         # True Oracle: only vaccinates outbreak locations (score = any_outbreak * pop)
         oracle <- map_dfr(alpha_vals, function(a) {
-            score <- df_c$any_outbreak * df_c$pop_sum
+            score <- df_c$est_cases
             compute_impact_mixed(df_c, score, a, eff_people, r_val, nu_val, R_val) |>
                 mutate(strategy = "Oracle")
         })
@@ -2098,7 +2098,7 @@ single_year_results <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
 
             # True Oracle: only vaccinates outbreak locations
             oracle <- map_dfr(alpha_vals, function(a) {
-                score <- sim_1y$any_outbreak * sim_1y$pop_sum
+                score <- sim_1y$est_cases
                 compute_impact_mixed(sim_1y, score, a, eff_people, r_val, nu_val, R_val) |>
                     mutate(strategy = "Oracle")
             })
