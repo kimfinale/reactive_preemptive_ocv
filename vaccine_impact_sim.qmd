@@ -28,7 +28,7 @@ vaccination** under a fixed vaccine supply. The analysis:
 **Scenario parameters**:
 
 - Countries: COD (DRC, high-risk), NGA (Nigeria, medium-risk), CMR (Cameroon, low-risk)
-- Single-dose OCV for both pre-emptive and reactive use ($\nu = 1$, $r \in {0.2, 0.4, 0.6}$)
+- Single-dose OCV for both pre-emptive and reactive use ($\nu = 1, r \in {0.2, 0.4, 0.6}$)
 - Cost ratio $R = C_I / C_V$, where $C_V$ is cost of vaccination per person and $C_I$ is cost of infection per person (accounting for severity of the disease). Total cost of vaccinating a population with size $n$ would be $n C_V$ and total cost of infection would be $n A C_I$, where $A$ is the attack rate (or cumulative incidence) in the population expressed as a proportion.
 - Coverage fraction varied: $f \in \{0.3, 0.5, 0.7\}$ (doses adjusted accordingly)
 - Evaluation window: 2016--2018 (3 years, matching model prediction horizon $k = 3$)
@@ -40,7 +40,8 @@ vaccination** under a fixed vaccine supply. The analysis:
 | RF-ranked | Predicted outbreak probability (random forest) |
 | Count-ranked | Historical outbreak count (2011--2015) |
 | Random | Uniform random selection |
-| Oracle | Actual 2016--2018 outbreak burden (perfect foresight) |
+| Perfect ranking | Actual 2016--2018 outbreak burden (perfect ranking, $\rho = 1$) |
+| Oracle | Perfect foreknowledge of outbreak realization |
 
 
 # Setup
@@ -446,7 +447,7 @@ sim_df_all <- sim_df_all |>
     filter(!is.na(pop_sum), pop_sum > 0) |>
     mutate(
         country = str_extract(location, "(?<=::)[A-Z]{3}(?=::)"),
-        # est_cases: counterfactual case count (used by Oracle + impact metrics)
+        # est_cases: counterfactual case count (used by Perfect ranking + impact metrics)
         est_cases = pop_sum * ATTACK_RATE * n_outbreak_years,
         # obs_rate: empirical outbreak probability used in MC cost functions
         obs_rate = n_outbreak_years / length(eval_years)
@@ -712,17 +713,17 @@ ggplot(scatter_df, aes(x = pred_prob_clf, y = n_outbreak_years)) +
 # Vaccine parameters (single-dose OCV)
 nu_val <- 1 # pre-emptive VE: prevents outbreaks entirely
 r_val <- 0.6 # reactive effectiveness
-R_val <- 5 # cost ratio C_I / C_V (per-person: C_I = AR × cost_per_case)
+R_val <- 500 # cost ratio C_I / C_V (per-infection: C_I = cost_per_case)
 n_trials <- length(eval_years)
 
 # Shared colour palette for strategies
 STRATEGY_COLOURS <- c(
-    "Oracle" = "firebrick", "Model-ranked" = "steelblue",
-    "RF-ranked" = "darkorchid",
+    "Oracle" = "firebrick", "Perfect ranking" = "salmon",
+    "Model-ranked" = "steelblue", "RF-ranked" = "darkorchid",
     "Count-ranked" = "darkgreen", "Random" = "grey50"
 )
 STRATEGY_LEVELS <- c(
-    "Oracle", "Model-ranked", "RF-ranked",
+    "Oracle", "Perfect ranking", "Model-ranked", "RF-ranked",
     "Count-ranked", "Random"
 )
 ```
@@ -775,23 +776,40 @@ fit_betabinom <- function(k_obs, n_trials) {
 # Normalized by P_total → per-capita cost.
 
 cost_popweighted_mc <- function(alpha, f, pop, prob, score, R, r, AR, nu = 1,
-                                n_mc = 300, seed = 42, ...) {
+                                oracle = FALSE, n_mc = 300, seed = 42, ...) {
     n <- length(pop)
     P_total <- sum(pop)
     pre_budget <- alpha * f * P_total
     react_budget <- (1 - alpha) * f * P_total
 
-    # Pre-emptive: rank by score, greedy allocation by population
-    ranked <- order(score, decreasing = TRUE)
-    cum_pop <- cumsum(pop[ranked])
-    n_pre <- sum(cum_pop <= pre_budget)
-    pre_idx <- if (n_pre > 0) ranked[seq_len(n_pre)] else integer(0)
-    rem_idx <- setdiff(seq_len(n), pre_idx)
+    # Score-based strategies: pre-allocate once (fixed ranking)
+    if (!oracle) {
+        ranked <- order(score, decreasing = TRUE)
+        cum_pop <- cumsum(pop[ranked])
+        n_pre <- sum(cum_pop <= pre_budget)
+        pre_idx_fixed <- if (n_pre > 0) ranked[seq_len(n_pre)] else integer(0)
+    }
 
     costs <- numeric(n_mc)
     for (s in seq_len(n_mc)) {
         set.seed(seed + s)
         Y <- rbinom(n, 1, prob)
+
+        # Oracle: allocate pre-emptive doses to outbreak locations (known)
+        if (oracle) {
+            ob_all <- which(Y == 1)
+            if (length(ob_all) > 0 && pre_budget > 0) {
+                ob_ranked <- ob_all[order(pop[ob_all], decreasing = TRUE)]
+                cum_pop_ob <- cumsum(pop[ob_ranked])
+                n_pre_ob <- sum(cum_pop_ob <= pre_budget)
+                pre_idx <- if (n_pre_ob > 0) ob_ranked[seq_len(n_pre_ob)] else integer(0)
+            } else {
+                pre_idx <- integer(0)
+            }
+        } else {
+            pre_idx <- pre_idx_fixed
+        }
+        rem_idx <- setdiff(seq_len(n), pre_idx)
 
         # Pre-emptive locations: vaccination cost + residual illness
         pop_pre <- sum(pop[pre_idx])
@@ -812,7 +830,6 @@ cost_popweighted_mc <- function(alpha, f, pop, prob, score, R, r, AR, nu = 1,
                     react_sel <- ob_order[seq_len(n_react)]
                     pop_react <- sum(pop[react_sel])
                     burden_react_residual <- pop_react * (1 - r)
-                    # Uncovered: outbreaking locations that got neither
                     if (n_react < length(ob_order)) {
                         burden_uncovered <- sum(pop[ob_order[(n_react + 1):length(ob_order)]])
                     }
@@ -849,6 +866,14 @@ get_alpha_star_pw <- function(f, pop, prob, score, R, r, AR, nu = 1,
     )
 }
 
+# mean_risk_pre: E[p | p > q] where q = Beta quantile at (1 - f_pre).
+# This is the average outbreak probability among pre-emptively targeted
+# locations when the top f_pre fraction is selected.
+mean_risk_pre <- function(f_pre, a, b) {
+    if (f_pre <= 0) {
+        return(0)
+    }
+    if (f_pre >= 1) {
         return(a / (a + b))
     }
     q <- qbeta(1 - f_pre, a, b)
@@ -895,10 +920,11 @@ compute_strategy_rhos <- function(df_c) {
     rho_rf <- cor(df_c$pred_rf, df_c$n_outbreak_years, method = "spearman")
     tibble(
         strategy = c(
-            "Oracle", "Model-ranked", "RF-ranked",
+            "Oracle", "Perfect ranking", "Model-ranked", "RF-ranked",
             "Count-ranked", "Random"
         ),
         rho = c(
+            1.0,
             cor(df_c$est_cases, df_c$n_outbreak_years, method = "spearman"),
             cor(df_c$pred_prob, df_c$n_outbreak_years, method = "spearman"),
             rho_rf,
@@ -1117,12 +1143,28 @@ pw_alpha_results <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
     cat(sprintf("\n=== %s (n=%d, p=%.3f) ===\n", ctry, nrow(df_c), bb$p))
 
     map_dfr(f_values, function(fv) {
-        # Individual-location strategies
+        # True Oracle: knows outbreak realization
+        alpha_grid_51 <- seq(0, 1, length.out = 51)
+        oracle_costs <- sapply(alpha_grid_51, function(a) {
+            cost_popweighted_mc(a, fv, df_c$pop_sum, df_c$obs_rate,
+                score = numeric(nrow(df_c)),
+                R_val, r_val, ATTACK_RATE, oracle = TRUE, n_mc = 300
+            )
+        })
+        oracle_alpha_star <- alpha_grid_51[which.min(oracle_costs)]
+        cat(sprintf("  f=%.1f %-14s: alpha*_pw = %.2f\n", fv, "Oracle", oracle_alpha_star))
+        oracle_result <- tibble(
+            strategy = "Oracle", f = fv,
+            alpha_star_pw = oracle_alpha_star,
+            cost_star_pw = min(oracle_costs)
+        )
+
+        # Score-based strategies
         strategies <- list(
-            Oracle         = df_c$est_cases,
-            `Model-ranked` = df_c$pred_prob,
-            `RF-ranked`    = df_c$pred_rf,
-            `Count-ranked` = df_c$hist_count
+            `Perfect ranking` = df_c$est_cases,
+            `Model-ranked`    = df_c$pred_prob,
+            `RF-ranked`       = df_c$pred_rf,
+            `Count-ranked`    = df_c$hist_count
         )
         strat_results <- imap_dfr(strategies, function(score, strat_name) {
             res <- get_alpha_star_pw(fv, df_c$pop_sum, df_c$obs_rate, score,
@@ -1139,7 +1181,7 @@ pw_alpha_results <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
         # Random: use uniform scores (average over multiple seeds)
         set.seed(42)
         random_scores <- replicate(20, runif(nrow(df_c)), simplify = FALSE)
-        rand_costs <- sapply(seq(0, 1, length.out = 51), function(a) {
+        rand_costs <- sapply(alpha_grid_51, function(a) {
             mean(sapply(random_scores, function(sc) {
                 cost_popweighted_mc(a, fv, df_c$pop_sum, df_c$obs_rate, sc,
                     R_val, r_val, ATTACK_RATE,
@@ -1147,10 +1189,11 @@ pw_alpha_results <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
                 )
             }))
         })
-        rand_alpha_star <- seq(0, 1, length.out = 51)[which.min(rand_costs)]
+        rand_alpha_star <- alpha_grid_51[which.min(rand_costs)]
         cat(sprintf("  f=%.1f %-14s: alpha*_pw = %.2f\n", fv, "Random", rand_alpha_star))
 
         bind_rows(
+            oracle_result,
             strat_results,
             tibble(
                 strategy = "Random", f = fv,
@@ -1199,12 +1242,24 @@ alpha_grid_pw <- seq(0, 1, length.out = 51)
 pw_cost_curves <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
     df_c <- sim_df_all |> filter(country == ctry)
     map_dfr(f_values, function(fv) {
-        # Individual-location strategies
+        # True Oracle: knows outbreak realization, vaccinates only outbreak locations
+        oracle_costs <- sapply(alpha_grid_pw, function(a) {
+            cost_popweighted_mc(a, fv, df_c$pop_sum, df_c$obs_rate,
+                score = numeric(nrow(df_c)),
+                R_val, r_val, ATTACK_RATE, oracle = TRUE, n_mc = 200
+            )
+        })
+        oracle_curve <- tibble(
+            alpha = alpha_grid_pw, cost = oracle_costs,
+            strategy = "Oracle", f = fv, country = ctry
+        )
+
+        # Score-based strategies (fixed ranking)
         strategies <- list(
-            Oracle         = df_c$est_cases,
-            `Model-ranked` = df_c$pred_prob,
-            `RF-ranked`    = df_c$pred_rf,
-            `Count-ranked` = df_c$hist_count
+            `Perfect ranking` = df_c$est_cases,
+            `Model-ranked`    = df_c$pred_prob,
+            `RF-ranked`       = df_c$pred_rf,
+            `Count-ranked`    = df_c$hist_count
         )
         indiv_curves <- imap_dfr(strategies, function(score, strat_name) {
             costs <- sapply(alpha_grid_pw, function(a) {
@@ -1235,13 +1290,26 @@ pw_cost_curves <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
             strategy = "Random", f = fv, country = ctry
         )
 
-        bind_rows(indiv_curves, rand_curve)
+        bind_rows(oracle_curve, indiv_curves, rand_curve)
     })
 })
 
+# MC-based optimal alpha points (diamonds)
+opt_pts <- alpha_comparison |>
+    dplyr::select(country, strategy, f, alpha_star_pw, cost_star_pw) |>
+    rename(alpha = alpha_star_pw, cost = cost_star_pw)
+
+# Theoretical alpha* from analytical Beta-Binomial model (equal-weight)
+theo_vlines <- ew_alpha_results |>
+    rename(alpha_star_theo = alpha_star_ew)
+
 ggplot(pw_cost_curves, aes(x = alpha, y = cost, colour = strategy)) +
     geom_line(linewidth = 0.7) +
-    # MC-based optimal alpha (diamonds)
+    geom_vline(
+        data = theo_vlines,
+        aes(xintercept = alpha_star_theo),
+        linetype = "dashed", colour = "black", linewidth = 0.4, alpha = 0.5
+    ) +
     geom_point(
         data = opt_pts, aes(x = alpha, y = cost),
         size = 2.5, shape = 18
@@ -1257,7 +1325,7 @@ ggplot(pw_cost_curves, aes(x = alpha, y = cost, colour = strategy)) +
         colour = "Strategy",
         title = "Population-weighted cost curves by strategy, country, and f",
         subtitle = sprintf(
-            "R = %.0f, r = %.1f; diamonds = MC optimal alpha*",
+            "R = %.0f, r = %.1f; diamonds = MC optimal alpha*; dashed line = theoretical alpha* (Beta-Binomial)",
             R_val, r_val
         )
     ) +
@@ -1303,7 +1371,7 @@ for (fv in f_values) {
 For each strategy, coverage fraction $f$, and pre-emptive fraction $\alpha$:
 
 1. **Pre-emptive**: rank locations by strategy score, vaccinate top locations
-   until $\alpha \times f \times P$ people are covered. Cases in these locations $\to 0$.
+   until $\alpha \times f \times P$ people are covered. Cases reduced by factor $\nu$.
 2. **Reactive**: remaining $(1 - \alpha) \times f \times P$ people-worth of doses
    are held back. When outbreaks occur in non-pre-emptive locations, deploy
    reactive doses (prioritizing largest outbreaks). Each reactively-covered
@@ -1319,8 +1387,8 @@ For each strategy, coverage fraction $f$, and pre-emptive fraction $\alpha$:
 # Returns a single-row tibble with: cases averted (pre/react/total), doses used,
 # efficiency (cases per 1k doses), sim_cost (per-capita cost in C_V units),
 # and counts of covered/uncovered locations.
-compute_impact_mixed <- function(df, score, alpha, effective_people, r_eff,
-                                 R_cost = 5) {
+compute_impact_mixed <- function(df, score, alpha, effective_people, r,
+                                 nu = 1, R = 500) {
     n <- nrow(df)
 
     pre_doses <- alpha * effective_people
@@ -1340,7 +1408,7 @@ compute_impact_mixed <- function(df, score, alpha, effective_people, r_eff,
         pre_idx <- integer(0)
     }
 
-    cases_averted_pre <- sum(df$est_cases[pre_idx])
+    cases_averted_pre <- nu * sum(df$est_cases[pre_idx])
     doses_pre <- sum(df$pop_sum[pre_idx])
 
     # --- Reactive allocation ---
@@ -1356,7 +1424,7 @@ compute_impact_mixed <- function(df, score, alpha, effective_people, r_eff,
         n_react <- sum(cum_pop_react <= react_doses)
         react_idx <- if (n_react > 0) ob_order[seq_len(n_react)] else integer(0)
 
-        cases_averted_react <- r_eff * sum(df$est_cases[react_idx])
+        cases_averted_react <- r * sum(df$est_cases[react_idx])
         doses_react <- sum(df$pop_sum[react_idx])
     } else {
         react_idx <- integer(0)
@@ -1371,7 +1439,9 @@ compute_impact_mixed <- function(df, score, alpha, effective_people, r_eff,
     # R × pop_i per unprotected outbreak location, not R × cases (which double-counts AR)
     uncov_idx <- setdiff(outbreak_remaining, react_idx)
     pop_burden_uncovered <- sum(df$pop_sum[uncov_idx])
-    pop_burden_react_residual <- sum(df$pop_sum[react_idx]) * (1 - r_eff)
+    pop_burden_react_residual <- sum(df$pop_sum[react_idx]) * (1 - r)
+    pre_outbreak_idx <- pre_idx[df$any_outbreak[pre_idx] == 1]
+    pop_burden_pre_residual <- sum(df$pop_sum[pre_outbreak_idx]) * (1 - nu)
     P_total <- sum(df$pop_sum)
 
     tibble(
@@ -1397,7 +1467,7 @@ compute_impact_mixed <- function(df, score, alpha, effective_people, r_eff,
         ),
         cases_remaining = total_cases_cf - cases_averted_total,
         sim_cost = (doses_pre + doses_react +
-            R_cost * (pop_burden_uncovered + pop_burden_react_residual)) /
+            R * (pop_burden_pre_residual + pop_burden_uncovered + pop_burden_react_residual)) /
             P_total,
         n_pre = length(pre_idx),
         n_react = length(react_idx),
@@ -1431,18 +1501,18 @@ results_all <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
 
         # Individual-location deterministic strategies
         det <- expand_grid(
-            strategy = c("Model-ranked", "RF-ranked", "Count-ranked", "Oracle"),
+            strategy = c("Model-ranked", "RF-ranked", "Count-ranked", "Perfect ranking"),
             alpha = alpha_vals
         ) |>
             rowwise() |>
             mutate(result = list({
                 score <- switch(strategy,
-                    "Model-ranked" = df_c$pred_prob,
-                    "RF-ranked"    = df_c$pred_rf,
-                    "Count-ranked" = df_c$hist_count,
-                    "Oracle"       = df_c$est_cases
+                    "Model-ranked"    = df_c$pred_prob,
+                    "RF-ranked"       = df_c$pred_rf,
+                    "Count-ranked"    = df_c$hist_count,
+                    "Perfect ranking" = df_c$est_cases
                 )
-                compute_impact_mixed(df_c, score, alpha, eff_people, r_val) |>
+                compute_impact_mixed(df_c, score, alpha, eff_people, r_val, nu_val, R_val) |>
                     mutate(strategy = strategy)
             })) |>
             ungroup() |>
@@ -1455,7 +1525,7 @@ results_all <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
             reps <- map_dfr(seq_len(n_rep), function(seed) {
                 set.seed(seed)
                 score <- runif(nrow(df_c))
-                compute_impact_mixed(df_c, score, a, eff_people, r_val) |>
+                compute_impact_mixed(df_c, score, a, eff_people, r_val, nu_val, R_val) |>
                     mutate(strategy = "Random", rep = seed)
             })
             reps |>
@@ -1925,18 +1995,18 @@ single_year_results <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
 
             # Individual-location deterministic strategies
             det <- expand_grid(
-                strategy = c("Model-ranked", "RF-ranked", "Count-ranked", "Oracle"),
+                strategy = c("Model-ranked", "RF-ranked", "Count-ranked", "Perfect ranking"),
                 alpha = alpha_vals
             ) |>
                 rowwise() |>
                 mutate(result = list({
                     score <- switch(strategy,
-                        "Model-ranked" = sim_1y$pred_prob,
-                        "RF-ranked"    = sim_1y$pred_rf,
-                        "Count-ranked" = sim_1y$hist_count,
-                        "Oracle"       = sim_1y$est_cases
+                        "Model-ranked"    = sim_1y$pred_prob,
+                        "RF-ranked"       = sim_1y$pred_rf,
+                        "Count-ranked"    = sim_1y$hist_count,
+                        "Perfect ranking" = sim_1y$est_cases
                     )
-                    compute_impact_mixed(sim_1y, score, alpha, eff_people, r_val) |>
+                    compute_impact_mixed(sim_1y, score, alpha, eff_people, r_val, nu_val, R_val) |>
                         mutate(strategy = strategy)
                 })) |>
                 ungroup() |>
@@ -1948,7 +2018,7 @@ single_year_results <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
                 reps <- map_dfr(1:50, function(seed) {
                     set.seed(seed)
                     score <- runif(nrow(sim_1y))
-                    compute_impact_mixed(sim_1y, score, a, eff_people, r_val) |>
+                    compute_impact_mixed(sim_1y, score, a, eff_people, r_val, nu_val, R_val) |>
                         mutate(strategy = "Random", rep = seed)
                 })
                 reps |>
@@ -1957,7 +2027,7 @@ single_year_results <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
                     dplyr::select(-rep)
             })
 
-            bind_rows(det, rand) |
+            bind_rows(det, rand) |>
                 mutate(f = fv, alpha_star = a_star_pw)
         }) |>
             mutate(
@@ -2214,16 +2284,16 @@ for (ctry in SELECTED_COUNTRIES) {
         dplyr::select(strategy, f, pct_averted) |>
         pivot_wider(names_from = strategy, values_from = pct_averted) |>
         mutate(
-            targeting_gain = Oracle - Random,
-            model_gap = Oracle - `Model-ranked`
+            targeting_gain = `Perfect ranking` - Random,
+            model_gap = `Perfect ranking` - `Model-ranked`
         )
 
     cat(sprintf("  p = %.3f, Beta(%.2f, %.2f)\n", bb$p, bb$a, bb$b))
     for (i in seq_len(nrow(targeting_value))) {
         row <- targeting_value[i, ]
         cat(sprintf(
-            "  f=%.1f: Oracle %.1f%% vs Random %.1f%% (gain +%.1f pp); Model %.1f%%\n",
-            row$f, row$Oracle, row$Random, row$targeting_gain, row$`Model-ranked`
+            "  f=%.1f: Perfect %.1f%% vs Random %.1f%% (gain +%.1f pp); Model %.1f%%\n",
+            row$f, row$`Perfect ranking`, row$Random, row$targeting_gain, row$`Model-ranked`
         ))
     }
 
@@ -2244,7 +2314,7 @@ for (ctry in SELECTED_COUNTRIES) {
 cat("=== CROSS-COUNTRY PATTERNS ===\n\n")
 
 cat("1. TARGETING QUALITY IS THE DOMINANT LEVER\n")
-cat("   Across all three countries, the Oracle-vs-Random gap dominates\n")
+cat("   Across all three countries, the Perfect-ranking-vs-Random gap dominates\n")
 cat("   the alpha-tuning gap. Investing in risk prediction yields\n")
 cat("   larger returns than optimising the stockpile split.\n")
 
@@ -2275,7 +2345,7 @@ cat("   Simple heuristics can perform nearly as well as the optimum.\n")
 The multi-country simulation reveals five actionable findings for OCV stockpile allocation:
 
 1. **Targeting quality matters more than the pre-emptive/reactive split.**
-   Across COD, NGA, and CMR, the Oracle-vs-Random gap (reflecting targeting
+   Across COD, NGA, and CMR, the Perfect-ranking-vs-Random gap (reflecting targeting
    accuracy) dominates the gap between different $\alpha$ values. Investment in
    outbreak risk prediction yields larger returns than optimising the split.
 
@@ -2295,7 +2365,8 @@ The multi-country simulation reveals five actionable findings for OCV stockpile 
    dominance is strong; at $R \geq 10$, pre-emptive allocation becomes
    worthwhile even with imperfect targeting.
 
-5. **The $ho$--$lpha^*$ curve provides a decision tool** — see the
+5. **The $
+ho$--$lpha^*$ curve provides a decision tool** — see the
    Supplementary Analysis for the full targeting accuracy sweep and
    cross-country comparison.
 
