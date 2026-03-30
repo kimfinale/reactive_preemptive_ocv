@@ -237,19 +237,21 @@ occurrence during 2016--2018.
 #
 # Timeline for each split year s (all_years = 2010:2023):
 #
-#   |--- hist_yrs ---|--- L_val ---|--- test_yrs ---|
-#   2010 ........... s  (gap=L)   s+L+1 ... s+L+k
-#   |--window_yrs--|
-#    s-T+1 ...... s
+#   |--- all history ---|-- last T --|-- gap --|--- outcome ---|
+#  2010 ............ s-T+1 ......... s ..... s+L+1 ......... s+L+k
+#
+# Two feature windows ending at s:
+#   all history [2010, s]  → lambda_hat (outbreak rate, stable long-run estimate)
+#   last T years [s-T+1, s] → hist_count (recent outbreak count)
 #
 # Parameters:
-#   T_val  — feature window width (years); hist_count uses the last T years
-#   k_val  — prediction horizon (years); outcome = any outbreak in next k years
-#   L_val  — lead-time gap between feature window end and test period start
+#   T_val — recent window width (years); hist_count uses the last T years
+#   k_val — prediction horizon (years); outcome = any outbreak in next k years
+#   L_val — lead-time gap between feature window end and outcome start
 #            (default 0 = predict the immediately following years)
 #
 # valid_splits: the set of years s where both the feature window [s-T+1, s]
-# and the test window [s+L+1, s+L+k] fit within all_years.
+# and the outcome window [s+L+1, s+L+k] fit within all_years.
 # E.g., T=5, k=3, L=0, all_years=2010:2023 → valid s = 2014:2020.
 build_model_df <- function(T_val, k_val, L_val = 0L,
                            nbr_map = nbr_list) {
@@ -261,17 +263,15 @@ build_model_df <- function(T_val, k_val, L_val = 0L,
     ]
 
     map_dfr(valid_splits, function(s) {
-        # Feature windows:
-        window_yrs <- seq(s - T_val + 1L, s) # recent T years for hist_count
-        hist_yrs <- seq(min(all_years), s) # all years up to s for lambda_hat
-        # Outcome window: k years after the lead gap
-        test_yrs <- seq(s + L_val + 1L, s + L_val + k_val)
+        recent_yrs <- seq(s - T_val + 1L, s)  # last T years → hist_count
+        hist_yrs   <- seq(min(all_years), s) # all history → lambda_hat
+        test_yrs   <- seq(s + L_val + 1L, s + L_val + k_val) # outcome window
 
         # Feature 1: hist_count — number of outbreaks ending in the last T years
         hc <- tibble(location = all_locs) |>
             left_join(
                 loc_year_end_full |>
-                    filter(year %in% window_yrs) |>
+                    filter(year %in% recent_yrs) |>
                     group_by(location) |>
                     summarise(hist_count = sum(n_ended), .groups = "drop"),
                 by = "location"
