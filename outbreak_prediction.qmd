@@ -1186,3 +1186,42 @@ wrap_plots(cod_roc_plots, nrow = 2) +
     plot_layout(guides = "collect") &
     theme(legend.position = "bottom")
 ```
+
+```{r cod-final-model}
+# Train on all 9 COD folds (outcomes 2015-2023), predict 2024 (k=1)
+# and predict 2022-2024 (k=3), both restricted to COD locations.
+# These predictions replace the global model's COD scores in vaccine_impact_sim.qmd.
+
+# k=1 COD final model
+cod_all_train_k1 <- bind_rows(cod_fold_data)
+cod_final_feat_k1 <- build_features_cod(max(all_years))  # feat_yrs 2019-2023
+cod_final_preds_k1 <- fit_and_predict(cod_all_train_k1, cod_final_feat_k1)
+pred_data_cod_k1 <- cod_final_feat_k1 |>
+    left_join(cod_final_preds_k1 |> dplyr::select(location, all_of(MODEL_NAMES)),
+              by = "location") |>
+    rename(pred_prob = Logistic, pred_enet = `Elastic Net`,
+           pred_rf = `Random Forest`, pred_xgb = XGBoost, pred_gam = GAM) |>
+    mutate(hist_count = n_outbreak_years, k = 1L)
+
+# k=3 COD final model
+cod_fold_data_k3 <- make_fold_data_cod(temporal_folds_list$k3)
+cod_all_train_k3 <- bind_rows(cod_fold_data_k3)
+cod_final_feat_k3 <- build_features_cod(max(all_years) - 3L + 1L)  # feat_yrs 2017-2021
+cod_final_preds_k3 <- fit_and_predict(cod_all_train_k3, cod_final_feat_k3)
+pred_data_cod_k3 <- cod_final_feat_k3 |>
+    left_join(cod_final_preds_k3 |> dplyr::select(location, all_of(MODEL_NAMES)),
+              by = "location") |>
+    rename(pred_prob = Logistic, pred_enet = `Elastic Net`,
+           pred_rf = `Random Forest`, pred_xgb = XGBoost, pred_gam = GAM) |>
+    mutate(hist_count = n_outbreak_years, k = 3L)
+
+cat("COD k=1 final predictions: n =", nrow(pred_data_cod_k1), "locations\n")
+cat("COD k=3 final predictions: n =", nrow(pred_data_cod_k3), "locations\n")
+
+# Append to the saved RDS so vaccine_impact_sim.qmd can load them
+preds_rds <- readRDS("data/outbreak_predictions.rds")
+preds_rds$pred_data_cod_k1 <- pred_data_cod_k1
+preds_rds$pred_data_cod_k3 <- pred_data_cod_k3
+saveRDS(preds_rds, "data/outbreak_predictions.rds")
+cat("Updated data/outbreak_predictions.rds with COD-specific predictions\n")
+```

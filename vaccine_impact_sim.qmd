@@ -70,19 +70,23 @@ source("R/spatial_setup.R")
 ## Load Predictions
 
 ```{r load-predictions}
-preds_rds     <- readRDS("data/outbreak_predictions.rds")
-pred_data     <- preds_rds$pred_data      # k=1: predict 2024
-pred_data_k3  <- preds_rds$pred_data_k3  # k=3: predict 2022-2024
-loc_year_full <- preds_rds$loc_year_full
-shp_admin23   <- preds_rds$shp_admin23
-nbr_list      <- preds_rds$nbr_list
-pop_lookup    <- preds_rds$pop_lookup
+preds_rds        <- readRDS("data/outbreak_predictions.rds")
+pred_data        <- preds_rds$pred_data        # global k=1: predict 2024
+pred_data_k3     <- preds_rds$pred_data_k3     # global k=3: predict 2022-2024
+pred_data_cod_k1 <- preds_rds$pred_data_cod_k1 # COD-specific k=1
+pred_data_cod_k3 <- preds_rds$pred_data_cod_k3 # COD-specific k=3
+loc_year_full    <- preds_rds$loc_year_full
+shp_admin23      <- preds_rds$shp_admin23
+nbr_list         <- preds_rds$nbr_list
+pop_lookup       <- preds_rds$pop_lookup
 
 cat("Loaded outbreak_predictions.rds\n")
-cat("  pred_data (k=1):  ", nrow(pred_data), "locations\n")
-cat("  pred_data_k3:     ", nrow(pred_data_k3), "locations\n")
-cat("  loc_year_full:    ", nrow(loc_year_full), "rows\n")
-cat("  shp_admin23:      ", nrow(shp_admin23), "polygons\n")
+cat("  pred_data (global k=1):  ", nrow(pred_data), "locations\n")
+cat("  pred_data_k3 (global):   ", nrow(pred_data_k3), "locations\n")
+cat("  pred_data_cod_k1:        ", nrow(pred_data_cod_k1), "locations\n")
+cat("  pred_data_cod_k3:        ", nrow(pred_data_cod_k3), "locations\n")
+cat("  loc_year_full:           ", nrow(loc_year_full), "rows\n")
+cat("  shp_admin23:             ", nrow(shp_admin23), "polygons\n")
 ```
 
 ## Build Simulation Dataset
@@ -139,6 +143,12 @@ eval_years_k1 <- 2021:2023
 sim_df_all <- sim_df_all_k3
 eval_years  <- eval_years_k3
 n_trials    <- length(eval_years_k3)  # 3
+
+# COD-specific sim data: uses COD-trained model scores for COD locations only
+sim_df_cod_k3 <- build_sim_df(pred_data_cod_k3, eval_years_k3) |>
+    filter(country == "COD")
+sim_df_cod_k1_base <- build_sim_df(pred_data_cod_k1, eval_years_k1[1]) |>
+    filter(country == "COD")
 
 sim_df  <- sim_df_all |> filter(country == "COD")
 P_total <- sum(sim_df$pop_sum)
@@ -2033,3 +2043,228 @@ The following extensions would further strengthen the policy relevance:
    for the simulation cost curves would help distinguish genuinely different
    strategies from noise, especially for the single-year evaluations where
    the number of outbreak locations is small.
+
+
+# COD-Specific Model: Vaccine Impact
+
+The global model's within-COD rho is low (~0.06) because its discriminative
+power derives mainly from between-country variation. Here we repeat the full
+vaccine impact simulation for COD using **COD-specific model scores** from
+`outbreak_prediction.qmd` (trained on COD locations only), and compare the
+resulting rho and impact curves against the global model applied to COD.
+
+## Targeting accuracy: global vs COD-specific model
+
+```{r cod-rho-comparison}
+# Rho: COD-specific model vs global model, both evaluated against k=3 outcomes
+# (2021-2023) in COD locations
+compute_strategy_rhos_df <- function(df_c) {
+    set.seed(42)
+    rho_random <- mean(replicate(100,
+        cor(runif(nrow(df_c)), df_c$n_outbreak_years, method = "spearman")))
+    tibble(
+        strategy = c("Oracle", "Perfect ranking", "Model-ranked", "RF-ranked",
+                     "GAM-ranked", "Count-ranked", "Random"),
+        rho = c(
+            1.0,
+            cor(df_c$est_cases,  df_c$n_outbreak_years, method = "spearman"),
+            cor(df_c$pred_prob,  df_c$n_outbreak_years, method = "spearman"),
+            cor(df_c$pred_rf,    df_c$n_outbreak_years, method = "spearman"),
+            cor(df_c$pred_gam,   df_c$n_outbreak_years, method = "spearman"),
+            cor(df_c$hist_count, df_c$n_outbreak_years, method = "spearman"),
+            rho_random
+        )
+    )
+}
+
+rho_global_cod <- compute_strategy_rhos_df(
+    sim_df_all_k3 |> filter(country == "COD")) |>
+    rename(rho_global = rho)
+
+rho_cod_specific <- compute_strategy_rhos_df(sim_df_cod_k3) |>
+    rename(rho_cod = rho)
+
+rho_global_cod |>
+    left_join(rho_cod_specific, by = "strategy") |>
+    mutate(improvement = rho_cod - rho_global) |>
+    knitr::kable(
+        digits = 3,
+        col.names = c("Strategy", "rho (global model)", "rho (COD model)", "\u0394 rho"),
+        caption = "COD: targeting accuracy of global vs COD-specific model (k=3 eval, 2021-2023)"
+    )
+```
+
+## Beta-Binomial fit for COD (COD-specific)
+
+```{r cod-bb-fit}
+# Use the same 3-year evaluation window as the main analysis
+bb_cod <- fit_betabinom(sim_df_cod_k3$n_outbreak_years, n_trials)
+cat(sprintf("COD Beta(%.3f, %.3f), mean p = %.3f, convergence = %d\n",
+            bb_cod$a, bb_cod$b, bb_cod$p, bb_cod$convergence))
+cat(sprintf("Global model COD: Beta(%.3f, %.3f), mean p = %.3f\n",
+            bb_fits[["COD"]]$a, bb_fits[["COD"]]$b, bb_fits[["COD"]]$p))
+# Should be nearly identical — same locations, same eval window, only scores differ
+```
+
+## Cost curves: COD-specific model
+
+```{r cod-cost-curves, fig.width=12, fig.height=6}
+#| fig-cap: "Population-weighted cost curves for COD using COD-specific model scores
+#|   (solid) vs global model scores (dashed). Diamond = MC optimal alpha*. The
+#|   COD-specific model may shift alpha* if its targeting accuracy (rho) differs."
+alpha_grid_cod <- seq(0, 1, length.out = 51)
+
+compute_cod_curves <- function(df_c, label) {
+    map_dfr(f_values, function(fv) {
+        strategies <- list(
+            `Perfect ranking` = df_c$est_cases,
+            `Model-ranked`    = df_c$pred_prob,
+            `RF-ranked`       = df_c$pred_rf,
+            `GAM-ranked`      = df_c$pred_gam,
+            `Count-ranked`    = df_c$hist_count
+        )
+        imap_dfr(strategies, function(score, strat_name) {
+            costs <- sapply(alpha_grid_cod, function(a) {
+                cost_popweighted_mc(a, fv, df_c$pop_sum, df_c$obs_rate, score,
+                                    R_val, r_val, ATTACK_RATE, n_mc = 200)
+            })
+            tibble(alpha = alpha_grid_cod, cost = costs,
+                   strategy = strat_name, f = fv, model_type = label)
+        })
+    })
+}
+
+curves_global_cod <- compute_cod_curves(
+    sim_df_all_k3 |> filter(country == "COD"), "Global model")
+curves_cod_spec   <- compute_cod_curves(sim_df_cod_k3, "COD-specific model")
+cod_curves_all    <- bind_rows(curves_global_cod, curves_cod_spec)
+
+ggplot(cod_curves_all,
+       aes(x = alpha, y = cost, colour = strategy,
+           linetype = model_type, linewidth = model_type)) +
+    geom_line() +
+    facet_wrap(~ sprintf("f = %.1f", f), nrow = 1) +
+    scale_colour_manual(values = STRATEGY_COLOURS) +
+    scale_linetype_manual(values = c("Global model" = "dashed",
+                                     "COD-specific model" = "solid")) +
+    scale_linewidth_manual(values = c("Global model" = 0.5,
+                                      "COD-specific model" = 0.8)) +
+    labs(x = expression(alpha ~ "(pre-emptive fraction)"),
+         y = "Pop-weighted cost per capita",
+         colour = "Strategy", linetype = "Model", linewidth = "Model",
+         title = "COD: cost curves — global vs COD-specific model",
+         subtitle = sprintf("R = %.0f, r = %.1f, AR = %.1f%%",
+                            R_val, r_val, 100 * ATTACK_RATE)) +
+    theme_minimal(base_size = 11) +
+    theme(legend.position = "bottom")
+```
+
+## Impact curves: COD-specific model
+
+```{r cod-impact-curves, fig.width=12, fig.height=6}
+#| fig-cap: "Cases averted by strategy and alpha for COD, comparing global model
+#|   scores (dashed) vs COD-specific model scores (solid). Dashed vertical line =
+#|   pop-weighted alpha* from the COD-specific Model-ranked strategy."
+alpha_grid_imp_cod <- seq(0, 1, length.out = 21)
+
+compute_cod_impact <- function(df_c, label) {
+    P_c <- sum(df_c$pop_sum)
+    map_dfr(f_values, function(fv) {
+        eff_people <- fv * P_c
+        strategies <- list(
+            `Perfect ranking` = df_c$est_cases,
+            `Model-ranked`    = df_c$pred_prob,
+            `RF-ranked`       = df_c$pred_rf,
+            `GAM-ranked`      = df_c$pred_gam,
+            `Count-ranked`    = df_c$hist_count
+        )
+        imap_dfr(strategies, function(score, strat_name) {
+            map_dfr(alpha_grid_imp_cod, function(a) {
+                compute_impact_mixed(df_c, score, a, eff_people,
+                                     r_val, nu_val, R_val) |>
+                    mutate(strategy = strat_name)
+            })
+        }) |> mutate(f = fv, model_type = label)
+    })
+}
+
+impact_global_cod <- compute_cod_impact(
+    sim_df_all_k3 |> filter(country == "COD"), "Global model")
+impact_cod_spec   <- compute_cod_impact(sim_df_cod_k3, "COD-specific model")
+cod_impact_all    <- bind_rows(impact_global_cod, impact_cod_spec)
+
+# Alpha* from COD-specific Model-ranked (pop-weighted)
+cod_alpha_star <- map_dfr(f_values, function(fv) {
+    df_c <- sim_df_cod_k3
+    res <- get_alpha_star_pw(fv, df_c$pop_sum, df_c$obs_rate, df_c$pred_prob,
+                             R_val, r_val, ATTACK_RATE, n_mc = 300)
+    tibble(f = fv, alpha_star = res$alpha_star)
+})
+
+ggplot(cod_impact_all,
+       aes(x = alpha, y = pct_averted, colour = strategy,
+           linetype = model_type, linewidth = model_type)) +
+    geom_line() +
+    geom_point(size = 1, data = cod_impact_all |> filter(model_type == "COD-specific model")) +
+    geom_vline(data = cod_alpha_star, aes(xintercept = alpha_star),
+               linetype = "dashed", colour = "grey40", linewidth = 0.5) +
+    facet_wrap(~ sprintf("f = %.1f", f), nrow = 1) +
+    scale_colour_manual(values = STRATEGY_COLOURS) +
+    scale_linetype_manual(values = c("Global model" = "dashed",
+                                     "COD-specific model" = "solid")) +
+    scale_linewidth_manual(values = c("Global model" = 0.4,
+                                      "COD-specific model" = 0.7)) +
+    scale_y_continuous(limits = c(0, NA)) +
+    labs(x = expression(alpha ~ "(pre-emptive fraction)"),
+         y = "% of cases averted",
+         colour = "Strategy", linetype = "Model", linewidth = "Model",
+         title = "COD: cases averted — global vs COD-specific model",
+         subtitle = "Dashed vertical = COD-specific alpha* (Model-ranked, pop-weighted)") +
+    theme_minimal(base_size = 11) +
+    theme(legend.position = "bottom")
+```
+
+## Optimal alpha: COD-specific model
+
+```{r cod-alpha-summary}
+#| tbl-cap: "COD-specific model: optimal alpha from three approaches compared
+#|   with the global model. rho is from the k=3 evaluation (2021-2023)."
+cod_alpha_table <- map_dfr(f_values, function(fv) {
+    df_c <- sim_df_cod_k3
+    # Pop-weighted MC alpha*
+    res_pw <- get_alpha_star_pw(fv, df_c$pop_sum, df_c$obs_rate, df_c$pred_prob,
+                                R_val, r_val, ATTACK_RATE, n_mc = 300)
+    # Analytical (Beta-Binomial)
+    a_ew <- get_alpha_star_beta(R_val, fv, bb_cod$a, bb_cod$b, r_val)
+    # Empirically optimal (from impact curves above, Model-ranked)
+    imp_cod <- cod_impact_all |>
+        filter(model_type == "COD-specific model", strategy == "Model-ranked", f == fv)
+    a_emp <- imp_cod$alpha[which.min(imp_cod$sim_cost)]
+
+    tibble(f = fv, alpha_star_pw = res_pw$alpha_star,
+           alpha_star_ew = a_ew, alpha_star_emp = a_emp)
+})
+
+# Global model alpha* for comparison
+global_cod_alpha <- alpha_comparison |>
+    filter(country == "COD", strategy == "Model-ranked") |>
+    dplyr::select(f, alpha_star_pw, alpha_star_ew = alpha_star_ew) |>
+    rename(alpha_star_pw_global = alpha_star_pw,
+           alpha_star_ew_global = alpha_star_ew)
+
+rho_model_cod    <- rho_cod_specific$rho_cod[rho_cod_specific$strategy == "Model-ranked"]
+rho_model_global <- rho_global_cod$rho_global[rho_global_cod$strategy == "Model-ranked"]
+
+cod_alpha_table |>
+    left_join(global_cod_alpha, by = "f") |>
+    mutate(rho_cod = rho_model_cod, rho_global = rho_model_global) |>
+    dplyr::select(f, rho_global, rho_cod, alpha_star_pw_global, alpha_star_pw,
+                  alpha_star_ew, alpha_star_emp) |>
+    knitr::kable(
+        digits = 3,
+        col.names = c("f", "\u03c1 (global)", "\u03c1 (COD model)",
+                      "\u03b1*_pw (global)", "\u03b1*_pw (COD)",
+                      "\u03b1*_ew", "\u03b1*_emp"),
+        caption = "COD: optimal alpha comparison — global vs COD-specific model"
+    )
+```
