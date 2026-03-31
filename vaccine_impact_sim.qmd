@@ -2459,6 +2459,21 @@ push $\alpha^*$ further from zero.
 ```{r thresh-setup}
 PROB_THRESHOLDS <- c(0.1, 0.3)
 
+# Shared helper: analytical alpha* with grid-search fallback when L-BFGS-B
+# fails (extreme BB parameters can make cost_beta() return non-finite values).
+safe_alpha_star_ew <- function(R, fv, a, b, r) {
+    tryCatch(
+        get_alpha_star_beta(R, fv, a, b, r),
+        error = function(e) {
+            ag <- seq(0, 1, length.out = 101)
+            costs <- sapply(ag, function(al) {
+                tryCatch(cost_beta(al, fv, a, b, R, r), error = function(e2) Inf)
+            })
+            if (all(!is.finite(costs))) NA_real_ else ag[which.min(costs)]
+        }
+    )
+}
+
 # pred_ens was built in top200m-setup; reuse it here
 thresh_summary <- map_dfr(PROB_THRESHOLDS, function(thr) {
     locs <- pred_ens |> filter(score_ens > thr)
@@ -2518,20 +2533,6 @@ thresh_results <- map(PROB_THRESHOLDS, function(thr) {
     rho_thr <- compute_strategy_rhos(sim_thr)
 
     # ── Analytical alpha* ────────────────────────────────────────────────────
-    # Wrap in tryCatch: extreme BB params can make cost_beta() non-finite;
-    # fall back to grid search when L-BFGS-B fails.
-    safe_alpha_star_ew <- function(R, fv, a, b, r) {
-        tryCatch(
-            get_alpha_star_beta(R, fv, a, b, r),
-            error = function(e) {
-                ag <- seq(0, 1, length.out = 101)
-                costs <- sapply(ag, function(al) {
-                    tryCatch(cost_beta(al, fv, a, b, R, r), error = function(e2) Inf)
-                })
-                if (all(!is.finite(costs))) NA_real_ else ag[which.min(costs)]
-            }
-        )
-    }
     a_ew_thr <- map_dfr(f_values, function(fv) {
         tibble(f = fv,
                alpha_star_ew = safe_alpha_star_ew(R_val, fv, bb_thr$a, bb_thr$b, r_val))
@@ -2625,5 +2626,151 @@ map_dfr(thresh_results, function(res) {
         col.names = c("X", "Strategy", "f", "\u03c1",
                       "\u03b1*_pw (MC)", "\u03b1*_ew (analytical)"),
         caption = "Probability-threshold scenarios: optimal alpha by X, strategy, and f"
+    )
+```
+
+# Top-Percentile Scenarios: Top 10% and Top 30% of ADM2 Regions
+
+We also select regions by rank percentile — the top 10% and top 30% of all
+ADM2 units ranked by ensemble mean predicted risk — regardless of population
+size. This directly controls the fraction of regions targeted.
+
+```{r topN-analysis}
+TOP_PCTS <- c(0.10, 0.30)
+
+topN_results <- map(TOP_PCTS, function(pct) {
+    n_sel <- ceiling(nrow(pred_ens) * pct)
+    sim_pct <- pred_ens |>
+        arrange(desc(score_ens)) |>
+        slice_head(n = n_sel) |>
+        left_join(
+            loc_year_full |>
+                filter(year %in% eval_years_k3) |>
+                group_by(location) |>
+                summarise(n_outbreak_years = sum(n_active > 0), .groups = "drop"),
+            by = "location"
+        ) |>
+        replace_na(list(n_outbreak_years = 0L)) |>
+        mutate(
+            obs_rate  = n_outbreak_years / length(eval_years_k3),
+            est_cases = pop_sum * ATTACK_RATE * n_outbreak_years
+        )
+
+    cat(sprintf("\n=== Top %.0f%% regions (n=%d) ===\n", pct * 100, n_sel))
+    cat(sprintf("  population:    %.1f M\n", sum(sim_pct$pop_sum) / 1e6))
+    cat(sprintf("  mean obs_rate: %.4f\n", mean(sim_pct$obs_rate)))
+
+    # Beta-Binomial MLE with zero-variance guard
+    p_mean_pct <- mean(sim_pct$n_outbreak_years) / n_trials
+    v_pct <- var(sim_pct$n_outbreak_years / n_trials)
+    if (nrow(sim_pct) < 5 || is.na(v_pct) || v_pct < 1e-10) {
+        conc <- 100
+        bb_pct <- list(a = p_mean_pct * conc,
+                       b = (1 - p_mean_pct) * conc,
+                       p = p_mean_pct, convergence = -1L)
+        cat(sprintf("  [fallback] p = %.4f\n", p_mean_pct))
+    } else {
+        bb_pct <- fit_betabinom(sim_pct$n_outbreak_years, n_trials)
+    }
+    cat(sprintf("  Beta(%.4f, %.4f), mean p = %.4f\n",
+                bb_pct$a, bb_pct$b, bb_pct$p))
+
+    # Rho
+    rho_pct <- compute_strategy_rhos(sim_pct)
+
+    # Analytical alpha*
+    a_ew_pct <- map_dfr(f_values, function(fv) {
+        tibble(f = fv,
+               alpha_star_ew = safe_alpha_star_ew(R_val, fv, bb_pct$a, bb_pct$b, r_val))
+    })
+
+    # MC cost curves & alpha*
+    strats_pct <- list(
+        `Perfect ranking` = sim_pct$est_cases,
+        `Model-ranked`    = sim_pct$pred_prob,
+        `RF-ranked`       = sim_pct$pred_rf,
+        `GAM-ranked`      = sim_pct$pred_gam,
+        `Count-ranked`    = sim_pct$hist_count
+    )
+
+    alpha_grid_pct <- seq(0, 1, length.out = 51)
+
+    cost_curves_pct <- map_dfr(f_values, function(fv) {
+        imap_dfr(strats_pct, function(score, strat_name) {
+            costs <- sapply(alpha_grid_pct, function(a) {
+                cost_popweighted_mc(a, fv, sim_pct$pop_sum, sim_pct$obs_rate,
+                    score, R_val, r_val, ATTACK_RATE, n_mc = 300)
+            })
+            tibble(alpha = alpha_grid_pct, cost = costs,
+                   strategy = strat_name, f = fv)
+        })
+    })
+
+    pw_pct <- map_dfr(f_values, function(fv) {
+        imap_dfr(strats_pct, function(score, strat_name) {
+            res <- get_alpha_star_pw(fv, sim_pct$pop_sum, sim_pct$obs_rate,
+                                     score, R_val, r_val, ATTACK_RATE, n_mc = 300)
+            tibble(strategy = strat_name, f = fv,
+                   alpha_star_pw = res$alpha_star,
+                   alpha_star_ew = a_ew_pct$alpha_star_ew[a_ew_pct$f == fv])
+        })
+    })
+
+    list(pct = pct, n_sel = n_sel, sim = sim_pct, bb = bb_pct, rho = rho_pct,
+         a_ew = a_ew_pct, curves = cost_curves_pct, pw = pw_pct)
+})
+names(topN_results) <- paste0("top", as.integer(TOP_PCTS * 100), "pct")
+```
+
+```{r fig-topN-cost-curves, fig.width=14, fig.height=10}
+#| fig-cap: "Cost curves for top-10% (top row) and top-30% (bottom row) ADM2 regions
+#|   ranked by ensemble predicted risk. Columns = coverage level f.
+#|   Diamond = MC-optimal alpha*; dashed = analytical (Beta-Binomial) alpha*."
+
+plots_topN <- imap(topN_results, function(res, nm) {
+    optima_pts <- res$curves |>
+        left_join(res$pw |> dplyr::select(strategy, f, alpha_star_pw),
+                  by = c("strategy", "f")) |>
+        filter(abs(alpha - alpha_star_pw) < 0.011)
+
+    ggplot(res$curves, aes(x = alpha, y = cost, colour = strategy)) +
+        geom_line(linewidth = 0.8) +
+        geom_point(data = optima_pts, aes(x = alpha_star_pw),
+                   shape = 18, size = 3.5) +
+        geom_vline(data = res$a_ew, aes(xintercept = alpha_star_ew),
+                   linetype = "dashed", colour = "grey30", linewidth = 0.6) +
+        scale_colour_manual(values = STRATEGY_COLOURS[c("Perfect ranking","Model-ranked","RF-ranked","GAM-ranked","Count-ranked")]) +
+        facet_wrap(~f, labeller = label_both) +
+        labs(x = expression(alpha), y = "Expected cost per capita (C_V)",
+             colour = "Strategy",
+             title = sprintf("Top %.0f%% regions (n=%d, %.1f M pop, p=%.4f)",
+                             res$pct * 100, res$n_sel,
+                             sum(res$sim$pop_sum) / 1e6, res$bb$p),
+             subtitle = sprintf(
+                 "Beta(%.3f,%.3f) | R=%.0f, r=%.1f | Dashed=analytical \u03b1*, Diamond=MC \u03b1*",
+                 res$bb$a, res$bb$b, R_val, r_val)) +
+        theme_minimal(base_size = 10) +
+        theme(legend.position = "bottom")
+})
+
+wrap_plots(plots_topN, ncol = 1) +
+    plot_annotation(title = "Top-percentile scenario: cost curves by region rank")
+```
+
+```{r topN-summary-table}
+#| tbl-cap: "Top-percentile scenarios: optimal alpha* and Spearman rho by
+#|   percentile, strategy, and coverage f."
+map_dfr(topN_results, function(res) {
+    res$pw |>
+        left_join(res$rho, by = "strategy") |>
+        dplyr::select(strategy, f, rho, alpha_star_pw, alpha_star_ew) |>
+        mutate(top_pct = sprintf("%.0f%%", res$pct * 100))
+}) |>
+    dplyr::select(top_pct, strategy, f, rho, alpha_star_pw, alpha_star_ew) |>
+    knitr::kable(
+        digits = 3,
+        col.names = c("Top %", "Strategy", "f", "\u03c1",
+                      "\u03b1*_pw (MC)", "\u03b1*_ew (analytical)"),
+        caption = "Top-percentile scenarios: optimal alpha by percentile, strategy, and f"
     )
 ```
