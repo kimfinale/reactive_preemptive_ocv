@@ -972,6 +972,429 @@ cat("  shp_admin23:      ", nrow(shp_admin23), "polygons\n")
 cat("  nbr_list:         ", length(nbr_list), "entries\n")
 ```
 
+# Beta-Binomial Risk Model and Optimal Alpha (2018 / 2018–2020)
+
+We focus on **fold 4** (training features 2013–2017, T=5), which predicts:
+
+- **k=1**: outbreak in 2018 (single year)
+- **k=3**: any outbreak in 2018–2020 (3-year window)
+
+Two vaccination regimens are compared:
+
+- **Single-dose OCV** (k=1): protects within the 1-year horizon; cost per person =
+  $C_{V,1}$, so $R_1 = C_I / C_{V,1}$.
+- **Two-dose OCV** (k=3): longer-lasting protection needed for a 3-year horizon;
+  cost per person = $2 C_{V,1}$, so $R_2 = C_I / (2 C_{V,1}) = R_1 / 2$.
+
+Optimal $\alpha^*$ is computed two ways:
+
+1. **Analytical** (Beta-Binomial, perfect targeting): derived from `cost_beta()` with
+   Beta$(a,b)$ parameters fitted to the 2013–2017 training window.
+2. **Rho-adjusted** (Monte Carlo with model scores): same MC sweep as in
+   `vaccine_impact_sim.qmd` but using fold 4 model predictions as targeting ranks,
+   which captures actual rho. The gap between (1) and (2) reflects the penalty of
+   imperfect targeting.
+
+```{r bb-alpha-helpers}
+# --- Beta-Binomial MLE (same as vaccine_impact_sim.qmd) ---
+fit_betabinom_op <- function(k_obs, n_trials) {
+    ll <- function(par, k, n) {
+        a <- exp(par[1]); b <- exp(par[2])
+        sum(lchoose(n, k) + lbeta(k + a, n - k + b) - lbeta(a, b))
+    }
+    p_init <- mean(k_obs) / n_trials
+    v_init <- var(k_obs / n_trials)
+    a_init <- max(p_init * (p_init * (1 - p_init) / max(v_init, 1e-6) - 1), 0.1)
+    b_init <- max((1 - p_init) * (p_init * (1 - p_init) / max(v_init, 1e-6) - 1), 0.1)
+    fit <- optim(par = log(c(a_init, b_init)), fn = ll, k = k_obs, n = n_trials,
+                 method = "Nelder-Mead", control = list(fnscale = -1, maxit = 5000))
+    list(a = exp(fit$par[1]), b = exp(fit$par[2]),
+         p = exp(fit$par[1]) / (exp(fit$par[1]) + exp(fit$par[2])),
+         convergence = fit$convergence)
+}
+
+# --- Analytical cost under Beta(a,b) risk distribution (perfect targeting) ---
+mean_risk_pre_op <- function(f_pre, a, b) {
+    if (f_pre <= 0) return(0)
+    if (f_pre >= 1) return(a / (a + b))
+    q <- qbeta(1 - f_pre, a, b)
+    (a / ((a + b) * f_pre)) * (1 - pbeta(q, a + 1, b))
+}
+
+cost_beta_op <- function(alpha, f, a, b, R, r, nu = 1) {
+    alpha <- pmax(0, pmin(1, alpha))
+    p <- a / (a + b)
+    f_pre <- alpha * f; f_react_cap <- (1 - alpha) * f
+    p_bar_pre <- vapply(f_pre, function(fp) mean_risk_pre_op(fp, a, b), numeric(1))
+    E_pre <- f_pre * p_bar_pre
+    c_pre_val <- f_pre + E_pre * (1 - nu) * R
+    E_rem <- p - E_pre
+    is_rich <- f_react_cap >= E_rem
+    c_react_val <- ifelse(is_rich,
+        E_rem * (1 + (1 - r) * R),
+        f_react_cap * (1 + (1 - r) * R) + (E_rem - f_react_cap) * R)
+    c_pre_val + c_react_val
+}
+
+get_alpha_star_beta_op <- function(R, f, a, b, r, nu = 1) {
+    optim(par = 0.5, fn = cost_beta_op, f = f, a = a, b = b, R = R, r = r, nu = nu,
+          method = "L-BFGS-B", lower = 0, upper = 1)$par
+}
+
+# --- MC cost sweep (imperfect targeting via model scores) ---
+alpha_star_mc_op <- function(f, pop, obs_rate, score, R, r, AR,
+                             nu = 1, n_mc = 300, grid_len = 51, seed = 42) {
+    n <- length(pop); P_total <- sum(pop)
+    alpha_grid <- seq(0, 1, length.out = grid_len)
+    pre_budget_grid <- alpha_grid * f * P_total
+    react_budget_grid <- (1 - alpha_grid) * f * P_total
+    ranked <- order(score, decreasing = TRUE)
+    costs <- sapply(seq_along(alpha_grid), function(gi) {
+        pre_budget <- pre_budget_grid[gi]
+        react_budget <- react_budget_grid[gi]
+        cum_pop <- cumsum(pop[ranked])
+        n_pre <- sum(cum_pop <= pre_budget)
+        pre_idx <- if (n_pre > 0) ranked[seq_len(n_pre)] else integer(0)
+        mc_costs <- numeric(n_mc)
+        for (s in seq_len(n_mc)) {
+            set.seed(seed + s)
+            Y <- rbinom(n, 1, obs_rate)
+            pop_pre <- sum(pop[pre_idx])
+            burden_pre_res <- sum(Y[pre_idx] * pop[pre_idx]) * (1 - nu)
+            rem_idx <- setdiff(seq_len(n), pre_idx)
+            ob_rem <- rem_idx[Y[rem_idx] == 1]
+            pop_react <- 0; burden_react_res <- 0; burden_uncov <- 0
+            if (length(ob_rem) > 0 && react_budget > 0) {
+                ob_ord <- ob_rem[order(pop[ob_rem], decreasing = TRUE)]
+                n_react <- sum(cumsum(pop[ob_ord]) <= react_budget)
+                if (n_react > 0) {
+                    ri <- ob_ord[seq_len(n_react)]
+                    pop_react <- sum(pop[ri])
+                    burden_react_res <- pop_react * (1 - r)
+                    if (n_react < length(ob_ord))
+                        burden_uncov <- sum(pop[ob_ord[(n_react+1):length(ob_ord)]])
+                } else burden_uncov <- sum(pop[ob_rem])
+            } else if (length(ob_rem) > 0) burden_uncov <- sum(pop[ob_rem])
+            mc_costs[s] <- (pop_pre + pop_react +
+                R * AR * (burden_pre_res + burden_react_res + burden_uncov)) / P_total
+        }
+        mean(mc_costs)
+    })
+    list(alpha_star = alpha_grid[which.min(costs)],
+         cost_star = min(costs), alpha_grid = alpha_grid, cost_grid = costs)
+}
+```
+
+```{r bb-fit-fold4}
+FOLD_IDX <- 4L   # fold of interest: train_end = 2017
+
+# Training feature window for fold 4: 2013-2017 (T=5)
+fe4_k1 <- temporal_folds_list$k1[FOLD_IDX, ]
+feat_yrs_f4 <- (fe4_k1$train_end - T_WINDOW + 1L):fe4_k1$train_end  # 2013:2017
+
+# Count outbreak-years per location in the training window (n_trials = T_WINDOW)
+bb_train_df <- loc_year_end_full |>
+    filter(year %in% feat_yrs_f4) |>
+    group_by(location) |>
+    summarise(k_obs = sum(n_ended > 0), .groups = "drop")
+
+bb_fit_train <- fit_betabinom_op(bb_train_df$k_obs, T_WINDOW)
+cat(sprintf("BB fit to training window [%d-%d] (T=%d):\n",
+            min(feat_yrs_f4), max(feat_yrs_f4), T_WINDOW))
+cat(sprintf("  Beta(%.3f, %.3f), mean p = %.3f, convergence = %d\n",
+            bb_fit_train$a, bb_fit_train$b, bb_fit_train$p, bb_fit_train$convergence))
+
+# Fold 4 test data: observed outcomes in 2018 (k=1) and 2018-2020 (k=3)
+fold4_k1 <- fold_data_list$k1[[FOLD_IDX]]  # obs = outbreak in 2018
+fold4_k3 <- fold_data_list$k3[[FOLD_IDX]]  # obs = any outbreak in 2018-2020
+
+# Attach fold 4 predictions (trained on fold 3, tested on fold 4)
+preds4_k1 <- temporal_pred_list_all$k1[[paste0("fold", FOLD_IDX)]]
+preds4_k3 <- temporal_pred_list_all$k3[[paste0("fold", FOLD_IDX)]]
+
+cat(sprintf("\nFold 4 k=1 (outcome 2018): n=%d, prevalence=%.1f%%\n",
+            nrow(fold4_k1), 100 * mean(fold4_k1$obs)))
+cat(sprintf("Fold 4 k=3 (outcome 2018-2020): n=%d, prevalence=%.1f%%\n",
+            nrow(fold4_k3), 100 * mean(fold4_k3$obs)))
+
+# Population lookup for MC (use pop_lookup from shapefiles)
+pop_f4 <- pop_lookup |> rename(pop_sum = pop_sum)
+
+# Compute obs_rate per location for MC: use empirical outbreak frequency in
+# training window as each location's probability
+obs_rate_train <- bb_train_df |>
+    mutate(obs_rate = k_obs / T_WINDOW) |>
+    dplyr::select(location, obs_rate)
+```
+
+```{r alpha-star-fold4}
+# Vaccine scenario parameters
+f_val_op  <- 0.5    # coverage fraction
+r_val_op  <- 0.6    # reactive effectiveness
+AR_op     <- 0.005  # attack rate
+R_base    <- 500    # C_I / C_V (single dose)
+nu_1dose  <- 1.0    # single-dose pre-emptive VE within 1 year (fully prevents)
+nu_2dose  <- 1.0    # two-dose pre-emptive VE within 3 years (fully prevents)
+# Two-dose costs 2× per person → R_2dose = R_base / 2
+R_1dose   <- R_base
+R_2dose   <- R_base / 2L
+
+# --- 1. Analytical alpha* (Beta-Binomial, perfect targeting) ---
+a_star_k1_ew <- get_alpha_star_beta_op(R_1dose, f_val_op,
+                                        bb_fit_train$a, bb_fit_train$b,
+                                        r_val_op, nu_1dose)
+a_star_k3_ew <- get_alpha_star_beta_op(R_2dose, f_val_op,
+                                        bb_fit_train$a, bb_fit_train$b,
+                                        r_val_op, nu_2dose)
+
+cat(sprintf("Analytical alpha* (perfect targeting):\n"))
+cat(sprintf("  k=1 single-dose (R=%.0f, nu=%.1f): alpha* = %.3f\n",
+            R_1dose, nu_1dose, a_star_k1_ew))
+cat(sprintf("  k=3 two-dose   (R=%.0f, nu=%.1f): alpha* = %.3f\n",
+            R_2dose, nu_2dose, a_star_k3_ew))
+
+# --- 2. Rho-adjusted alpha* (MC with fold 4 model predictions) ---
+# For each k, use best-rho model from fold 4 as the targeting score
+rho4_k1 <- map_dbl(MODEL_NAMES, function(m) {
+    tryCatch(cor(preds4_k1[[m]], preds4_k1$obs, method = "spearman"),
+             error = function(e) NA_real_)
+}) |> setNames(MODEL_NAMES)
+rho4_k3 <- map_dbl(MODEL_NAMES, function(m) {
+    tryCatch(cor(preds4_k3[[m]], preds4_k3$obs, method = "spearman"),
+             error = function(e) NA_real_)
+}) |> setNames(MODEL_NAMES)
+
+best_model_k1 <- names(which.max(rho4_k1))
+best_model_k3 <- names(which.max(rho4_k3))
+cat(sprintf("\nFold 4 rho by model:\n  k=1: %s\n  k=3: %s\n",
+            paste(sprintf("%s=%.3f", MODEL_NAMES, rho4_k1), collapse=", "),
+            paste(sprintf("%s=%.3f", MODEL_NAMES, rho4_k3), collapse=", ")))
+cat(sprintf("Best model k=1: %s (rho=%.3f)\n", best_model_k1, rho4_k1[best_model_k1]))
+cat(sprintf("Best model k=3: %s (rho=%.3f)\n", best_model_k3, rho4_k3[best_model_k3]))
+
+# Build MC input: join predictions with pop and obs_rate
+build_mc_df <- function(preds, best_model) {
+    preds |>
+        left_join(pop_f4, by = "location") |>
+        left_join(obs_rate_train, by = "location") |>
+        filter(!is.na(pop_sum), pop_sum > 0) |>
+        replace_na(list(obs_rate = 0))
+}
+mc_df_k1 <- build_mc_df(preds4_k1, best_model_k1)
+mc_df_k3 <- build_mc_df(preds4_k3, best_model_k3)
+
+# MC alpha* for k=1 (single-dose)
+mc_k1 <- alpha_star_mc_op(f_val_op, mc_df_k1$pop_sum, mc_df_k1$obs_rate,
+                           mc_df_k1[[best_model_k1]],
+                           R_1dose, r_val_op, AR_op, nu_1dose, n_mc = 200)
+# MC alpha* for k=3 (two-dose: R = R_2dose)
+mc_k3 <- alpha_star_mc_op(f_val_op, mc_df_k3$pop_sum, mc_df_k3$obs_rate,
+                           mc_df_k3[[best_model_k3]],
+                           R_2dose, r_val_op, AR_op, nu_2dose, n_mc = 200)
+
+cat(sprintf("\nRho-adjusted alpha* (MC, best model per k):\n"))
+cat(sprintf("  k=1 single-dose (%s, rho=%.3f): alpha* = %.3f\n",
+            best_model_k1, rho4_k1[best_model_k1], mc_k1$alpha_star))
+cat(sprintf("  k=3 two-dose   (%s, rho=%.3f): alpha* = %.3f\n",
+            best_model_k3, rho4_k3[best_model_k3], mc_k3$alpha_star))
+
+# Summary table across all models
+alpha_summary <- map_dfr(MODEL_NAMES, function(m) {
+    rho_k1 <- rho4_k1[m]; rho_k3 <- rho4_k3[m]
+    if (is.na(rho_k1) || is.na(rho_k3)) return(NULL)
+    mc1 <- tryCatch(
+        alpha_star_mc_op(f_val_op, mc_df_k1$pop_sum, mc_df_k1$obs_rate,
+                         mc_df_k1[[m]], R_1dose, r_val_op, AR_op, nu_1dose, n_mc=100),
+        error = function(e) list(alpha_star = NA_real_))
+    mc3 <- tryCatch(
+        alpha_star_mc_op(f_val_op, mc_df_k3$pop_sum, mc_df_k3$obs_rate,
+                         mc_df_k3[[m]], R_2dose, r_val_op, AR_op, nu_2dose, n_mc=100),
+        error = function(e) list(alpha_star = NA_real_))
+    tibble(model = m,
+           rho_k1 = rho_k1, rho_k3 = rho_k3,
+           alpha_star_mc_k1 = mc1$alpha_star,
+           alpha_star_mc_k3 = mc3$alpha_star)
+})
+
+alpha_summary |>
+    add_row(model = "Analytical (rho=1)",
+            rho_k1 = 1, rho_k3 = 1,
+            alpha_star_mc_k1 = a_star_k1_ew,
+            alpha_star_mc_k3 = a_star_k3_ew) |>
+    knitr::kable(
+        digits = 3,
+        col.names = c("Model", "\u03c1 (k=1)", "\u03c1 (k=3)",
+                      "\u03b1* k=1 single-dose", "\u03b1* k=3 two-dose"),
+        caption = sprintf(
+            "Optimal pre-emptive fraction by model (f=%.1f, r=%.1f, R\u2081=%.0f, R\u2082=%.0f)",
+            f_val_op, r_val_op, R_1dose, R_2dose)
+    )
+```
+
+```{r fig-alpha-cost-curves, fig.width=12, fig.height=5}
+#| fig-cap: "MC cost curves for fold 4. Each line shows the expected per-capita
+#|   cost as a function of alpha for a given model's targeting scores. Left: k=1
+#|   single-dose (R=500). Right: k=3 two-dose (R=250). Diamonds mark the
+#|   MC-optimal alpha*; dashed vertical line marks the analytical (rho=1) alpha*."
+alpha_grid_op <- seq(0, 1, length.out = 51)
+
+make_cost_curves <- function(mc_df, score_col, R, nu, n_mc = 150) {
+    map_dbl(alpha_grid_op, function(a) {
+        # simplified MC (replicate alpha_star_mc_op logic for one alpha)
+        n <- nrow(mc_df); P_total <- sum(mc_df$pop_sum)
+        pre_budget <- a * f_val_op * P_total
+        react_budget <- (1 - a) * f_val_op * P_total
+        ranked <- order(mc_df[[score_col]], decreasing = TRUE)
+        n_pre <- sum(cumsum(mc_df$pop_sum[ranked]) <= pre_budget)
+        pre_idx <- if (n_pre > 0) ranked[seq_len(n_pre)] else integer(0)
+        mc_vals <- numeric(n_mc)
+        for (s in seq_len(n_mc)) {
+            set.seed(42 + s)
+            Y <- rbinom(n, 1, mc_df$obs_rate)
+            burden_pre_res <- sum(Y[pre_idx] * mc_df$pop_sum[pre_idx]) * (1 - nu)
+            rem <- setdiff(seq_len(n), pre_idx); ob_rem <- rem[Y[rem] == 1]
+            burden_react_res <- 0; burden_uncov <- 0
+            if (length(ob_rem) > 0 && react_budget > 0) {
+                ob_ord <- ob_rem[order(mc_df$pop_sum[ob_rem], decreasing=TRUE)]
+                n_react <- sum(cumsum(mc_df$pop_sum[ob_ord]) <= react_budget)
+                if (n_react > 0) {
+                    ri <- ob_ord[seq_len(n_react)]
+                    burden_react_res <- sum(mc_df$pop_sum[ri]) * (1 - r_val_op)
+                    if (n_react < length(ob_ord))
+                        burden_uncov <- sum(mc_df$pop_sum[ob_ord[(n_react+1):length(ob_ord)]])
+                } else burden_uncov <- sum(mc_df$pop_sum[ob_rem])
+            } else if (length(ob_rem) > 0) burden_uncov <- sum(mc_df$pop_sum[ob_rem])
+            mc_vals[s] <- (sum(mc_df$pop_sum[pre_idx]) + sum(mc_df$pop_sum[if(exists("ri",inherits=FALSE)) ri else integer(0)]) +
+                R * AR_op * (burden_pre_res + burden_react_res + burden_uncov)) / P_total
+        }
+        mean(mc_vals)
+    })
+}
+
+curves_k1 <- map_dfr(MODEL_NAMES, function(m) {
+    tryCatch({
+        costs <- make_cost_curves(mc_df_k1, m, R_1dose, nu_1dose)
+        tibble(alpha=alpha_grid_op, cost=costs, model=m, k="k=1 (single-dose)")
+    }, error=function(e) NULL)
+})
+curves_k3 <- map_dfr(MODEL_NAMES, function(m) {
+    tryCatch({
+        costs <- make_cost_curves(mc_df_k3, m, R_2dose, nu_2dose)
+        tibble(alpha=alpha_grid_op, cost=costs, model=m, k="k=3 (two-dose)")
+    }, error=function(e) NULL)
+})
+
+opt_pts <- bind_rows(
+    alpha_summary |> filter(!is.na(alpha_star_mc_k1)) |>
+        transmute(alpha=alpha_star_mc_k1, model, k="k=1 (single-dose)") |>
+        left_join(curves_k1, by=c("alpha","model","k")),
+    alpha_summary |> filter(!is.na(alpha_star_mc_k3)) |>
+        transmute(alpha=alpha_star_mc_k3, model, k="k=3 (two-dose)") |>
+        left_join(curves_k3, by=c("alpha","model","k"))
+)
+
+vlines <- tibble(
+    alpha = c(a_star_k1_ew, a_star_k3_ew),
+    k = c("k=1 (single-dose)", "k=3 (two-dose)")
+)
+
+bind_rows(curves_k1, curves_k3) |>
+    ggplot(aes(x=alpha, y=cost, colour=model)) +
+    geom_line(linewidth=0.7) +
+    geom_vline(data=vlines, aes(xintercept=alpha),
+               linetype="dashed", colour="grey40", linewidth=0.5) +
+    geom_point(data=opt_pts |> filter(!is.na(cost)),
+               aes(x=alpha, y=cost), shape=18, size=3) +
+    facet_wrap(~k, scales="free_y") +
+    scale_colour_brewer(palette="Set1") +
+    labs(x=expression(alpha~"(pre-emptive fraction)"),
+         y="Expected cost per capita", colour="Model",
+         title="MC cost curves: fold 4 (2018 / 2018-2020)",
+         subtitle="Dashed = analytical alpha* (rho=1); diamonds = MC optimal alpha* per model") +
+    theme_minimal(base_size=11) +
+    theme(legend.position="bottom")
+```
+
+```{r fig-map-alpha-fold4, fig.width=16, fig.height=10}
+#| fig-cap: "Spatial map of predicted outbreak risk (continuous fill) and pre-emptive
+#|   vaccination allocation at MC-optimal alpha* for fold 4. Left column: k=1
+#|   single-dose (outcome 2018). Right column: k=3 two-dose (outcome 2018-2020).
+#|   Blue = pre-emptively vaccinated; orange = reactively vaccinated (outbreak
+#|   location not pre-vaccinated, within reactive budget); red outline = location
+#|   with observed outbreak."
+map_theme_op <- theme_minimal(base_size=9) +
+    theme(panel.grid=element_blank(), axis.text=element_blank(),
+          axis.ticks=element_blank(), legend.position="bottom")
+
+make_allocation_map <- function(preds, fold_test, mc_df, alpha_star, R, nu,
+                                 best_model, title_str) {
+    n <- nrow(mc_df)
+    P_total <- sum(mc_df$pop_sum)
+    pre_budget <- alpha_star * f_val_op * P_total
+    react_budget <- (1 - alpha_star) * f_val_op * P_total
+
+    ranked <- order(mc_df[[best_model]], decreasing=TRUE)
+    n_pre <- sum(cumsum(mc_df$pop_sum[ranked]) <= pre_budget)
+    pre_locs <- if (n_pre > 0) mc_df$location[ranked[seq_len(n_pre)]] else character(0)
+
+    ob_locs <- fold_test |> filter(obs == 1) |> pull(location)
+    ob_not_pre <- setdiff(ob_locs, pre_locs)
+    if (length(ob_not_pre) > 0 && react_budget > 0) {
+        ob_pop <- mc_df |> filter(location %in% ob_not_pre) |>
+            arrange(desc(pop_sum))
+        n_react <- sum(cumsum(ob_pop$pop_sum) <= react_budget)
+        react_locs <- if (n_react > 0) ob_pop$location[seq_len(n_react)] else character(0)
+    } else react_locs <- character(0)
+
+    map_df <- preds |>
+        dplyr::select(location, score = all_of(best_model)) |>
+        mutate(allocation = case_when(
+            location %in% pre_locs   ~ "Pre-emptive",
+            location %in% react_locs ~ "Reactive",
+            TRUE                      ~ "None"
+        ),
+        outbreak = location %in% ob_locs)
+
+    shp_map <- shp_admin23 |>
+        left_join(map_df, by="location") |>
+        filter(!is.na(score))
+
+    ggplot(shp_map) +
+        geom_sf(aes(fill=score), colour=NA) +
+        geom_sf(data=shp_map |> filter(allocation=="Pre-emptive"),
+                fill="steelblue", alpha=0.6, colour=NA) +
+        geom_sf(data=shp_map |> filter(allocation=="Reactive"),
+                fill="darkorange", alpha=0.6, colour=NA) +
+        geom_sf(data=shp_map |> filter(outbreak),
+                fill=NA, colour="firebrick", linewidth=0.4) +
+        scale_fill_viridis_c(option="magma", direction=-1,
+                             name="Predicted\nrisk", limits=c(0,1)) +
+        labs(title=title_str,
+             subtitle=sprintf("alpha*=%.2f, f=%.1f; blue=pre-emptive, orange=reactive, red outline=outbreak",
+                              alpha_star, f_val_op)) +
+        map_theme_op
+}
+
+p_k1 <- make_allocation_map(
+    preds4_k1, fold4_k1, mc_df_k1, mc_k1$alpha_star, R_1dose, nu_1dose,
+    best_model_k1,
+    sprintf("k=1 single-dose | outcome 2018 | %s (rho=%.3f)",
+            best_model_k1, rho4_k1[best_model_k1]))
+
+p_k3 <- make_allocation_map(
+    preds4_k3, fold4_k3, mc_df_k3, mc_k3$alpha_star, R_2dose, nu_2dose,
+    best_model_k3,
+    sprintf("k=3 two-dose | outcome 2018-2020 | %s (rho=%.3f)",
+            best_model_k3, rho4_k3[best_model_k3]))
+
+p_k1 + p_k3 +
+    plot_annotation(
+        title = sprintf("Pre-emptive allocation map: fold 4 (training 2013-2017, T=%d)", T_WINDOW),
+        subtitle = sprintf("R1=%.0f (single-dose), R2=%.0f (two-dose), r=%.1f",
+                           R_1dose, R_2dose, r_val_op)
+    )
+```
+
 # COD-Specific Model
 
 The global model's within-country rho is very low (~0.06 for COD) because

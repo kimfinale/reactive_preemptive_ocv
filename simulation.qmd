@@ -2,8 +2,14 @@
 title: "Reactive vs Preemptive Vaccination Strategies: Simulation Study"
 author: "Jong-Hoon Kim"
 date: "`r Sys.Date()`"
-format: html
-editor_options: 
+format:
+  html:
+    html-math-method: katex
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    embed-resources: true
+editor_options:
   chunk_output_type: console
 ---
 
