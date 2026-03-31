@@ -972,6 +972,95 @@ cat("  shp_admin23:      ", nrow(shp_admin23), "polygons\n")
 cat("  nbr_list:         ", length(nbr_list), "entries\n")
 ```
 
+# Population and Region Distribution by Predicted Risk
+
+We examine how population and ADM2 units are distributed across the predicted
+risk spectrum using the k=1 final model (2024 forecast). The ensemble mean of
+all five models is used as the risk score.
+
+```{r risk-population-cdf}
+# Ensemble mean risk score joined with population
+pred_risk_sorted <- pred_data_k1 |>
+    left_join(pop_lookup, by = "location") |>
+    mutate(score_ens = (pred_prob + pred_enet + pred_rf + pred_xgb + pred_gam) / 5) |>
+    filter(!is.na(score_ens), !is.na(pop_sum)) |>
+    arrange(score_ens)
+
+total_pop  <- sum(pred_risk_sorted$pop_sum)
+total_locs <- nrow(pred_risk_sorted)
+
+# Exact empirical CDF: one row per unique threshold value
+cdf_df <- tibble(
+    threshold = c(0, pred_risk_sorted$score_ens),
+    n_locs    = c(0L, seq_len(total_locs)),
+    pop_cum   = c(0, cumsum(pred_risk_sorted$pop_sum))
+) |>
+    mutate(pop_above = total_pop - pop_cum)
+
+# Cutoff above which ~200 million people live
+cutoff_200m <- cdf_df |>
+    filter(pop_above >= 200e6) |>
+    slice_max(threshold, n = 1, with_ties = FALSE) |>
+    pull(threshold)
+
+pop_above_cutoff <- total_pop -
+    sum(pred_risk_sorted$pop_sum[pred_risk_sorted$score_ens <= cutoff_200m])
+n_locs_above <- sum(pred_risk_sorted$score_ens > cutoff_200m)
+
+cat(sprintf("Total dataset: %.1f million people, %d ADM2 regions\n",
+            total_pop / 1e6, total_locs))
+cat(sprintf("Cutoff probability (≥200M above): %.4f\n", cutoff_200m))
+cat(sprintf("Population above cutoff: %.1f million (%.1f%% of total)\n",
+            pop_above_cutoff / 1e6, 100 * pop_above_cutoff / total_pop))
+cat(sprintf("ADM2 regions above cutoff: %d (%.1f%% of total)\n",
+            n_locs_above, 100 * n_locs_above / total_locs))
+```
+
+```{r fig-risk-population-cdf, fig.width=12, fig.height=5}
+#| fig-cap: "Cumulative distribution of population (left) and number of ADM2 regions
+#|   (right) by predicted outbreak probability (k=1, 2024 forecast, ensemble mean of
+#|   5 models). The dashed vertical line marks the risk threshold above which
+#|   approximately 200 million people reside."
+
+p_pop <- ggplot(cdf_df, aes(x = threshold, y = pop_cum / 1e6)) +
+    geom_line(linewidth = 0.8, colour = "steelblue") +
+    geom_vline(xintercept = cutoff_200m, linetype = "dashed",
+               colour = "firebrick", linewidth = 0.7) +
+    annotate("text",
+             x     = cutoff_200m + 0.015,
+             y     = (total_pop / 1e6) * 0.25,
+             label = sprintf("p = %.4f\n%.0fM above threshold",
+                             cutoff_200m, pop_above_cutoff / 1e6),
+             hjust = 0, colour = "firebrick", size = 3.2) +
+    scale_y_continuous(labels = scales::comma) +
+    labs(x = "Predicted outbreak probability",
+         y = "Cumulative population (millions)",
+         title = "Population ≤ risk threshold") +
+    theme_minimal(base_size = 11)
+
+p_loc <- ggplot(cdf_df, aes(x = threshold, y = n_locs)) +
+    geom_line(linewidth = 0.8, colour = "steelblue") +
+    geom_vline(xintercept = cutoff_200m, linetype = "dashed",
+               colour = "firebrick", linewidth = 0.7) +
+    annotate("text",
+             x     = cutoff_200m + 0.015,
+             y     = total_locs * 0.25,
+             label = sprintf("p = %.4f\n%d regions above threshold",
+                             cutoff_200m, n_locs_above),
+             hjust = 0, colour = "firebrick", size = 3.2) +
+    scale_y_continuous(labels = scales::comma) +
+    labs(x = "Predicted outbreak probability",
+         y = "Cumulative number of ADM2 regions",
+         title = "ADM2 regions ≤ risk threshold") +
+    theme_minimal(base_size = 11)
+
+p_pop + p_loc + plot_annotation(
+    title    = "Distribution of predicted outbreak risk (k=1, 2024 forecast)",
+    subtitle = sprintf("Ensemble mean of 5 models | Total: %.0fM people, %d ADM2 regions",
+                       total_pop / 1e6, total_locs)
+)
+```
+
 # Beta-Binomial Risk Model and Optimal Alpha (2018 / 2018–2020)
 
 We focus on **fold 4** (training features 2013–2017, T=5), which predicts:
