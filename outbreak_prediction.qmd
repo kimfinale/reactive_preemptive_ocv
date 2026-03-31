@@ -17,12 +17,15 @@ editor_options:
 ## Overview
 
 This document develops an annual outbreak prediction model for admin-2 units
-using cholera surveillance data from 2010--2017. The model is evaluated via
-**expanding-window temporal cross-validation** and **spatial cross-validation**,
-and the final predictions (for 2018) are saved for use in the vaccine impact
-simulation.
+using cholera surveillance data from 2010--2023. Models are evaluated via
+**rolling-window temporal cross-validation** (train on fold i−1, test on fold i)
+and **spatial cross-validation** (5 random spatial partitions within each fold).
+Two outcome horizons are compared:
 
-**Design**:
+- **k=1**: predict any outbreak in the next single year (9 validation folds)
+- **k=3**: predict any outbreak in the next 3-year window (7 validation folds)
+
+**k=1 design (T=5 rolling feature window)**:
 
 | Fold  | Feature years | Outcome year | Purpose    |
 |-------|--------------|--------------|------------|
@@ -30,7 +33,25 @@ simulation.
 | 2     | 2011--2015   | 2016         | Validation |
 | 3     | 2012--2016   | 2017         | Validation |
 | 4     | 2013--2017   | 2018         | Validation |
-| Final | 2014--2018   | 2019         | Prediction |
+| 5     | 2014--2018   | 2019         | Validation |
+| 6     | 2015--2019   | 2020         | Validation |
+| 7     | 2016--2020   | 2021         | Validation |
+| 8     | 2017--2021   | 2022         | Validation |
+| 9     | 2018--2022   | 2023         | Validation |
+| Final | 2019--2023   | 2024         | Prediction |
+
+**k=3 design (T=5 rolling feature window)**:
+
+| Fold  | Feature years | Outcome window   | Purpose    |
+|-------|--------------|-----------------|------------|
+| 1     | 2010--2014   | 2015--2017       | Validation |
+| 2     | 2011--2015   | 2016--2018       | Validation |
+| 3     | 2012--2016   | 2017--2019       | Validation |
+| 4     | 2013--2017   | 2018--2020       | Validation |
+| 5     | 2014--2018   | 2019--2021       | Validation |
+| 6     | 2015--2019   | 2020--2022       | Validation |
+| 7     | 2016--2020   | 2021--2023       | Validation |
+| Final | 2017--2021   | 2022--2024       | Prediction |
 
 Five classifiers are compared: logistic regression, elastic net, random forest, XGBoost, and GAM.
 
@@ -251,22 +272,12 @@ cat(
 
 ### Overview
 
-We predict outbreak occurrence one year ahead for admin-2 units using an
-**expanding window** design. Only outbreak surveillance data are used
-(no environmental or demographic covariates). Data are available for
-2010--2017. The year 2018 is the true prediction target.
-
-| Fold  | Feature years | Outcome year | Purpose    |
-|-------|--------------|--------------|------------|
-| 1     | 2010--2014   | 2015         | Validation |
-| 2     | 2011--2015   | 2016         | Validation |
-| 3     | 2012--2016   | 2017         | Validation |
-| 4     | 2013--2017   | 2018         | Validation |
-| Final | 2014--2018   | 2019         | Prediction |
-
-Within each temporal fold, 5-fold spatial cross-validation tests
-generalization across regions. Five classifiers are compared: logistic
-regression, elastic net, random forest, XGBoost, and GAM.
+We predict outbreak occurrence ahead for admin-2 units using a **rolling-window**
+design. Only outbreak surveillance data are used (no environmental covariates).
+Data cover 2010--2023. Two outcome horizons are evaluated: **k=1** (next year)
+and **k=3** (any outbreak in the next 3 years). See the Overview section for
+full fold tables. **Rolling training**: each fold trained on fold i−1 only.
+Five classifiers: logistic regression, elastic net, random forest, XGBoost, GAM.
 
 ### Feature engineering
 
@@ -445,26 +456,41 @@ fit_and_predict <- function(train, test, features = ALL_FEATURES) {
     xgb_params <- list(objective = "binary:logistic", eval_metric = "auc",
                        max_depth = 4, eta = 0.1, subsample = 0.8,
                        colsample_bytree = 0.8)
-    xgb_cv <- xgb.cv(params = xgb_params, data = dtrain, nrounds = 300,
-                      nfold = min(5, nrow(train)),
-                      early_stopping_rounds = 20, verbose = 0)
-    best_nrounds <- xgb_cv$best_iteration
-    if (is.null(best_nrounds) || best_nrounds == 0) best_nrounds <- 50
+    xgb_cv <- tryCatch(
+        xgb.cv(params = xgb_params, data = dtrain, nrounds = 300,
+               nfold = min(5, nrow(train)),
+               early_stopping_rounds = 20, verbose = 0),
+        error = function(e) NULL
+    )
+    best_nrounds <- if (!is.null(xgb_cv)) xgb_cv$best_iteration else NULL
+    if (is.null(best_nrounds) || is.na(best_nrounds) || best_nrounds == 0) best_nrounds <- 50
     xgb_fit <- xgb.train(params = xgb_params, data = dtrain,
                          nrounds = best_nrounds, verbose = 0)
     preds$XGBoost <- predict(xgb_fit, dtest)
 
     # 5. GAM with smooth terms on key continuous features
+    # k is capped at (unique values - 1) to avoid "too few unique values" errors
     gam_feats <- c("n_outbreak_years", "mean_cases_per_year",
                    "recent_2yr_outbreaks", "years_since_last_outbreak",
                    "nbr_prop_outbreak", "nbr_mean_cases")
-    gam_formula <- as.formula(paste(
-        "obs ~", paste0("s(", gam_feats, ", k = 5)", collapse = " + ")))
+    safe_k <- function(feat, dat, kmax = 5L)
+        max(3L, min(kmax, length(unique(dat[[feat]])) - 1L))
+    gam_terms <- paste0("s(", gam_feats, ", k = ",
+                        sapply(gam_feats, safe_k, dat = train), ")",
+                        collapse = " + ")
     gam_fit <- tryCatch(
-        gam(gam_formula, data = train, family = binomial, method = "REML"),
+        gam(as.formula(paste("obs ~", gam_terms)), data = train,
+            family = binomial, method = "REML"),
         error = function(e) {
-            gam(obs ~ s(n_outbreak_years, k = 5) + s(nbr_prop_outbreak, k = 5),
-                data = train, family = binomial, method = "REML")
+            k2 <- safe_k("n_outbreak_years", train, 3L)
+            k3 <- safe_k("nbr_prop_outbreak", train, 3L)
+            tryCatch(
+                gam(as.formula(sprintf("obs ~ s(n_outbreak_years, k=%d) + s(nbr_prop_outbreak, k=%d)", k2, k3)),
+                    data = train, family = binomial, method = "REML"),
+                error = function(e2)
+                    glm(obs ~ n_outbreak_years + nbr_prop_outbreak,
+                        data = train, family = binomial)
+            )
         }
     )
     preds$GAM <- as.numeric(predict(gam_fit, newdata = test, type = "response"))
@@ -491,77 +517,135 @@ eval_metrics <- function(obs, pred) {
 }
 ```
 
-### Expanding-window temporal cross-validation
+### Rolling-window temporal cross-validation
 
 ```{r temporal-cv}
-# Temporal folds: T=5 rolling feature window ending at train_end
-# Fold 1: features 2010-2014 → outcome 2015
-# Fold 2: features 2011-2015 → outcome 2016
-# Fold 3: features 2012-2016 → outcome 2017
-# Fold 4: features 2013-2017 → outcome 2018
-temporal_folds <- tibble(
-    fold = 1:4,
-    train_end = 2014:2017,
-    outcome_year = 2015:2018
-)
+K_VALUES <- c(1L, 3L)
 
-# Build feature + outcome data for each fold
-fold_data <- map(1:nrow(temporal_folds), function(i) {
-    fe <- temporal_folds[i, ]
-    feat <- build_features(fe$train_end)
-    outcome <- loc_year_full |>
-        filter(year == fe$outcome_year) |>
-        group_by(location) |>
-        summarise(obs = as.integer(sum(n_active) > 0L), .groups = "drop")
-    feat |>
-        left_join(outcome, by = "location") |>
-        replace_na(list(obs = 0L))
-})
-names(fold_data) <- paste0("fold", 1:4)
-
-for (i in 1:4) {
-    fe <- temporal_folds[i, ]
-    d <- fold_data[[i]]
-    cat(sprintf("Fold %d: features [%d,%d] → outcome %d | n=%d, prev=%.1f%%\n",
-                i, fe$train_end - T_WINDOW + 1L, fe$train_end,
-                fe$outcome_year, nrow(d), 100 * mean(d$obs)))
+# Build fold table for a given k: train_end runs from 2014 to
+# max(all_years) - k (last fold whose outcome is fully in the data).
+# Final prediction uses train_end = max(all_years) - k + 1 (one step ahead,
+# so outcome window extends one year beyond the data).
+make_temporal_folds <- function(k) {
+    train_ends <- 2014:(max(all_years) - k)
+    tibble(
+        fold          = seq_along(train_ends),
+        k             = k,
+        train_end     = train_ends,
+        outcome_start = train_ends + 1L,
+        outcome_end   = train_ends + k
+    )
 }
 
-# Final prediction data: features 2014-2018
-final_features <- build_features(2018)
+temporal_folds_list <- setNames(map(K_VALUES, make_temporal_folds),
+                                paste0("k", K_VALUES))
+
+# Build feature + outcome data for every fold of every k
+make_fold_data <- function(tf) {
+    fd <- map(1:nrow(tf), function(i) {
+        fe <- tf[i, ]
+        feat <- build_features(fe$train_end)
+        outcome <- loc_year_full |>
+            filter(year %in% (fe$outcome_start:fe$outcome_end)) |>
+            group_by(location) |>
+            summarise(obs = as.integer(sum(n_active) > 0L), .groups = "drop")
+        feat |>
+            left_join(outcome, by = "location") |>
+            replace_na(list(obs = 0L))
+    })
+    names(fd) <- paste0("fold", seq_along(fd))
+    fd
+}
+
+fold_data_list <- setNames(map(temporal_folds_list, make_fold_data),
+                           paste0("k", K_VALUES))
+
+# Print fold summaries
+for (k in K_VALUES) {
+    tf <- temporal_folds_list[[paste0("k", k)]]
+    cat(sprintf("\n--- k = %d (%d folds) ---\n", k, nrow(tf)))
+    for (i in 1:nrow(tf)) {
+        fe <- tf[i, ]
+        d  <- fold_data_list[[paste0("k", k)]][[i]]
+        cat(sprintf(
+            "  Fold %d: features [%d,%d] → outcome [%d,%d] | n=%d, prev=%.1f%%\n",
+            i, fe$train_end - T_WINDOW + 1L, fe$train_end,
+            fe$outcome_start, fe$outcome_end, nrow(d), 100 * mean(d$obs)
+        ))
+    }
+}
+
+# Backward-compatible aliases for k=1 (used by spatial-cv and variable-importance)
+temporal_folds <- temporal_folds_list$k1
+fold_data      <- fold_data_list$k1
+N_FOLDS        <- nrow(temporal_folds)   # 9 folds for k=1
+
+# Final-prediction feature sets (one T-window beyond the last complete fold)
+final_features_list <- setNames(
+    map(K_VALUES, function(k) build_features(max(all_years) - k + 1L)),
+    paste0("k", K_VALUES)
+)
+# k=1: build_features(2023) → feat_yrs 2019-2023 → predict 2024
+# k=3: build_features(2021) → feat_yrs 2017-2021 → predict 2022-2024
+final_features <- final_features_list$k1
 ```
 
 ### Temporal fold evaluation
 
-For each fold, we train on **all preceding folds** and test on the current
-fold. Fold 1 has no prior data, so it is evaluated via spatial CV only
-(see next section).
+For each fold i (2–9), the model is trained on **fold i−1 only** (rolling
+window) and tested on fold i. This ensures the training data always comes from
+the immediately preceding year's T=5 feature window, which is most analogous to
+how the model would be used in practice. Fold 1 has no preceding fold, so it is
+evaluated via spatial CV only (see next section).
+
+Predictions are computed once here and reused for ROC curves and calibration
+plots below.
+
+```{r temporal-predictions}
+# Rolling training for every k: train on fold i-1, test on fold i.
+# Results used by temporal-eval, ROC, and calibration chunks.
+temporal_pred_list_all <- setNames(map(K_VALUES, function(kv) {
+    fd <- fold_data_list[[paste0("k", kv)]]
+    nf <- length(fd)
+    preds <- map(2:nf, function(i) {
+        fit_and_predict(fd[[i - 1]], fd[[i]]) |> mutate(fold = i, k = kv)
+    })
+    names(preds) <- paste0("fold", 2:nf)
+    preds
+}), paste0("k", K_VALUES))
+
+temporal_pred_df_all <- bind_rows(
+    map(K_VALUES, function(kv) bind_rows(temporal_pred_list_all[[paste0("k", kv)]]))
+)
+
+# Backward-compatible aliases for k=1
+temporal_pred_list <- temporal_pred_list_all$k1
+temporal_pred_df   <- temporal_pred_df_all |> filter(k == 1L)
+```
 
 ```{r temporal-eval}
-# Folds 2-4: train on all preceding folds, test on current
-temporal_results <- map_dfr(2:4, function(i) {
-    # Expanding training set: pool all folds before i
-    train <- bind_rows(fold_data[1:(i - 1)])
-    test <- fold_data[[i]]
-
-    preds <- fit_and_predict(train, test)
-
-    map_dfr(MODEL_NAMES, function(m) {
-        metrics <- eval_metrics(preds$obs, preds[[m]])
-        metrics |> mutate(
-            model = m, fold = i,
-            train_end = temporal_folds$train_end[i],
-            outcome_year = temporal_folds$outcome_year[i]
-        )
+temporal_results <- map_dfr(K_VALUES, function(kv) {
+    tf <- temporal_folds_list[[paste0("k", kv)]]
+    preds_k <- temporal_pred_list_all[[paste0("k", kv)]]
+    nf <- nrow(tf)
+    map_dfr(2:nf, function(i) {
+        preds <- preds_k[[paste0("fold", i)]]
+        fe <- tf[i, ]
+        map_dfr(MODEL_NAMES, function(m) {
+            eval_metrics(preds$obs, preds[[m]]) |>
+                mutate(model = m, fold = i, k = kv,
+                       outcome = if (kv == 1L) as.character(fe$outcome_start)
+                                 else sprintf("%d-%d", fe$outcome_start, fe$outcome_end))
+        })
     })
 })
 
 temporal_results |>
-    dplyr::select(fold, outcome_year, model, rho, AUC_ROC, AUC_PR, Brier,
+    dplyr::select(k, fold, outcome, model, rho, AUC_ROC, AUC_PR, Brier,
                   Sensitivity, Specificity) |>
-    arrange(fold, desc(AUC_ROC)) |>
+    arrange(k, fold, desc(AUC_ROC)) |>
     knitr::kable(digits = 3,
-        caption = "Temporal CV: performance by fold and model")
+        caption = "Rolling temporal CV: train on fold i-1, test on fold i (k=1 and k=3)")
 ```
 
 ### Spatial cross-validation within each temporal fold
@@ -569,7 +653,7 @@ temporal_results |>
 ```{r spatial-cv}
 set.seed(42)
 
-spatial_cv_results <- map_dfr(1:4, function(i) {
+spatial_cv_results <- map_dfr(1:N_FOLDS, function(i) {
     d <- fold_data[[i]]
     n_folds_sp <- 5
 
@@ -608,59 +692,53 @@ spatial_cv_summary |>
 
 ### ROC curves
 
-```{r fig-roc-curves, fig.width=14, fig.height=4}
-#| fig-cap: "ROC curves for temporal folds 2–4. Each panel shows one hold-out
-#|   year; the model is trained on all preceding folds. AUC values are shown in
-#|   the legend. Staircase steps reflect individual decision thresholds."
-# Re-generate predictions for ROC plotting (folds 2-4 temporal)
-roc_plot_data <- map_dfr(2:4, function(i) {
-    train <- bind_rows(fold_data[1:(i - 1)])
-    test <- fold_data[[i]]
-    preds <- fit_and_predict(train, test)
-    preds |> mutate(fold = i)
-})
-
-# Extract (FPR, TPR) coords from pROC objects for geom_step() plotting
-roc_curve_df <- map_dfr(2:4, function(i) {
-    d <- roc_plot_data |> filter(fold == i)
-    map_dfr(MODEL_NAMES, function(m) {
-        roc_obj <- pROC::roc(d$obs, d[[m]], quiet = TRUE)
-        tibble(
-            fpr   = 1 - roc_obj$specificities,
-            tpr   = roc_obj$sensitivities,
-            model = m,
-            fold  = i,
-            auc   = as.numeric(pROC::auc(roc_obj))
-        )
+```{r fig-roc-curves, fig.width=16, fig.height=14}
+#| fig-cap: "ROC curves for all temporal folds (rolling CV: train on fold i−1,
+#|   test on fold i). Top rows: k=1 (predict one year ahead, folds 2–9).
+#|   Bottom rows: k=3 (predict any outbreak over a 3-year window, folds 2–7).
+#|   Each staircase step corresponds to one decision threshold."
+make_roc_plots <- function(kv) {
+    tf <- temporal_folds_list[[paste0("k", kv)]]
+    preds_k <- temporal_pred_list_all[[paste0("k", kv)]]
+    nf <- nrow(tf)
+    fold_ids <- 2:nf
+    roc_df <- map_dfr(fold_ids, function(i) {
+        d <- preds_k[[paste0("fold", i)]]
+        map_dfr(MODEL_NAMES, function(m) {
+            roc_obj <- pROC::roc(d$obs, d[[m]], quiet = TRUE)
+            fe <- tf[i, ]
+            tibble(
+                fpr     = 1 - roc_obj$specificities,
+                tpr     = roc_obj$sensitivities,
+                model   = m,
+                fold    = i,
+                outcome = if (kv == 1L) as.character(fe$outcome_start)
+                          else sprintf("%d-%d", fe$outcome_start, fe$outcome_end),
+                auc     = as.numeric(pROC::auc(roc_obj))
+            )
+        })
     })
-}) |>
-    mutate(
-        fold_label = sprintf("Fold %d (outcome %d)", fold,
-                             temporal_folds$outcome_year[fold]),
-        model_auc  = sprintf("%s (%.2f)", model, auc)
-    )
+    map(fold_ids, function(i) {
+        d <- roc_df |> filter(fold == i)
+        out_lbl <- d$outcome[1]
+        ggplot(d, aes(x = fpr, y = tpr, colour = model)) +
+            geom_step(direction = "hv", linewidth = 0.5) +
+            geom_abline(linetype = "dashed", colour = "grey60") +
+            labs(title = sprintf("k=%d fold %d\n(outcome %s)", kv, i, out_lbl),
+                 x = "1 - Specificity", y = "Sensitivity", colour = "Model") +
+            coord_equal() +
+            theme_minimal(base_size = 9) +
+            theme(plot.title = element_text(size = 8))
+    })
+}
 
-roc_plots <- map(2:4, function(i) {
-    d <- roc_curve_df |> filter(fold == i)
-    # Build legend labels with AUC
-    auc_labels <- d |>
-        distinct(model, auc) |>
-        mutate(label = sprintf("%s (AUC=%.2f)", model, auc)) |>
-        deframe()
-    ggplot(d, aes(x = fpr, y = tpr, colour = model)) +
-        geom_step(direction = "hv", linewidth = 0.6) +
-        geom_abline(linetype = "dashed", colour = "grey60") +
-        scale_colour_discrete(labels = auc_labels) +
-        labs(
-            title = sprintf("Fold %d (outcome %d)", i,
-                            temporal_folds$outcome_year[i]),
-            x = "1 - Specificity", y = "Sensitivity", colour = "Model"
-        ) +
-        coord_equal() +
-        theme_minimal(base_size = 10) +
-        theme(legend.position = if (i == 4) "right" else "none")
-})
-wrap_plots(roc_plots, nrow = 1)
+plots_k1 <- make_roc_plots(1L)   # 8 panels (folds 2-9)
+plots_k3 <- make_roc_plots(3L)   # 6 panels (folds 2-7)
+
+(wrap_plots(plots_k1, nrow = 2) + plot_layout(guides = "collect") &
+    theme(legend.position = "bottom")) /
+(wrap_plots(plots_k3, nrow = 2) + plot_layout(guides = "collect") &
+    theme(legend.position = "bottom"))
 ```
 
 ### Variable importance
@@ -669,12 +747,12 @@ wrap_plots(roc_plots, nrow = 1)
 # Train RF and XGBoost on each temporal fold independently; extract importance.
 # RF: permutation importance. XGBoost: gain.
 # Importance is normalised to [0,1] within each fold × model.
-imp_by_fold <- map_dfr(1:4, function(i) {
+imp_by_fold <- map_dfr(1:N_FOLDS, function(i) {
     d <- fold_data[[i]]
     fe <- temporal_folds[i, ]
     fold_label <- sprintf("Fold %d (%d-%d\u2192%d)",
                           i, fe$train_end - T_WINDOW + 1L, fe$train_end,
-                          fe$outcome_year)
+                          fe$outcome_start)
 
     # Random Forest
     set.seed(42)
@@ -695,20 +773,24 @@ imp_by_fold <- map_dfr(1:4, function(i) {
     X <- as.matrix(d[, ALL_FEATURES])
     y <- d$obs
     dtrain <- xgb.DMatrix(data = X, label = y)
-    xgb_cv_f <- xgb.cv(
-        params = list(objective = "binary:logistic", eval_metric = "auc",
-                      max_depth = 4, eta = 0.1, subsample = 0.8,
-                      colsample_bytree = 0.8),
-        data = dtrain, nrounds = 300,
-        nfold = min(5, nrow(d)),
-        early_stopping_rounds = 20, verbose = 0
+    xgb_cv_f <- tryCatch(
+        xgb.cv(
+            params = list(objective = "binary:logistic", eval_metric = "auc",
+                          max_depth = 4, eta = 0.1, subsample = 0.8,
+                          colsample_bytree = 0.8),
+            data = dtrain, nrounds = 300,
+            nfold = min(5, nrow(d)),
+            early_stopping_rounds = 20, verbose = 0
+        ),
+        error = function(e) NULL
     )
+    best_nr_f <- if (!is.null(xgb_cv_f)) xgb_cv_f$best_iteration else NULL
+    if (is.null(best_nr_f) || is.na(best_nr_f) || best_nr_f == 0) best_nr_f <- 50
     xgb_fit <- xgb.train(
         params = list(objective = "binary:logistic", max_depth = 4, eta = 0.1,
                       subsample = 0.8, colsample_bytree = 0.8),
         data = dtrain,
-        nrounds = if (is.null(xgb_cv_f$best_iteration) || xgb_cv_f$best_iteration == 0)
-            50 else xgb_cv_f$best_iteration,
+        nrounds = best_nr_f,
         verbose = 0
     )
     xgb_raw <- xgb.importance(model = xgb_fit)
@@ -741,8 +823,8 @@ imp_by_fold <- imp_by_fold |>
 #### Aggregated across all temporal folds
 
 ```{r fig-variable-importance-agg, fig.width=10, fig.height=6}
-#| fig-cap: "Variable importance aggregated across all four temporal folds. Points
-#|   show the mean normalised importance; error bars show ±1 SD across folds.
+#| fig-cap: "Variable importance aggregated across all nine temporal folds (k=1).
+#|   Points show the mean normalised importance; error bars show ±1 SD across folds.
 #|   Features are ordered by mean importance across both models. Random Forest
 #|   uses permutation importance; XGBoost uses gain."
 imp_summary <- imp_by_fold |>
@@ -757,7 +839,7 @@ ggplot(imp_summary, aes(x = mean_imp, y = feature, colour = model)) +
     geom_point(size = 2.5, position = position_dodge(0.6)) +
     scale_colour_manual(values = c("Random Forest" = "steelblue",
                                    "XGBoost" = "darkorange")) +
-    labs(x = "Mean normalised importance (±1 SD across 4 folds)",
+    labs(x = "Mean normalised importance (±1 SD across 9 folds)",
          y = NULL, colour = "Model",
          title = "Variable importance aggregated across temporal folds") +
     theme_minimal(base_size = 11) +
@@ -773,7 +855,7 @@ ggplot(imp_summary, aes(x = mean_imp, y = feature, colour = model)) +
 #|   importance across all folds."
 ggplot(imp_by_fold, aes(x = importance, y = feature, fill = model)) +
     geom_col(position = "dodge", width = 0.7) +
-    facet_wrap(~ fold, nrow = 2) +
+    facet_wrap(~ fold, nrow = 3) +
     scale_fill_manual(values = c("Random Forest" = "steelblue",
                                  "XGBoost" = "darkorange")) +
     labs(x = "Normalised importance", y = NULL, fill = "Model",
@@ -785,13 +867,14 @@ ggplot(imp_by_fold, aes(x = importance, y = feature, fill = model)) +
 ### Calibration plots
 
 ```{r fig-calibration, fig.width=16, fig.height=4}
-#| fig-cap: "Calibration plots for temporal folds 2–4. Locations are binned into
+#| fig-cap: "Calibration plots for temporal folds 2–9 (k=1). Locations are binned into
 #|   10 deciles by predicted probability; points show the mean predicted
 #|   probability vs. observed outbreak proportion within each bin. The dashed
 #|   diagonal is perfect calibration. Points above the diagonal indicate
 #|   under-prediction; points below indicate over-prediction."
 # Calibration: predicted prob vs observed proportion (decile bins)
-calibration_data <- roc_plot_data |>
+# Uses temporal_pred_df from the temporal-predictions chunk (folds 2:N_FOLDS)
+calibration_data <- temporal_pred_df |>
     pivot_longer(cols = all_of(MODEL_NAMES), names_to = "model",
                  values_to = "predicted") |>
     mutate(bin = ntile(predicted, 10)) |>
@@ -806,59 +889,53 @@ ggplot(calibration_data, aes(x = pred_mean, y = obs_mean, colour = model)) +
     geom_point(size = 2) +
     geom_line() +
     geom_abline(linetype = "dashed", colour = "grey50") +
-    facet_wrap(~ paste("Fold", fold), nrow = 1) +
+    facet_wrap(~ paste("Fold", fold), nrow = 2) +
     labs(x = "Mean predicted probability", y = "Observed proportion",
          title = "Calibration plots (decile bins)", colour = "Model") +
     theme_minimal(base_size = 10) +
     coord_equal(xlim = c(0, 1), ylim = c(0, 1))
 ```
 
-### Final model: train on all data, predict 2019
+### Final model: train on all data, predict 2024 (k=1) and 2022–2024 (k=3)
 
-The final model is trained on all four validation folds combined (outcomes
-2015–2018). Predictions for **2019** are generated from features built over the
-most recent T = 5 years of available surveillance data (2014–2018). Specifically,
-`build_features(2018)` constructs the same 18 features (12 same-unit, 6
-neighbour) as the validation folds, but using `feat_yrs = 2014:2018`. No 2019
-outcome data enter the model — this is a prospective forecast. The 2019
-ground-truth outcomes (where available in the surveillance data) are attached
-downstream in `vaccine_impact_sim.qmd` for impact evaluation.
+Two final models are trained:
+
+- **k=1**: trained on all 9 validation folds (outcomes 2015–2023), predicts 2024.
+  Features: `build_features(2023)` → `feat_yrs = 2019:2023`.
+- **k=3**: trained on all 7 validation folds (outcome windows 2015–2023),
+  predicts whether any outbreak occurs in 2022–2024.
+  Features: `build_features(2021)` → `feat_yrs = 2017:2021`.
+
+No future outcome data enter either model — these are prospective forecasts.
 
 ```{r final-model}
-# Train on all 4 folds (outcomes 2015-2018); predict 2019
-# final_features = build_features(2018): feat_yrs = 2014:2018 (T=5 window)
-# No outcome column is available for 2019 at prediction time.
-all_train <- bind_rows(fold_data)
+# k=1: train on all 9 folds (outcomes 2015-2023), predict 2024
+# k=3: train on all 7 folds (outcomes 2015-2023 3-year windows), predict 2022-2024
 
-# Generate 2019 risk scores: fit_and_predict uses final_features as the test
-# set (features only, no obs); model outputs are predicted probabilities of
-# outbreak occurrence in 2019.
-final_preds <- fit_and_predict(all_train, final_features)
+make_final_pred <- function(kv) {
+    fd <- fold_data_list[[paste0("k", kv)]]
+    ff <- final_features_list[[paste0("k", kv)]]
+    all_tr <- bind_rows(fd)
+    fp <- fit_and_predict(all_tr, ff)
+    ff |>
+        left_join(fp |> dplyr::select(location, all_of(MODEL_NAMES)), by = "location") |>
+        rename(pred_prob = Logistic, pred_enet = `Elastic Net`,
+               pred_rf = `Random Forest`, pred_xgb = XGBoost, pred_gam = GAM) |>
+        mutate(hist_count = n_outbreak_years, k = kv)
+}
 
-# Attach predictions to final_features for downstream use
-pred_data <- final_features |>
-    left_join(final_preds |> dplyr::select(location, all_of(MODEL_NAMES)),
-              by = "location")
+pred_data_k1 <- make_final_pred(1L)
+pred_data_k3 <- make_final_pred(3L)
 
-# Map model names to strategy names for downstream pipeline
-pred_data <- pred_data |>
-    rename(
-        pred_prob = Logistic,
-        pred_rf   = `Random Forest`,
-        pred_gam  = GAM
-    )
-# Keep Elastic Net and XGBoost as additional columns
-pred_data <- pred_data |>
-    rename(pred_enet = `Elastic Net`, pred_xgb = XGBoost)
+# Backward-compatible alias: pred_data = k=1 predictions
+pred_data <- pred_data_k1
 
-# Also store hist_count for backward compatibility (Count-ranked strategy)
-# hist_count = n_outbreak_years in the new feature set
-pred_data <- pred_data |>
-    mutate(hist_count = n_outbreak_years)
-
-cat("Final predictions for 2019: n =", nrow(pred_data), "locations\n")
-cat("Outcome prevalence (fold 4, 2018):",
-    round(100 * mean(fold_data[["fold4"]]$obs), 1), "%\n")
+cat("k=1: final predictions for 2024: n =", nrow(pred_data_k1), "locations\n")
+cat("  Fold 9 (outcome 2023) prevalence:",
+    round(100 * mean(fold_data_list$k1[["fold9"]]$obs), 1), "%\n")
+cat("k=3: final predictions for 2022-2024: n =", nrow(pred_data_k3), "locations\n")
+cat("  Fold 7 (outcome 2021-2023) prevalence:",
+    round(100 * mean(fold_data_list$k3[["fold7"]]$obs), 1), "%\n")
 ```
 
 ## Save Predictions
@@ -873,7 +950,8 @@ pop_lookup <- shp_admin23 |>
 
 saveRDS(
     list(
-        pred_data     = pred_data,
+        pred_data     = pred_data,      # k=1 predictions (2024 forecast)
+        pred_data_k3  = pred_data_k3,   # k=3 predictions (2022-2024 forecast)
         loc_year_full = loc_year_full,
         shp_admin23   = shp_admin23,
         nbr_list      = nbr_list,
@@ -882,8 +960,9 @@ saveRDS(
     "data/outbreak_predictions.rds"
 )
 cat("Saved data/outbreak_predictions.rds\n")
-cat("  pred_data:     ", nrow(pred_data), "locations\n")
-cat("  loc_year_full: ", nrow(loc_year_full), "rows\n")
-cat("  shp_admin23:   ", nrow(shp_admin23), "polygons\n")
-cat("  nbr_list:      ", length(nbr_list), "entries\n")
+cat("  pred_data (k=1):  ", nrow(pred_data), "locations\n")
+cat("  pred_data_k3:     ", nrow(pred_data_k3), "locations\n")
+cat("  loc_year_full:    ", nrow(loc_year_full), "rows\n")
+cat("  shp_admin23:      ", nrow(shp_admin23), "polygons\n")
+cat("  nbr_list:         ", length(nbr_list), "entries\n")
 ```

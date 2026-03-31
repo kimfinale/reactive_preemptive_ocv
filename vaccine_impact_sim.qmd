@@ -17,26 +17,40 @@ editor_options:
 ## Overview
 
 This document simulates the impact of **mixed pre-emptive and reactive cholera
-vaccination** under a fixed vaccine supply. Model predictions come from
-`outbreak_prediction.qmd` (saved to `data/outbreak_predictions.rds`).
+vaccination** under a fixed vaccine supply. Model predictions (for both k=1 and
+k=3 outcome horizons) are loaded from `data/outbreak_predictions.rds` produced
+by `outbreak_prediction.qmd`.
+
+**Two prediction horizons**:
+
+| Horizon | Model trained on | Prediction target | Evaluation window |
+|---------|-----------------|-------------------|------------------|
+| k=1 | outcomes 2015–2023 (9 folds) | any outbreak in 2024 | 2023 (single year) |
+| k=3 | outcomes 2015–2023 (7 × 3-yr folds) | any outbreak in 2022–2024 | 2021–2023 (3 years) |
 
 **Scenario parameters**:
 
 - Countries: COD (DRC, high-risk), NGA (Nigeria, medium-risk), CMR (Cameroon, low-risk)
 - Single-dose OCV for both pre-emptive and reactive use ($\nu = 1, r \in \{0.2, 0.4, 0.6\}$)
-- Cost ratio $R = C_I / C_V$, where $C_V$ is cost of vaccination per person and $C_I$ is cost of infection per person. Total cost of vaccinating a population with size $n$ would be $n C_V$ and total cost of infection would be $n A C_I$, where $A$ is the attack rate.
-- Coverage fraction varied: $f \in \{0.3, 0.5, 0.7\}$ (doses adjusted accordingly)
-- Evaluation window: 2016--2018
-- $\alpha$: fraction of supply allocated to the pre-emptive vaccination; $1 - \alpha$ held for reactive vaccination
+- Cost ratio $R = C_I / C_V$, where $C_V$ = cost per person vaccinated, $C_I$ = cost per infection
+- Coverage fraction varied: $f \in \{0.3, 0.5, 0.7\}$
+- $\alpha$: fraction of supply allocated pre-emptively; $1-\alpha$ held for reactive response
+
+**Optimal $\alpha$ estimation** — two approaches:
+
+1. **Theory-based** (Beta-Binomial analytical): uses `cost_beta()` with Beta$(a,b)$ parameters
+   estimated from the outbreak data. Assumes homogeneous location sizes and perfect targeting.
+2. **Empirical** (data-driven): the $\alpha$ that minimises simulated per-capita cost using
+   actual population weights and strategy-specific targeting scores.
 
 | Strategy | Ranking basis |
 |----------|--------------|
 | Model-ranked | Predicted outbreak probability (logistic regression) |
 | RF-ranked | Predicted outbreak probability (random forest) |
 | GAM-ranked | Predicted outbreak probability (GAM) |
-| Count-ranked | Historical outbreak count (2010--2017) |
+| Count-ranked | Historical outbreak count |
 | Random | Uniform random selection |
-| Perfect ranking | Actual 2016--2018 outbreak burden ($\rho = 1$) |
+| Perfect ranking | Actual outbreak burden during evaluation window ($\rho = 1$) |
 | Oracle | Perfect foreknowledge of outbreak realization |
 
 
@@ -57,16 +71,18 @@ source("R/spatial_setup.R")
 
 ```{r load-predictions}
 preds_rds     <- readRDS("data/outbreak_predictions.rds")
-pred_data     <- preds_rds$pred_data
+pred_data     <- preds_rds$pred_data      # k=1: predict 2024
+pred_data_k3  <- preds_rds$pred_data_k3  # k=3: predict 2022-2024
 loc_year_full <- preds_rds$loc_year_full
 shp_admin23   <- preds_rds$shp_admin23
 nbr_list      <- preds_rds$nbr_list
 pop_lookup    <- preds_rds$pop_lookup
 
 cat("Loaded outbreak_predictions.rds\n")
-cat("  pred_data:     ", nrow(pred_data), "locations\n")
-cat("  loc_year_full: ", nrow(loc_year_full), "rows\n")
-cat("  shp_admin23:   ", nrow(shp_admin23), "polygons\n")
+cat("  pred_data (k=1):  ", nrow(pred_data), "locations\n")
+cat("  pred_data_k3:     ", nrow(pred_data_k3), "locations\n")
+cat("  loc_year_full:    ", nrow(loc_year_full), "rows\n")
+cat("  shp_admin23:      ", nrow(shp_admin23), "polygons\n")
 ```
 
 ## Build Simulation Dataset
@@ -79,290 +95,68 @@ $f \in \{0.3, 0.5, 0.7\}$.
 
 ```{r build-sim-data}
 # ATTACK_RATE: fraction of population that becomes a case per outbreak-year.
-# Used in cost functions (illness cost = R × AR × pop) and for est_cases.
 ATTACK_RATE <- 0.005
-
 DOSES_PER_PERSON <- 1 # single-dose OCV
-
-# Evaluation window: 2016-2018 (3 years of observed outcomes for impact simulation)
-# The final model predicts 2018, but we use 2016-2018 for richer impact evaluation
-# since the validation folds already confirmed model quality for 2015-2017.
-eval_years <- 2016:2018
-
-# Compute ground-truth outbreak outcomes during the evaluation window:
-# n_outbreak_years = how many of the 3 years had an active outbreak
-# any_outbreak     = binary: ≥1 outbreak year
-outbreak_eval <- loc_year_full |>
-    filter(year %in% eval_years) |>
-    group_by(location) |>
-    summarise(
-        n_outbreak_years = sum(n_active > 0),
-        any_outbreak = as.integer(n_outbreak_years > 0),
-        .groups = "drop"
-    )
-
-# Build the master simulation data frame: one row per location, with
-# model predictions and evaluation outcomes
-sim_df_all <- pred_data |>
-    dplyr::select(location, hist_count, pred_prob, pred_rf, pred_gam) |>
-    left_join(outbreak_eval, by = "location") |>
-    replace_na(list(n_outbreak_years = 0L, any_outbreak = 0L))
-
-# Attach population from the shapefile (needed for pop-weighted allocation)
-pop_lookup <- shp_admin23 |>
-    st_drop_geometry() |>
-    dplyr::select(location, pop_sum)
-
-sim_df_all <- sim_df_all |>
-    left_join(pop_lookup, by = "location") |>
-    filter(!is.na(pop_sum), pop_sum > 0) |>
-    mutate(
-        country = str_extract(location, "(?<=::)[A-Z]{3}(?=::)"),
-        # est_cases: counterfactual case count (used by Perfect ranking + impact metrics)
-        est_cases = pop_sum * ATTACK_RATE * n_outbreak_years,
-        # obs_rate: empirical outbreak probability used in MC cost functions
-        obs_rate = n_outbreak_years / length(eval_years)
-    )
 
 SELECTED_COUNTRIES <- c("COD", "NGA", "CMR")
 COUNTRY_LABELS <- c(COD = "COD (DRC)", NGA = "NGA (Nigeria)", CMR = "CMR (Cameroon)")
-
-sim_df_all <- sim_df_all |> filter(country %in% SELECTED_COUNTRIES)
-
-# Coverage fractions: the total dose budget = f × P_total (country-level)
 f_values <- c(0.3, 0.5, 0.7)
 
-# Print summary per country
-for (ctry in SELECTED_COUNTRIES) {
-    df_c <- sim_df_all |> filter(country == ctry)
-    P_c <- sum(df_c$pop_sum)
-    cat(sprintf("\n=== %s ===\n", COUNTRY_LABELS[ctry]))
-    cat(sprintf("Locations: %d\n", nrow(df_c)))
-    cat(sprintf(
-        "  with outbreaks (%d-%d): %d (%.1f%%)\n",
-        min(eval_years), max(eval_years),
-        sum(df_c$any_outbreak), 100 * mean(df_c$any_outbreak)
-    ))
-    cat(sprintf(
-        "Total population: %s (%.1f M)\n",
-        format(round(P_c), big.mark = ","), P_c / 1e6
-    ))
-    cat(sprintf(
-        "Counterfactual cases: %s\n",
-        format(round(sum(df_c$est_cases)), big.mark = ",")
-    ))
+# Helper: build simulation data frame for a given prediction set and eval window
+build_sim_df <- function(pd, eval_yrs) {
+    outbreak_eval <- loc_year_full |>
+        filter(year %in% eval_yrs) |>
+        group_by(location) |>
+        summarise(
+            n_outbreak_years = sum(n_active > 0),
+            any_outbreak     = as.integer(n_outbreak_years > 0),
+            .groups = "drop"
+        )
+    pd |>
+        dplyr::select(location, hist_count, pred_prob, pred_rf, pred_gam) |>
+        left_join(outbreak_eval, by = "location") |>
+        replace_na(list(n_outbreak_years = 0L, any_outbreak = 0L)) |>
+        left_join(pop_lookup, by = "location") |>
+        filter(!is.na(pop_sum), pop_sum > 0) |>
+        mutate(
+            country   = str_extract(location, "(?<=::)[A-Z]{3}(?=::)"),
+            est_cases = pop_sum * ATTACK_RATE * n_outbreak_years,
+            obs_rate  = n_outbreak_years / length(eval_yrs)
+        ) |>
+        filter(country %in% SELECTED_COUNTRIES)
 }
 
-# Keep sim_df as COD for backward compatibility in remaining single-country code
-sim_df <- sim_df_all |> filter(country == "COD")
+# k=3: predict any outbreak in 2022-2024; evaluate against 2021-2023
+# (2021-2023 is the most recent 3-year window fully in the data)
+eval_years_k3 <- 2021:2023
+sim_df_all_k3 <- build_sim_df(pred_data_k3, eval_years_k3)
+
+# k=1: predict any outbreak in 2024; evaluate against 2021-2023 individually
+# (use 2021-2023 for single-year rolling comparison; same period as k=3)
+eval_years_k1 <- 2021:2023
+
+# Main analysis alias: k=3 (3-year window provides better statistical power)
+sim_df_all <- sim_df_all_k3
+eval_years  <- eval_years_k3
+n_trials    <- length(eval_years_k3)  # 3
+
+sim_df  <- sim_df_all |> filter(country == "COD")
 P_total <- sum(sim_df$pop_sum)
-```
 
-
-```{r classifier-comparison-REMOVED, eval=FALSE, include=FALSE}
-# OLD DRC-only classifier comparison — superseded by the 5-model expanding
-# window CV above. Kept here as inactive code for reference.
-# Compare 5 classifiers for DRC only: Logistic, GAM, Random Forest, GBM, k-NN.
-# All use the same 2 features (hist_count, nbr_hist) and same
-# train/test split. The goal is to see whether nonlinear methods improve
-# targeting accuracy (rho) over logistic regression.
-cod_locs <- sim_df_all |>
-    filter(country == "COD") |>
-    pull(location)
-train_cod <- train_data |> filter(location %in% cod_locs)
-pred_cod <- pred_data |> filter(location %in% cod_locs)
-
-features <- c("hist_count", "nbr_hist")
-X_train <- train_cod[, features] |> as.data.frame()
-y_train <- train_cod$obs
-X_pred <- pred_cod[, features] |> as.data.frame()
-
-# Outcome for rho evaluation: observed outbreak years in 2016-2018
-cod_sim <- sim_df_all |> filter(country == "COD")
-
-cat(sprintf(
-    "DRC training: %d obs, prediction: %d locations\n",
-    nrow(train_cod), nrow(pred_cod)
-))
-cat(sprintf(
-    "Outcome prevalence (train): %.1f%%, (test 2016-18): %.1f%%\n",
-    100 * mean(y_train), 100 * mean(cod_sim$any_outbreak)
-))
-
-# --- 1. Logistic regression (baseline — already fitted) ---
-pred_logistic <- pred_cod$pred_prob
-
-# --- 2. GAM with smooths ---
-n_unique_hc <- length(unique(train_cod$hist_count))
-n_unique_nbr <- length(unique(train_cod$nbr_hist))
-k_hc <- min(10, n_unique_hc - 1)
-k_nbr <- min(10, n_unique_nbr - 1)
-gam_fit <- gam(
-    obs ~ s(hist_count, k = k_hc) + s(nbr_hist, k = k_nbr),
-    data = train_cod, family = binomial, method = "REML"
-)
-pred_gam <- predict(gam_fit, newdata = X_pred, type = "response")
-
-# --- 3. Random forest ---
-set.seed(42)
-rf_fit <- randomForest(factor(obs) ~ hist_count + nbr_hist,
-    data = train_cod, ntree = 500
-)
-pred_rf <- predict(rf_fit, newdata = X_pred, type = "prob")[, "1"]
-
-# --- 4. Gradient boosting (GBM) ---
-set.seed(42)
-gbm_fit <- gbm(obs ~ hist_count + nbr_hist,
-    data = train_cod, distribution = "bernoulli",
-    n.trees = 500, interaction.depth = 3, shrinkage = 0.05,
-    bag.fraction = 0.8, verbose = FALSE
-)
-best_iter <- gbm.perf(gbm_fit, method = "OOB", plot.it = FALSE)
-pred_gbm <- predict(gbm_fit,
-    newdata = X_pred, n.trees = best_iter,
-    type = "response"
-)
-
-# --- 5. k-NN (k = 10, probability mode) ---
-# Scale features for distance-based method
-scale_params <- list(
-    center = colMeans(X_train),
-    scale  = apply(X_train, 2, sd) + 1e-10
-)
-X_train_sc <- scale(X_train, center = scale_params$center, scale = scale_params$scale)
-X_pred_sc <- scale(X_pred, center = scale_params$center, scale = scale_params$scale)
-
-knn_fit <- knn(
-    train = X_train_sc, test = X_pred_sc, cl = factor(y_train),
-    k = 10, prob = TRUE
-)
-# knn() returns the class + attr(,"prob") = proportion of winning class
-knn_raw_prob <- attr(knn_fit, "prob")
-knn_class <- as.integer(as.character(knn_fit))
-# Convert to P(outbreak): if class = 1, prob is correct; if class = 0, flip
-pred_knn <- ifelse(knn_class == 1, knn_raw_prob, 1 - knn_raw_prob)
-
-# --- Compile predictions ---
-classifier_preds <- tibble(
-    location = pred_cod$location,
-    Logistic = pred_logistic,
-    GAM = as.numeric(pred_gam),
-    `Random Forest` = pred_rf,
-    GBM = pred_gbm,
-    kNN = pred_knn
-) |>
-    left_join(cod_sim |> dplyr::select(location, n_outbreak_years, any_outbreak, est_cases),
-        by = "location"
-    )
-```
-
-```{r classifier-rho-comparison, eval=FALSE, include=FALSE}
-# Evaluate each classifier's targeting accuracy:
-# - Spearman rho: rank correlation between predicted prob and outbreak burden
-# - AUC: area under the ROC curve for binary outbreak classification
-# Both are computed on the 2016-2018 test period (out-of-sample).
-classifier_methods <- c("Logistic", "GAM", "Random Forest", "GBM", "kNN")
-
-rho_table <- tibble(
-    Method = classifier_methods,
-    rho_spearman = map_dbl(classifier_methods, function(m) {
-        cor(classifier_preds[[m]], classifier_preds$n_outbreak_years,
-            method = "spearman"
-        )
-    }),
-    AUC = map_dbl(classifier_methods, function(m) {
-        as.numeric(pROC::auc(pROC::roc(classifier_preds$any_outbreak,
-            classifier_preds[[m]],
-            quiet = TRUE
-        )))
-    })
-)
-
-# Add simple baselines
-baseline_rho <- tibble(
-    Method = c("Count-ranked", "Random"),
-    rho_spearman = c(
-        cor(cod_sim$hist_count, cod_sim$n_outbreak_years, method = "spearman"),
-        0
-    ),
-    AUC = c(
-        as.numeric(pROC::auc(pROC::roc(cod_sim$any_outbreak,
-            cod_sim$hist_count,
-            quiet = TRUE
-        ))),
-        0.5
-    )
-)
-
-rho_table <- bind_rows(rho_table, baseline_rho) |>
-    arrange(desc(rho_spearman))
-
-knitr::kable(rho_table,
-    digits = 3,
-    col.names = c("Method", "Spearman \u03c1", "AUC"),
-    caption = "DRC: Targeting accuracy by classification method (eval 2016-2018)"
-)
-```
-
-```{r fig-classifier-rho, eval=FALSE, include=FALSE}
-rho_plot_df <- rho_table |>
-    mutate(
-        Method = fct_reorder(Method, rho_spearman),
-        type = ifelse(Method %in% c("Count-ranked", "Random"),
-            "Baseline", "Classifier"
-        )
-    )
-
-ggplot(rho_plot_df, aes(x = Method, y = rho_spearman, fill = type)) +
-    geom_col(width = 0.6, alpha = 0.85) +
-    geom_text(aes(label = sprintf("%.3f", rho_spearman)),
-        hjust = -0.15, size = 3.5
-    ) +
-    coord_flip() +
-    scale_fill_manual(values = c(
-        "Classifier" = "steelblue",
-        "Baseline" = "grey60"
-    )) +
-    scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
-    labs(
-        x = NULL, y = expression("Spearman" ~ rho),
-        title = "DRC: Targeting accuracy by classification method",
-        subtitle = "Correlation between predicted risk and actual outbreak burden (2016-2018)"
-    ) +
-    theme_minimal(base_size = 12) +
-    guides(fill = "none")
-```
-
-```{r fig-classifier-scatter, eval=FALSE, include=FALSE}
-# Scatter: predicted probability vs actual outcomes for each classifier
-scatter_df <- classifier_preds |>
-    pivot_longer(
-        cols = all_of(classifier_methods),
-        names_to = "Method", values_to = "pred_prob_clf"
-    ) |>
-    mutate(Method = factor(Method, levels = rho_table$Method))
-
-ggplot(scatter_df, aes(x = pred_prob_clf, y = n_outbreak_years)) +
-    geom_jitter(aes(colour = factor(any_outbreak)),
-        alpha = 0.4, height = 0.1, width = 0, size = 1
-    ) +
-    geom_smooth(
-        method = "loess", se = FALSE, colour = "black",
-        linewidth = 0.6
-    ) +
-    facet_wrap(~Method, nrow = 2, scales = "free_x") +
-    scale_colour_manual(
-        values = c("0" = "grey60", "1" = "firebrick"),
-        labels = c("No outbreak", "Outbreak")
-    ) +
-    labs(
-        x = "Predicted probability",
-        y = "Outbreak years (2016-2018)",
-        colour = NULL,
-        title = "DRC: Predicted risk vs observed outcomes by classifier"
-    ) +
-    theme_minimal(base_size = 11) +
-    theme(legend.position = "bottom")
+for (ctry in SELECTED_COUNTRIES) {
+    df_c <- sim_df_all |> filter(country == ctry)
+    df_k1 <- build_sim_df(pred_data, eval_years_k1[length(eval_years_k1)]) |>
+        filter(country == ctry)
+    P_c <- sum(df_c$pop_sum)
+    cat(sprintf("\n=== %s ===\n", COUNTRY_LABELS[ctry]))
+    cat(sprintf("  k=3 eval (%d-%d): %d/%d locations with outbreaks (%.1f%%)\n",
+        min(eval_years_k3), max(eval_years_k3),
+        sum(df_c$any_outbreak), nrow(df_c), 100 * mean(df_c$any_outbreak)))
+    cat(sprintf("  k=1 eval (%d):   %d/%d locations with outbreaks (%.1f%%)\n",
+        eval_years_k1[length(eval_years_k1)],
+        sum(df_k1$any_outbreak), nrow(df_k1), 100 * mean(df_k1$any_outbreak)))
+    cat(sprintf("  Population: %.1f M\n", P_c / 1e6))
+}
 ```
 
 
@@ -627,7 +421,7 @@ p_hat <- bb_fits[["COD"]]$p
 
 ```{r beta-distribution-diagnostics, fig.width=14, fig.height=12}
 # Beta-Binomial diagnostics for each country (CDF + PMF)
-# Uses the 3-year evaluation window (2016-2018) that the model was fitted on.
+# Uses the k=3 evaluation window (eval_years_k3) for location outbreak counts.
 diag_plots <- lapply(SELECTED_COUNTRIES, function(ctry) {
     df_c <- sim_df_all |> filter(country == ctry)
     bb <- bb_fits[[ctry]]
@@ -648,7 +442,7 @@ diag_plots <- lapply(SELECTED_COUNTRIES, function(ctry) {
         ) +
         labs(
             x = "Outbreak rate", y = "CDF",
-            title = sprintf("%s — CDF vs %s (k=3)", COUNTRY_LABELS[ctry], beta_label)
+            title = sprintf("%s — CDF vs %s (k=3yr)", COUNTRY_LABELS[ctry], beta_label)
         ) +
         theme_minimal(base_size = 10)
 
@@ -671,7 +465,7 @@ diag_plots <- lapply(SELECTED_COUNTRIES, function(ctry) {
         scale_x_continuous(breaks = 0:n_trials) +
         labs(
             x = "Outbreak years", y = "Proportion", fill = NULL,
-            title = sprintf("%s — BB PMF (k=3)", COUNTRY_LABELS[ctry])
+            title = sprintf("%s — BB PMF (k=3yr)", COUNTRY_LABELS[ctry])
         ) +
         theme_minimal(base_size = 10) +
         theme(legend.position = "bottom")
@@ -679,7 +473,8 @@ diag_plots <- lapply(SELECTED_COUNTRIES, function(ctry) {
     p_cdf + p_pmf
 })
 wrap_plots(diag_plots, ncol = 1) +
-    plot_annotation(title = "Beta-Binomial diagnostics by country (evaluation window: 2016-2018)")
+    plot_annotation(title = sprintf("Beta-Binomial diagnostics by country (k=3 eval window: %d-%d)",
+                                    min(eval_years_k3), max(eval_years_k3)))
 ```
 
 The 3-year CDF has only 3 steps because `obs_rate = k/3` can only be 0, 1/3,
@@ -773,27 +568,46 @@ wrap_plots(diag_plots_long, ncol = 1) +
 ```
 
 
-### Empirical targeting accuracy (rho) and population-weighted optimal alpha
+### Empirical targeting accuracy (rho) and optimal alpha
 
-We compute two types of optimal $\alpha^*$ for each country:
+We compute three estimates of optimal $\alpha^*$ for each country and strategy:
 
-1. **Equal-weight** (original `cost_beta()`): treats locations as equal-weight
-   units, perfect targeting
-2. **Population-weighted** (`cost_popweighted_mc()`): accounts for heterogeneous
-   population sizes and strategy-specific targeting via Monte Carlo
+1. **Theory-based / equal-weight** (`cost_beta()`): analytical formula derived from the
+   Beta-Binomial model. Assumes homogeneous locations and perfect targeting ($\rho = 1$).
+   Provides a closed-form reference point.
+2. **Population-weighted MC** (`cost_popweighted_mc()`): sweeps $\alpha$ on a grid, draws
+   Monte Carlo outbreaks from each location's empirical rate, and selects the $\alpha$
+   that minimises expected per-capita cost. Accounts for population heterogeneity and
+   imperfect targeting.
+3. **Empirically optimal** (see "Per-Strategy Optimal Alpha" section): finds the $\alpha$
+   on the simulation cost curve that minimises actual cost given observed outcomes.
+   Directly data-driven — no distributional assumptions.
+
+The k=3 evaluation (2021–2023) is used for all three. See the k=1 section for the
+single-year comparison.
 
 ```{r empirical-rho}
-# Compute empirical rho for each strategy x country
+# k=3 rho: scores from pred_data_k3, outcomes = n_outbreak_years in 2021-2023
 rho_by_country <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
-    df_c <- sim_df_all |> filter(country == ctry)
-    compute_strategy_rhos(df_c) |> mutate(country = ctry)
+    df_c <- sim_df_all_k3 |> filter(country == ctry)
+    compute_strategy_rhos(df_c) |> mutate(country = ctry, k = "k=3")
 })
 
-rho_by_country |>
-    pivot_wider(names_from = country, values_from = rho) |>
+# k=1 rho: scores from pred_data, outcomes = n_outbreak_years in 2023 (single year)
+rho_k1_by_country <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
+    df_c <- build_sim_df(pred_data, eval_years_k1[length(eval_years_k1)]) |>
+        filter(country == ctry)
+    compute_strategy_rhos(df_c) |> mutate(country = ctry, k = "k=1")
+})
+
+rho_both <- bind_rows(rho_by_country, rho_k1_by_country)
+
+rho_both |>
+    pivot_wider(names_from = c(k, country), values_from = rho,
+                names_sep = " / ") |>
     knitr::kable(
         digits = 3,
-        caption = "Spearman rho (targeting score vs. actual outbreak-years) by strategy and country"
+        caption = "Spearman rho by strategy, country, and prediction horizon (k=3: 2021-2023; k=1: 2023)"
     )
 ```
 
@@ -1745,28 +1559,28 @@ for (ctry in SELECTED_COUNTRIES) {
 ```
 
 
-## Single-Year Evaluation
+## Single-Year Evaluation (k=1 Model)
 
-The 3-year evaluation window aggregates outcomes, which smooths noise but
-conflates the annual outbreak probability $p$ with the probability of
-*at-least-one-outbreak-in-3-years*. Here we repeat the simulation using a
-single year, so the observed outcome directly reflects the annual probability
-$p$ that enters the analytical cost formula.
+The k=1 model predicts single-year outbreak probability. Here we evaluate its
+targeting performance year-by-year over 2021–2023, using the **k=1 final model
+scores** (`pred_data`) as targeting ranks. Each year's simulation uses the same
+model scores but the year's actual outbreak outcomes.
 
-We use the same Beta($a$, $b$) parameters estimated from the 3-year data —
-with only one binary observation per location, the shape parameters are not
-identifiable from a single cross-section.
+The k=3 main analysis (above) uses 3-year pooled outcomes which increases
+statistical power but conflates annual $p$ with 3-year $P(\text{any outbreak})$.
 
 ```{r single-year-setup}
-# Repeat the full simulation for each individual year (2016, 2017, 2018)
-# to check robustness: the 3-year pooled results might mask year-to-year
-# variation in outbreak patterns. Each year uses the SAME model predictions
-# (trained on ≤2015) but different ground-truth outbreaks.
-single_years <- eval_years
+# k=1 model evaluation: loop over 2021-2023, use pred_data scores (k=1 model)
+# Each year: model scores from pred_data, outcomes from loc_year_full for that year
+single_years <- eval_years_k1  # 2021:2023
 
 single_year_results <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
-    df_c <- sim_df_all |> filter(country == ctry)
-    P_total_c <- sum(df_c$pop_sum)
+    # Use k=1 model scores (sim_df_all_k1 constructed here for the country)
+    # Build a base data frame with k=1 predictions (the ranking scores are the same
+    # for every year — only the outcomes change)
+    base_c <- build_sim_df(pred_data, eval_years_k1[1]) |>
+        filter(country == ctry)
+    P_total_c <- sum(base_c$pop_sum)
 
     map_dfr(single_years, function(yr) {
         # Outbreak outcomes for this single year
@@ -1774,7 +1588,7 @@ single_year_results <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
             filter(year == yr) |>
             transmute(location, any_outbreak_yr = as.integer(n_active > 0))
 
-        sim_1y <- df_c |>
+        sim_1y <- base_c |>
             dplyr::select(
                 location, hist_count,
                 pred_prob, pred_rf, pred_gam, pop_sum, country
@@ -1901,7 +1715,8 @@ walk(SELECTED_COUNTRIES, function(ctry) {
             x = expression(alpha ~ "(pre-emptive fraction)"),
             y = "% of cases averted", colour = "Strategy",
             title = sprintf("%s: single-year burden averted", COUNTRY_LABELS[ctry]),
-            subtitle = "Each row = one year (2016-2018); dashed = pop-weighted alpha* (Model-ranked)"
+            subtitle = sprintf("Each row = one year (%d-%d, k=1 model scores); dashed = pop-weighted alpha*",
+                               min(single_years), max(single_years))
         ) +
         theme_minimal(base_size = 11) +
         theme(legend.position = "bottom")
