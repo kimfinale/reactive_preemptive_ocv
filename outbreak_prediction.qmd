@@ -27,9 +27,9 @@ simulation.
 | Fold  | Feature years | Outcome year | Purpose    |
 |-------|--------------|--------------|------------|
 | 1     | 2010--2014   | 2015         | Validation |
-| 2     | 2010--2015   | 2016         | Validation |
-| 3     | 2010--2016   | 2017         | Validation |
-| Final | 2010--2017   | 2018         | Prediction |
+| 2     | 2011--2015   | 2016         | Validation |
+| 3     | 2012--2016   | 2017         | Validation |
+| Final | 2013--2017   | 2018         | Prediction |
 
 Five classifiers are compared: logistic regression, elastic net, random forest,
 XGBoost, and GAM.
@@ -259,9 +259,9 @@ We predict outbreak occurrence one year ahead for admin-2 units using an
 | Fold  | Feature years | Outcome year | Purpose    |
 |-------|--------------|--------------|------------|
 | 1     | 2010--2014   | 2015         | Validation |
-| 2     | 2010--2015   | 2016         | Validation |
-| 3     | 2010--2016   | 2017         | Validation |
-| Final | 2010--2017   | 2018         | Prediction |
+| 2     | 2011--2015   | 2016         | Validation |
+| 3     | 2012--2016   | 2017         | Validation |
+| Final | 2013--2017   | 2018         | Prediction |
 
 Within each temporal fold, 5-fold spatial cross-validation tests
 generalization across regions. Five classifiers are compared: logistic
@@ -270,11 +270,14 @@ regression, elastic net, random forest, XGBoost, and GAM.
 ### Feature engineering
 
 ```{r build-features}
+T_WINDOW <- 5L  # number of feature years (rolling window)
+
 # Build features for a given feature window ending at year_end.
+# Uses the most recent T_WINDOW years only (e.g. T=5: 2013-2017 for 2018).
 # Returns one row per location with same-unit and neighbor features.
-build_features <- function(year_end, nbr_map = nbr_list,
+build_features <- function(year_end, T = T_WINDOW, nbr_map = nbr_list,
                            coord_lookup = centroid_coords) {
-    feat_yrs <- 2010:year_end
+    feat_yrs <- (year_end - T + 1L):year_end
     n_yrs <- length(feat_yrs)
 
     # Per-location summary across the feature window
@@ -478,8 +481,9 @@ eval_metrics <- function(obs, pred) {
                               scores.class1 = pred[obs == 0])
     auc_pr <- pr_obj$auc.integral
     brier <- mean((pred - obs)^2)
+    rho   <- cor(pred, obs, method = "spearman")
     coords <- pROC::coords(roc_obj, "best", best.method = "youden", ret = "all")
-    tibble(AUC_ROC = auc_roc, AUC_PR = auc_pr, Brier = brier,
+    tibble(rho = rho, AUC_ROC = auc_roc, AUC_PR = auc_pr, Brier = brier,
            Sensitivity = coords$sensitivity[1],
            Specificity = coords$specificity[1],
            Threshold = coords$threshold[1])
@@ -489,11 +493,14 @@ eval_metrics <- function(obs, pred) {
 ### Expanding-window temporal cross-validation
 
 ```{r temporal-cv}
-# Temporal folds
+# Temporal folds: T=5 rolling feature window ending at train_end
+# Fold 1: features 2010-2014 → outcome 2015
+# Fold 2: features 2011-2015 → outcome 2016
+# Fold 3: features 2012-2016 → outcome 2017
 temporal_folds <- tibble(
     fold = 1:3,
-    train_end = 2014:2016,     # feature window: 2010 to train_end
-    outcome_year = 2015:2017   # predict this year
+    train_end = 2014:2016,
+    outcome_year = 2015:2017
 )
 
 # Build feature + outcome data for each fold
@@ -547,7 +554,7 @@ temporal_results <- map_dfr(2:3, function(i) {
 })
 
 temporal_results |>
-    dplyr::select(fold, outcome_year, model, AUC_ROC, AUC_PR, Brier,
+    dplyr::select(fold, outcome_year, model, rho, AUC_ROC, AUC_PR, Brier,
                   Sensitivity, Specificity) |>
     arrange(fold, desc(AUC_ROC)) |>
     knitr::kable(digits = 3,
@@ -585,12 +592,12 @@ spatial_cv_results <- map_dfr(1:3, function(i) {
 # Summary: mean across spatial folds, per temporal fold and model
 spatial_cv_summary <- spatial_cv_results |>
     group_by(temporal_fold, model) |>
-    summarise(across(c(AUC_ROC, AUC_PR, Brier, Sensitivity, Specificity),
+    summarise(across(c(rho, AUC_ROC, AUC_PR, Brier, Sensitivity, Specificity),
                      list(mean = mean, sd = sd)), .groups = "drop")
 
 spatial_cv_summary |>
-    dplyr::select(temporal_fold, model, AUC_ROC_mean, AUC_ROC_sd,
-                  AUC_PR_mean, AUC_PR_sd, Brier_mean) |>
+    dplyr::select(temporal_fold, model, rho_mean, rho_sd,
+                  AUC_ROC_mean, AUC_ROC_sd, AUC_PR_mean, Brier_mean) |>
     arrange(temporal_fold, desc(AUC_ROC_mean)) |>
     knitr::kable(digits = 3,
         caption = "Spatial CV within each temporal fold (mean ± SD across 5 folds)")
