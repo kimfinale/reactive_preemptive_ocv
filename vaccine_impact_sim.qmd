@@ -2448,3 +2448,182 @@ pw_results_top |>
             n_top_locs, bb_top$a, bb_top$b, bb_top$p)
     )
 ```
+
+# Probability-Threshold Scenarios: Regions with Risk > X
+
+Rather than fixing total population, we select all ADM2 regions whose ensemble
+mean predicted risk exceeds a fixed threshold $X \in \{0.1, 0.3\}$. Higher
+thresholds produce smaller, more homogeneously high-risk subsets, which should
+push $\alpha^*$ further from zero.
+
+```{r thresh-setup}
+PROB_THRESHOLDS <- c(0.1, 0.3)
+
+# pred_ens was built in top200m-setup; reuse it here
+thresh_summary <- map_dfr(PROB_THRESHOLDS, function(thr) {
+    locs <- pred_ens |> filter(score_ens > thr)
+    tibble(
+        threshold  = thr,
+        n_locs     = nrow(locs),
+        pop_M      = sum(locs$pop_sum) / 1e6
+    )
+})
+cat("Threshold scenario overview:\n")
+print(thresh_summary)
+```
+
+```{r thresh-analysis}
+# For each threshold: build sim data, fit BB, get rho, compute alpha*
+thresh_results <- map(PROB_THRESHOLDS, function(thr) {
+
+    # ── Simulation data ──────────────────────────────────────────────────────
+    sim_thr <- pred_ens |>
+        filter(score_ens > thr) |>
+        left_join(
+            loc_year_full |>
+                filter(year %in% eval_years_k3) |>
+                group_by(location) |>
+                summarise(n_outbreak_years = sum(n_active > 0), .groups = "drop"),
+            by = "location"
+        ) |>
+        replace_na(list(n_outbreak_years = 0L)) |>
+        mutate(
+            obs_rate  = n_outbreak_years / length(eval_years_k3),
+            est_cases = pop_sum * ATTACK_RATE * n_outbreak_years
+        )
+
+    cat(sprintf("\n=== Threshold > %.1f ===\n", thr))
+    cat(sprintf("  n locations:   %d\n", nrow(sim_thr)))
+    cat(sprintf("  population:    %.1f M\n", sum(sim_thr$pop_sum) / 1e6))
+    cat(sprintf("  mean obs_rate: %.4f\n", mean(sim_thr$obs_rate)))
+
+    # ── Beta-Binomial MLE ────────────────────────────────────────────────────
+    # Guard: if all locations have identical outbreak count (zero variance),
+    # BB MLE is degenerate; fall back to point-mass at mean p.
+    p_mean_thr <- mean(sim_thr$n_outbreak_years) / n_trials
+    v_thr <- var(sim_thr$n_outbreak_years / n_trials)
+    if (nrow(sim_thr) < 5 || is.na(v_thr) || v_thr < 1e-10) {
+        # Point-mass: a >> b for p~1, or a << b for p~0
+        conc <- 100
+        a_fb <- p_mean_thr * conc; b_fb <- (1 - p_mean_thr) * conc
+        bb_thr <- list(a = a_fb, b = b_fb, p = p_mean_thr, convergence = -1L)
+        cat(sprintf("  [fallback] p = %.4f (zero variance or tiny n)\n", p_mean_thr))
+    } else {
+        bb_thr <- fit_betabinom(sim_thr$n_outbreak_years, n_trials)
+    }
+    cat(sprintf("  Beta(%.4f, %.4f), mean p = %.4f\n",
+                bb_thr$a, bb_thr$b, bb_thr$p))
+
+    # ── Spearman rho ─────────────────────────────────────────────────────────
+    rho_thr <- compute_strategy_rhos(sim_thr)
+
+    # ── Analytical alpha* ────────────────────────────────────────────────────
+    # Wrap in tryCatch: extreme BB params can make cost_beta() non-finite;
+    # fall back to grid search when L-BFGS-B fails.
+    safe_alpha_star_ew <- function(R, fv, a, b, r) {
+        tryCatch(
+            get_alpha_star_beta(R, fv, a, b, r),
+            error = function(e) {
+                ag <- seq(0, 1, length.out = 101)
+                costs <- sapply(ag, function(al) {
+                    tryCatch(cost_beta(al, fv, a, b, R, r), error = function(e2) Inf)
+                })
+                if (all(!is.finite(costs))) NA_real_ else ag[which.min(costs)]
+            }
+        )
+    }
+    a_ew_thr <- map_dfr(f_values, function(fv) {
+        tibble(f = fv,
+               alpha_star_ew = safe_alpha_star_ew(R_val, fv, bb_thr$a, bb_thr$b, r_val))
+    })
+
+    # ── MC cost curves & alpha* ───────────────────────────────────────────────
+    strats_thr <- list(
+        `Perfect ranking` = sim_thr$est_cases,
+        `Model-ranked`    = sim_thr$pred_prob,
+        `RF-ranked`       = sim_thr$pred_rf,
+        `GAM-ranked`      = sim_thr$pred_gam,
+        `Count-ranked`    = sim_thr$hist_count
+    )
+
+    alpha_grid_thr <- seq(0, 1, length.out = 51)
+
+    cost_curves_thr <- map_dfr(f_values, function(fv) {
+        imap_dfr(strats_thr, function(score, strat_name) {
+            costs <- sapply(alpha_grid_thr, function(a) {
+                cost_popweighted_mc(a, fv, sim_thr$pop_sum, sim_thr$obs_rate,
+                    score, R_val, r_val, ATTACK_RATE, n_mc = 300)
+            })
+            tibble(alpha = alpha_grid_thr, cost = costs,
+                   strategy = strat_name, f = fv)
+        })
+    })
+
+    pw_thr <- map_dfr(f_values, function(fv) {
+        imap_dfr(strats_thr, function(score, strat_name) {
+            res <- get_alpha_star_pw(fv, sim_thr$pop_sum, sim_thr$obs_rate,
+                                     score, R_val, r_val, ATTACK_RATE, n_mc = 300)
+            tibble(strategy = strat_name, f = fv,
+                   alpha_star_pw = res$alpha_star,
+                   alpha_star_ew = a_ew_thr$alpha_star_ew[a_ew_thr$f == fv])
+        })
+    })
+
+    list(thr = thr, sim = sim_thr, bb = bb_thr, rho = rho_thr,
+         a_ew = a_ew_thr, curves = cost_curves_thr, pw = pw_thr)
+})
+names(thresh_results) <- paste0("p", gsub("\\.", "", as.character(PROB_THRESHOLDS)))
+```
+
+```{r fig-thresh-cost-curves, fig.width=14, fig.height=10}
+#| fig-cap: "Cost curves for ADM2 regions with predicted risk > X (X = 0.1 top row,
+#|   X = 0.3 bottom row). Columns = coverage level f. Diamond = MC-optimal alpha*;
+#|   dashed vertical = analytical (Beta-Binomial) alpha*."
+
+plots_thresh <- imap(thresh_results, function(res, nm) {
+    optima_pts <- res$curves |>
+        left_join(res$pw |> dplyr::select(strategy, f, alpha_star_pw),
+                  by = c("strategy", "f")) |>
+        filter(abs(alpha - alpha_star_pw) < 0.011)
+
+    ggplot(res$curves, aes(x = alpha, y = cost, colour = strategy)) +
+        geom_line(linewidth = 0.8) +
+        geom_point(data = optima_pts, aes(x = alpha_star_pw),
+                   shape = 18, size = 3.5) +
+        geom_vline(data = res$a_ew, aes(xintercept = alpha_star_ew),
+                   linetype = "dashed", colour = "grey30", linewidth = 0.6) +
+        scale_colour_manual(values = STRATEGY_COLOURS[names(res$curves |> distinct(strategy) |> pull())]) +
+        facet_wrap(~f, labeller = label_both) +
+        labs(x = expression(alpha), y = "Expected cost per capita (C_V)",
+             colour = "Strategy",
+             title = sprintf("Risk > %.1f | n=%d regions, %.1f M pop, p=%.4f",
+                             res$thr, nrow(res$sim),
+                             sum(res$sim$pop_sum) / 1e6, res$bb$p),
+             subtitle = sprintf(
+                 "Beta(%.3f,%.3f) | R=%.0f, r=%.1f | Dashed=analytical \u03b1*, Diamond=MC \u03b1*",
+                 res$bb$a, res$bb$b, R_val, r_val)) +
+        theme_minimal(base_size = 10) +
+        theme(legend.position = "bottom")
+})
+
+wrap_plots(plots_thresh, ncol = 1) +
+    plot_annotation(title = "Probability-threshold scenario: cost curves by X")
+```
+
+```{r thresh-summary-table}
+#| tbl-cap: "Probability-threshold scenarios: optimal alpha* (MC and analytical)
+#|   and Spearman rho by strategy, coverage f, and threshold X."
+map_dfr(thresh_results, function(res) {
+    res$pw |>
+        left_join(res$rho, by = "strategy") |>
+        dplyr::select(strategy, f, rho, alpha_star_pw, alpha_star_ew) |>
+        mutate(threshold = res$thr)
+}) |>
+    dplyr::select(threshold, strategy, f, rho, alpha_star_pw, alpha_star_ew) |>
+    knitr::kable(
+        digits = 3,
+        col.names = c("X", "Strategy", "f", "\u03c1",
+                      "\u03b1*_pw (MC)", "\u03b1*_ew (analytical)"),
+        caption = "Probability-threshold scenarios: optimal alpha by X, strategy, and f"
+    )
+```
