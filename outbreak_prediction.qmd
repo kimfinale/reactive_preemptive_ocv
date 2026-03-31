@@ -1321,7 +1321,17 @@ bind_rows(curves_k1, curves_k3) |>
 #|   single-dose (outcome 2018). Right column: k=3 two-dose (outcome 2018-2020).
 #|   Blue = pre-emptively vaccinated; orange = reactively vaccinated (outbreak
 #|   location not pre-vaccinated, within reactive budget); red outline = location
-#|   with observed outbreak."
+#|   with observed outbreak. Grey background: all sub-Saharan Africa countries."
+
+# Sub-Saharan Africa country polygons as grey background
+ssa_sf <- sf::st_as_sf(rnaturalearthdata::countries50) |>
+    dplyr::filter(subregion %in% c("Eastern Africa", "Middle Africa",
+                                    "Southern Africa", "Western Africa")) |>
+    sf::st_make_valid() |>
+    sf::st_transform(sf::st_crs(shp_admin23))
+
+ssa_bbox <- sf::st_bbox(ssa_sf)
+
 map_theme_op <- theme_minimal(base_size=9) +
     theme(panel.grid=element_blank(), axis.text=element_blank(),
           axis.ticks=element_blank(), legend.position="bottom")
@@ -1359,8 +1369,9 @@ make_allocation_map <- function(preds, fold_test, mc_df, alpha_star, R, nu,
         left_join(map_df, by="location") |>
         filter(!is.na(score))
 
-    ggplot(shp_map) +
-        geom_sf(aes(fill=score), colour=NA) +
+    ggplot() +
+        geom_sf(data=ssa_sf, fill="grey85", colour="grey60", linewidth=0.2) +
+        geom_sf(data=shp_map, aes(fill=score), colour=NA) +
         geom_sf(data=shp_map |> filter(allocation=="Pre-emptive"),
                 fill="steelblue", alpha=0.6, colour=NA) +
         geom_sf(data=shp_map |> filter(allocation=="Reactive"),
@@ -1369,6 +1380,8 @@ make_allocation_map <- function(preds, fold_test, mc_df, alpha_star, R, nu,
                 fill=NA, colour="firebrick", linewidth=0.4) +
         scale_fill_viridis_c(option="magma", direction=-1,
                              name="Predicted\nrisk", limits=c(0,1)) +
+        coord_sf(xlim=ssa_bbox[c("xmin","xmax")],
+                 ylim=ssa_bbox[c("ymin","ymax")]) +
         labs(title=title_str,
              subtitle=sprintf("alpha*=%.2f, f=%.1f; blue=pre-emptive, orange=reactive, red outline=outbreak",
                               alpha_star, f_val_op)) +
