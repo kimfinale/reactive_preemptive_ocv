@@ -1,0 +1,764 @@
+---
+title: "Annual Outbreak Prediction Model"
+author: "Jong-Hoon Kim"
+date: "`r Sys.Date()`"
+format:
+  html:
+    html-math-method: katex
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    code-fold: true
+    embed-resources: true
+editor_options:
+  chunk_output_type: console
+---
+
+## Overview
+
+This document develops an annual outbreak prediction model for admin-2 units
+using cholera surveillance data from 2010--2017. The model is evaluated via
+**expanding-window temporal cross-validation** and **spatial cross-validation**,
+and the final predictions (for 2018) are saved for use in the vaccine impact
+simulation.
+
+**Design**:
+
+| Fold  | Feature years | Outcome year | Purpose    |
+|-------|--------------|--------------|------------|
+| 1     | 2010--2014   | 2015         | Validation |
+| 2     | 2010--2015   | 2016         | Validation |
+| 3     | 2010--2016   | 2017         | Validation |
+| Final | 2010--2017   | 2018         | Prediction |
+
+Five classifiers are compared: logistic regression, elastic net, random forest,
+XGBoost, and GAM.
+
+# Setup
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(tidyverse)
+library(sf)
+library(terra)
+library(exactextractr)
+library(patchwork)
+library(pROC)
+library(scales)
+library(knitr)
+library(mgcv)         # GAM
+library(glmnet)       # elastic net / LASSO / ridge
+library(ranger)       # fast random forest
+library(xgboost)      # gradient boosted trees
+library(PRROC)        # precision-recall AUC
+source("R/analytic_utils.R")
+source("R/spatial_setup.R")
+```
+
+
+## Data Loading
+
+### Outbreak surveillance data
+
+```{r load-outbreak-data}
+# Raw surveillance data: each row = (location, time interval TL-TR, outbreak_number)
+# Location format: "REGION::COUNTRY::ADMIN1::ADMIN2" (3 separators = admin2)
+ts_outbreak <- readr::read_rds(
+    "data/outbreak_files_Oct2024/time_series_outbreak_extraction.rds"
+)
+# Keep admin2 (adm=2) and admin3 (adm=3) only
+ts23 <- ts_outbreak |>
+    mutate(adm = str_count(location, "::") - 1L) |>
+    filter(adm %in% c(2, 3))
+
+# Collapse time-series rows into one row per outbreak event, extracting
+# start/end years, duration, case counts, and a unique ID
+outbreak_events <- ts23 |>
+    group_by(location, adm, outbreak_number) |>
+    summarise(
+        year_start      = year(min(TL)),
+        year_end        = year(max(TR)),
+        duration_weeks  = as.numeric(difftime(max(TR), min(TL), units = "weeks")),
+        total_cases     = sum(sCh, na.rm = TRUE),
+        total_deaths    = sum(deaths, na.rm = TRUE),
+        peak_weekly_sCh = max(sCh, na.rm = TRUE),
+        id_outbreak     = paste(first(location), min(TL), max(TR), sep = "_"),
+        .groups         = "drop"
+    )
+
+all_years <- 2010:2023
+all_locs <- unique(ts23$location)
+
+# Build a yearly outbreak summary per location: for each (location, year),
+# aggregate outbreak counts, total cases, maximum duration, etc.
+# Assigns each outbreak to its END year (observable after conclusion).
+outbreak_year_summary <- outbreak_events |>
+    filter(year_end %in% all_years) |>
+    group_by(location, year = year_end) |>
+    summarise(
+        outbreak_count     = n(),
+        total_cases        = sum(total_cases, na.rm = TRUE),
+        max_duration_days  = max(duration_weeks * 7, na.rm = TRUE),
+        mean_duration_days = mean(duration_weeks * 7, na.rm = TRUE),
+        .groups = "drop"
+    ) |>
+    right_join(expand_grid(location = all_locs, year = all_years),
+               by = c("location", "year")) |>
+    replace_na(list(outbreak_count = 0L, total_cases = 0,
+                    max_duration_days = 0, mean_duration_days = 0))
+
+# loc_year_full: complete (location × year) panel with n_active = number of
+# outbreaks ACTIVE (ongoing) in that year. Used for the outcome variable.
+loc_year <- outbreak_events %>%
+    mutate(years = map2(year_start, pmin(year_end, 2023L), seq)) %>%
+    unnest(years) %>%
+    rename(year = years) %>%
+    filter(year %in% all_years) %>%
+    count(location, year, name = "n_active")
+
+loc_year_full <- expand_grid(location = all_locs, year = all_years) %>%
+    left_join(loc_year, by = c("location", "year")) %>%
+    replace_na(list(n_active = 0L))
+
+# loc_year_end_full: complete (location × year) panel with n_ended = number of
+# outbreaks that ENDED in that year. Used for feature construction (hist_count)
+# because an outbreak's end year marks when it became observable.
+loc_year_end_full <- outbreak_events %>%
+    filter(year_end %in% all_years) %>%
+    count(location, year_end, name = "n_ended") %>%
+    rename(year = year_end) %>%
+    right_join(expand_grid(location = all_locs, year = all_years),
+        by = c("location", "year")
+    ) %>%
+    replace_na(list(n_ended = 0L))
+
+cat("Surveillance locations:", length(all_locs), "\n")
+cat("Year range:", range(all_years), "\n")
+cat("Total outbreak events:", nrow(outbreak_events), "\n")
+cat("Total outbreak-end-years:", sum(loc_year_end_full$n_ended), "\n")
+```
+
+### Shapefiles and spatial neighbours
+
+```{r load-shapefiles}
+# Shapefiles are keyed by location_period_id; we need to map them to
+# the human-readable location strings (e.g. "AFR::COD::Kinshasa::...").
+shp_all <- readr::read_rds(
+    "data/outbreak_files_Oct2024/outbreak_shapefiles.rds"
+)
+
+# Build a lookup: for each location, keep the most recent location_period_id
+# (a location can have multiple period IDs if boundaries changed over time)
+loc_id_map <- ts23 %>%
+    distinct(location_period_id, location) %>%
+    group_by(location) %>%
+    slice_max(as.integer(location_period_id), n = 1, with_ties = FALSE) %>%
+    ungroup()
+
+# Join shapefile geometries to location names via the ID map
+shp_named <- shp_all %>%
+    left_join(loc_id_map, by = c("lctn_pr" = "location_period_id"))
+
+# Keep only admin2/3 polygons (3 or 4 "::" separators in location string)
+shp_admin23 <- shp_named %>%
+    filter(!is.na(location), str_count(location, "::") %in% c(3, 4))
+
+cat("ADM2/3 polygons:", nrow(shp_admin23), "\n")
+
+# Build a spatial neighbour list: for each polygon, find all neighbours
+# whose centroid is within DIST_LIMIT_KM km (geodesic distance).
+# Used for the nbr_hist feature (spatial contagion signal).
+DIST_LIMIT_KM <- 50
+centroids_sf <- shp_admin23 %>%
+    st_make_valid() %>%
+    st_point_on_surface()
+
+# Pairwise geodesic distance matrix (meters); convert to km
+dist_mat_sp <- st_distance(centroids_sf) |> units::drop_units()
+dist_mat_sp <- dist_mat_sp / 1000 # m -> km
+rownames(dist_mat_sp) <- colnames(dist_mat_sp) <- shp_admin23$location
+diag(dist_mat_sp) <- Inf
+
+# For each location, store neighbours within the distance limit (sorted)
+nbr_list <- setNames(
+    lapply(shp_admin23$location, function(loc) {
+        d <- dist_mat_sp[loc, ]
+        names(sort(d[d <= DIST_LIMIT_KM]))
+    }),
+    shp_admin23$location
+)
+
+# Extract centroid coordinates for GAM spatial smooth
+centroid_coords <- centroids_sf |>
+    st_coordinates() |>
+    as_tibble() |>
+    rename(lon = X, lat = Y) |>
+    mutate(location = shp_admin23$location)
+```
+
+### Population raster
+
+```{r load-population}
+pop_raster <- readr::read_rds("data/ppp_20km_mean_af_2017_20221123.rds")
+pop_raster <- terra::rast(pop_raster)  # convert RasterLayer → SpatRaster
+cat("Raster dimensions:", dim(pop_raster), "\n")
+cat("Resolution:", res(pop_raster), "degrees (~20 km)\n")
+```
+
+
+## Population Extraction
+
+Aggregate the 20 km population raster to ADM2 polygons via zonal statistics.
+
+The raster stores **mean population per ~1 km² source cell**, having been
+aggregated from the WorldPop ~1 km PPP (People Per Pixel) product to 20 km
+resolution by averaging. Each 20 km pixel spans approximately
+$(0.167° \times 111\;\text{km/°})^2 \approx 344\;\text{km}^2$ at the equator,
+i.e.\ roughly 344 underlying 1 km² source cells. Because `exact_extract(fun =
+"sum")` sums these per-km² means, the result must be multiplied by the pixel
+area (~344 km²) to recover actual population counts. Verification: the
+continent-wide raster sum ($\approx$ 3.65 M) $\times$ 344 $\approx$ 1.26
+billion, matching Africa's 2017 population.
+
+```{r population-extraction}
+POP_SCALE <- 344 # pixel area in km² ≈ (0.167° × 111 km)²
+
+shp_pop <- shp_admin23 |>
+    st_make_valid() |>
+    st_transform(crs(pop_raster))
+
+# Sum mean-population values within each polygon, then scale to actual counts
+pop_by_adm2 <- exactextractr::exact_extract(pop_raster, shp_pop,
+    fun = "sum",
+    progress = FALSE
+)
+pop_by_adm2 <- pop_by_adm2 * POP_SCALE
+
+shp_admin23$pop_sum <- pop_by_adm2
+
+cat(
+    "Polygons with population > 0:",
+    sum(!is.na(pop_by_adm2) & pop_by_adm2 > 0), "of", nrow(shp_admin23), "\n"
+)
+cat("Total population:", format(round(sum(pop_by_adm2, na.rm = TRUE)), big.mark = ","), "\n")
+cat(
+    "Range:", format(round(min(pop_by_adm2, na.rm = TRUE)), big.mark = ","), "-",
+    format(round(max(pop_by_adm2, na.rm = TRUE)), big.mark = ","), "\n"
+)
+```
+
+
+## Annual Outbreak Prediction Model
+
+### Overview
+
+We predict outbreak occurrence one year ahead for admin-2 units using an
+**expanding window** design. Only outbreak surveillance data are used
+(no environmental or demographic covariates). Data are available for
+2010--2017. The year 2018 is the true prediction target.
+
+| Fold  | Feature years | Outcome year | Purpose    |
+|-------|--------------|--------------|------------|
+| 1     | 2010--2014   | 2015         | Validation |
+| 2     | 2010--2015   | 2016         | Validation |
+| 3     | 2010--2016   | 2017         | Validation |
+| Final | 2010--2017   | 2018         | Prediction |
+
+Within each temporal fold, 5-fold spatial cross-validation tests
+generalization across regions. Five classifiers are compared: logistic
+regression, elastic net, random forest, XGBoost, and GAM.
+
+### Feature engineering
+
+```{r build-features}
+# Build features for a given feature window ending at year_end.
+# Returns one row per location with same-unit and neighbor features.
+build_features <- function(year_end, nbr_map = nbr_list,
+                           coord_lookup = centroid_coords) {
+    feat_yrs <- 2010:year_end
+    n_yrs <- length(feat_yrs)
+
+    # Per-location summary across the feature window
+    loc_summary <- outbreak_year_summary |>
+        filter(year %in% feat_yrs) |>
+        group_by(location) |>
+        summarise(
+            n_outbreak_years    = sum(outbreak_count > 0),
+            prop_outbreak_years = n_outbreak_years / n_yrs,
+            total_outbreaks     = sum(outbreak_count),
+            mean_cases_per_year = mean(total_cases),
+            max_cases_any_year  = max(total_cases),
+            mean_duration       = mean(mean_duration_days),
+            max_duration        = max(max_duration_days),
+            .groups = "drop"
+        )
+
+    # Recent-year features
+    recent_1yr <- outbreak_year_summary |>
+        filter(year == year_end) |>
+        transmute(location, recent_outbreak = as.integer(outbreak_count > 0))
+
+    recent_2yr_yrs <- intersect(c(year_end - 1L, year_end), feat_yrs)
+    recent_2yr <- outbreak_year_summary |>
+        filter(year %in% recent_2yr_yrs) |>
+        group_by(location) |>
+        summarise(recent_2yr_outbreaks = sum(outbreak_count > 0), .groups = "drop")
+
+    # Trend features: slope of outbreak occurrence and cases on year
+    trend_df <- outbreak_year_summary |>
+        filter(year %in% feat_yrs) |>
+        group_by(location) |>
+        summarise(
+            trend = if (n() >= 2)
+                coef(lm(as.integer(outbreak_count > 0) ~ year))[2] else 0,
+            trend_cases = if (n() >= 2)
+                coef(lm(total_cases ~ year))[2] else 0,
+            .groups = "drop"
+        )
+
+    # Years since last outbreak
+    last_ob <- outbreak_year_summary |>
+        filter(year %in% feat_yrs, outbreak_count > 0) |>
+        group_by(location) |>
+        summarise(last_ob_year = max(year), .groups = "drop")
+
+    yrs_since <- tibble(location = all_locs) |>
+        left_join(last_ob, by = "location") |>
+        mutate(years_since_last_outbreak = ifelse(
+            is.na(last_ob_year), n_yrs + 1L, as.integer(year_end - last_ob_year)
+        )) |>
+        dplyr::select(location, years_since_last_outbreak)
+
+    # Combine same-unit features
+    feat <- tibble(location = all_locs) |>
+        left_join(loc_summary, by = "location") |>
+        left_join(recent_1yr, by = "location") |>
+        left_join(recent_2yr, by = "location") |>
+        left_join(trend_df, by = "location") |>
+        left_join(yrs_since, by = "location") |>
+        replace_na(list(
+            n_outbreak_years = 0L, prop_outbreak_years = 0,
+            total_outbreaks = 0L, mean_cases_per_year = 0,
+            max_cases_any_year = 0, mean_duration = 0, max_duration = 0,
+            recent_outbreak = 0L, recent_2yr_outbreaks = 0L,
+            trend = 0, trend_cases = 0
+        ))
+
+    # Neighbor features: helper to compute a summary stat across neighbours
+    make_nbr_feat <- function(values, locs, nbr_map, fun = mean) {
+        sv <- setNames(values, locs)
+        map_dbl(locs, function(loc) {
+            nbrs <- nbr_map[[loc]]
+            if (is.null(nbrs) || length(nbrs) == 0L) return(0)
+            nbrs <- nbrs[nbrs %in% names(sv)]
+            if (length(nbrs) == 0L) return(0)
+            fun(sv[nbrs])
+        })
+    }
+
+    feat <- feat |>
+        mutate(
+            nbr_prop_outbreak = make_nbr_feat(
+                prop_outbreak_years, location, nbr_map),
+            nbr_mean_cases = make_nbr_feat(
+                mean_cases_per_year, location, nbr_map),
+            nbr_recent_outbreak_prop = make_nbr_feat(
+                recent_outbreak, location, nbr_map),
+            nbr_recent_2yr_prop = make_nbr_feat(
+                as.numeric(recent_2yr_outbreaks > 0), location, nbr_map),
+            nbr_max_cases = make_nbr_feat(
+                max_cases_any_year, location, nbr_map, fun = max),
+            nbr_trend = make_nbr_feat(trend, location, nbr_map)
+        )
+
+    if (!is.null(coord_lookup)) {
+        feat <- feat |> left_join(coord_lookup, by = "location")
+    }
+    feat
+}
+
+# Define feature sets
+SAME_UNIT_FEATURES <- c(
+    "n_outbreak_years", "prop_outbreak_years", "total_outbreaks",
+    "mean_cases_per_year", "max_cases_any_year",
+    "mean_duration", "max_duration",
+    "recent_outbreak", "recent_2yr_outbreaks",
+    "trend", "trend_cases", "years_since_last_outbreak"
+)
+NBR_FEATURES <- c(
+    "nbr_prop_outbreak", "nbr_mean_cases",
+    "nbr_recent_outbreak_prop", "nbr_recent_2yr_prop",
+    "nbr_max_cases", "nbr_trend"
+)
+ALL_FEATURES <- c(SAME_UNIT_FEATURES, NBR_FEATURES)
+cat("Features:", length(ALL_FEATURES),
+    "(", length(SAME_UNIT_FEATURES), "same-unit +",
+    length(NBR_FEATURES), "neighbour )\n")
+```
+
+### Model fitting helpers
+
+```{r model-helpers}
+# Fit all 5 models on training data, predict on test data.
+# Returns a tibble with location, obs, and prediction columns.
+fit_and_predict <- function(train, test, features = ALL_FEATURES) {
+    X_train <- as.matrix(train[, features])
+    y_train <- train$obs
+    X_test <- as.matrix(test[, features])
+    preds <- tibble(location = test$location, obs = test$obs)
+
+    # 1. Logistic regression
+    lr_fit <- glm(obs ~ ., data = train[, c("obs", features)], family = binomial)
+    preds$Logistic <- predict(lr_fit, newdata = test, type = "response")
+
+    # 2. Elastic net (choose best alpha from {0, 0.5, 1} via internal CV)
+    best_enet <- NULL; best_auc <- -Inf
+    for (a in c(0, 0.5, 1)) {
+        cv_fit <- tryCatch(
+            cv.glmnet(X_train, y_train, family = "binomial",
+                      alpha = a, nfolds = 5, type.measure = "auc"),
+            error = function(e) NULL
+        )
+        if (!is.null(cv_fit) && max(cv_fit$cvm) > best_auc) {
+            best_auc <- max(cv_fit$cvm); best_enet <- cv_fit
+        }
+    }
+    preds$`Elastic Net` <- as.numeric(
+        predict(best_enet, newx = X_test, s = "lambda.min", type = "response"))
+
+    # 3. Random forest (ranger)
+    set.seed(42)
+    rf_fit <- ranger(
+        obs ~ ., data = train[, c("obs", features)] |> mutate(obs = factor(obs)),
+        num.trees = 500, probability = TRUE,
+        min.node.size = 5, mtry = max(1, floor(sqrt(length(features))))
+    )
+    preds$`Random Forest` <- predict(rf_fit, data = test)$predictions[, "1"]
+
+    # 4. XGBoost
+    set.seed(42)
+    dtrain <- xgb.DMatrix(data = X_train, label = y_train)
+    dtest <- xgb.DMatrix(data = X_test)
+    xgb_params <- list(objective = "binary:logistic", eval_metric = "auc",
+                       max_depth = 4, eta = 0.1, subsample = 0.8,
+                       colsample_bytree = 0.8)
+    xgb_cv <- xgb.cv(params = xgb_params, data = dtrain, nrounds = 300,
+                      nfold = min(5, nrow(train)),
+                      early_stopping_rounds = 20, verbose = 0)
+    best_nrounds <- xgb_cv$best_iteration
+    if (is.null(best_nrounds) || best_nrounds == 0) best_nrounds <- 50
+    xgb_fit <- xgb.train(params = xgb_params, data = dtrain,
+                         nrounds = best_nrounds, verbose = 0)
+    preds$XGBoost <- predict(xgb_fit, dtest)
+
+    # 5. GAM with smooth terms on key continuous features
+    gam_feats <- c("n_outbreak_years", "mean_cases_per_year",
+                   "recent_2yr_outbreaks", "years_since_last_outbreak",
+                   "nbr_prop_outbreak", "nbr_mean_cases")
+    gam_formula <- as.formula(paste(
+        "obs ~", paste0("s(", gam_feats, ", k = 5)", collapse = " + ")))
+    gam_fit <- tryCatch(
+        gam(gam_formula, data = train, family = binomial, method = "REML"),
+        error = function(e) {
+            gam(obs ~ s(n_outbreak_years, k = 5) + s(nbr_prop_outbreak, k = 5),
+                data = train, family = binomial, method = "REML")
+        }
+    )
+    preds$GAM <- as.numeric(predict(gam_fit, newdata = test, type = "response"))
+
+    preds
+}
+
+MODEL_NAMES <- c("Logistic", "Elastic Net", "Random Forest", "XGBoost", "GAM")
+
+# Compute evaluation metrics for a single (obs, pred) pair
+eval_metrics <- function(obs, pred) {
+    roc_obj <- pROC::roc(obs, pred, quiet = TRUE)
+    auc_roc <- as.numeric(pROC::auc(roc_obj))
+    pr_obj <- PRROC::pr.curve(scores.class0 = pred[obs == 1],
+                              scores.class1 = pred[obs == 0])
+    auc_pr <- pr_obj$auc.integral
+    brier <- mean((pred - obs)^2)
+    coords <- pROC::coords(roc_obj, "best", best.method = "youden", ret = "all")
+    tibble(AUC_ROC = auc_roc, AUC_PR = auc_pr, Brier = brier,
+           Sensitivity = coords$sensitivity[1],
+           Specificity = coords$specificity[1],
+           Threshold = coords$threshold[1])
+}
+```
+
+### Expanding-window temporal cross-validation
+
+```{r temporal-cv}
+# Temporal folds
+temporal_folds <- tibble(
+    fold = 1:3,
+    train_end = 2014:2016,     # feature window: 2010 to train_end
+    outcome_year = 2015:2017   # predict this year
+)
+
+# Build feature + outcome data for each fold
+fold_data <- map(1:nrow(temporal_folds), function(i) {
+    fe <- temporal_folds[i, ]
+    feat <- build_features(fe$train_end)
+    outcome <- loc_year_full |>
+        filter(year == fe$outcome_year) |>
+        group_by(location) |>
+        summarise(obs = as.integer(sum(n_active) > 0L), .groups = "drop")
+    feat |>
+        left_join(outcome, by = "location") |>
+        replace_na(list(obs = 0L))
+})
+names(fold_data) <- paste0("fold", 1:3)
+
+for (i in 1:3) {
+    fe <- temporal_folds[i, ]
+    d <- fold_data[[i]]
+    cat(sprintf("Fold %d: features [2010,%d] → outcome %d | n=%d, prev=%.1f%%\n",
+                i, fe$train_end, fe$outcome_year, nrow(d), 100 * mean(d$obs)))
+}
+
+# Final prediction data: features from 2010-2017
+final_features <- build_features(2017)
+```
+
+### Temporal fold evaluation
+
+For each fold, we train on **all preceding folds** and test on the current
+fold. Fold 1 has no prior data, so it is evaluated via spatial CV only
+(see next section).
+
+```{r temporal-eval}
+# Folds 2 and 3: train on preceding folds, test on current
+temporal_results <- map_dfr(2:3, function(i) {
+    # Expanding training set: pool all folds before i
+    train <- bind_rows(fold_data[1:(i - 1)])
+    test <- fold_data[[i]]
+
+    preds <- fit_and_predict(train, test)
+
+    map_dfr(MODEL_NAMES, function(m) {
+        metrics <- eval_metrics(preds$obs, preds[[m]])
+        metrics |> mutate(
+            model = m, fold = i,
+            train_end = temporal_folds$train_end[i],
+            outcome_year = temporal_folds$outcome_year[i]
+        )
+    })
+})
+
+temporal_results |>
+    dplyr::select(fold, outcome_year, model, AUC_ROC, AUC_PR, Brier,
+                  Sensitivity, Specificity) |>
+    arrange(fold, desc(AUC_ROC)) |>
+    knitr::kable(digits = 3,
+        caption = "Temporal CV: performance by fold and model")
+```
+
+### Spatial cross-validation within each temporal fold
+
+```{r spatial-cv}
+set.seed(42)
+
+spatial_cv_results <- map_dfr(1:3, function(i) {
+    d <- fold_data[[i]]
+    n_folds_sp <- 5
+
+    # Assign spatial folds (random partition of locations)
+    locs <- unique(d$location)
+    sp_fold_ids <- sample(rep(1:n_folds_sp, length.out = length(locs)))
+    loc_folds <- tibble(location = locs, sp_fold = sp_fold_ids)
+    d <- d |> left_join(loc_folds, by = "location")
+
+    map_dfr(1:n_folds_sp, function(sf) {
+        train_sp <- d |> filter(sp_fold != sf)
+        test_sp <- d |> filter(sp_fold == sf)
+
+        preds <- fit_and_predict(train_sp, test_sp)
+
+        map_dfr(MODEL_NAMES, function(m) {
+            metrics <- eval_metrics(preds$obs, preds[[m]])
+            metrics |> mutate(model = m, temporal_fold = i, spatial_fold = sf)
+        })
+    })
+})
+
+# Summary: mean across spatial folds, per temporal fold and model
+spatial_cv_summary <- spatial_cv_results |>
+    group_by(temporal_fold, model) |>
+    summarise(across(c(AUC_ROC, AUC_PR, Brier, Sensitivity, Specificity),
+                     list(mean = mean, sd = sd)), .groups = "drop")
+
+spatial_cv_summary |>
+    dplyr::select(temporal_fold, model, AUC_ROC_mean, AUC_ROC_sd,
+                  AUC_PR_mean, AUC_PR_sd, Brier_mean) |>
+    arrange(temporal_fold, desc(AUC_ROC_mean)) |>
+    knitr::kable(digits = 3,
+        caption = "Spatial CV within each temporal fold (mean ± SD across 5 folds)")
+```
+
+### ROC curves
+
+```{r fig-roc-curves, fig.width=12, fig.height=4}
+# Re-generate predictions for ROC plotting (folds 2-3 temporal)
+roc_plot_data <- map_dfr(2:3, function(i) {
+    train <- bind_rows(fold_data[1:(i - 1)])
+    test <- fold_data[[i]]
+    preds <- fit_and_predict(train, test)
+    preds |> mutate(fold = i)
+})
+
+roc_plots <- map(2:3, function(i) {
+    d <- roc_plot_data |> filter(fold == i)
+    roc_list <- map(MODEL_NAMES, function(m) {
+        pROC::roc(d$obs, d[[m]], quiet = TRUE)
+    })
+    names(roc_list) <- MODEL_NAMES
+    ggroc(roc_list, legacy.axes = TRUE) +
+        labs(title = sprintf("Fold %d (outcome %d)", i, 2014 + i),
+             x = "1 - Specificity", y = "Sensitivity", colour = "Model") +
+        theme_minimal(base_size = 10) +
+        theme(legend.position = if (i == 3) "right" else "none")
+})
+wrap_plots(roc_plots, nrow = 1)
+```
+
+### Variable importance
+
+```{r fig-variable-importance, fig.width=12, fig.height=6}
+# Train final models on all fold data for variable importance
+all_train <- bind_rows(fold_data)
+
+# Random Forest importance
+set.seed(42)
+rf_final <- ranger(
+    obs ~ ., data = all_train[, c("obs", ALL_FEATURES)] |> mutate(obs = factor(obs)),
+    num.trees = 500, probability = TRUE, importance = "permutation",
+    min.node.size = 5
+)
+rf_imp <- tibble(feature = names(rf_final$variable.importance),
+                 importance = rf_final$variable.importance) |>
+    arrange(desc(importance))
+
+# XGBoost importance
+X_all <- as.matrix(all_train[, ALL_FEATURES])
+y_all <- all_train$obs
+dtrain_all <- xgb.DMatrix(data = X_all, label = y_all)
+xgb_cv_all <- xgb.cv(
+    params = list(objective = "binary:logistic", eval_metric = "auc",
+                  max_depth = 4, eta = 0.1, subsample = 0.8,
+                  colsample_bytree = 0.8),
+    data = dtrain_all, nrounds = 300, nfold = 5,
+    early_stopping_rounds = 20, verbose = 0
+)
+xgb_final <- xgb.train(
+    params = list(objective = "binary:logistic", max_depth = 4, eta = 0.1,
+                  subsample = 0.8, colsample_bytree = 0.8),
+    data = dtrain_all,
+    nrounds = if (is.null(xgb_cv_all$best_iteration) || xgb_cv_all$best_iteration == 0)
+        50 else xgb_cv_all$best_iteration,
+    verbose = 0
+)
+xgb_imp_raw <- xgb.importance(model = xgb_final)
+xgb_imp <- tibble(feature = xgb_imp_raw$Feature, importance = xgb_imp_raw$Gain)
+
+p_rf <- ggplot(rf_imp |> head(15),
+               aes(x = reorder(feature, importance), y = importance)) +
+    geom_col(fill = "steelblue") + coord_flip() +
+    labs(title = "Random Forest", x = NULL, y = "Permutation importance") +
+    theme_minimal(base_size = 10)
+
+p_xgb <- ggplot(xgb_imp |> head(15),
+                aes(x = reorder(feature, importance), y = importance)) +
+    geom_col(fill = "darkorange") + coord_flip() +
+    labs(title = "XGBoost", x = NULL, y = "Gain importance") +
+    theme_minimal(base_size = 10)
+
+p_rf + p_xgb + plot_annotation(title = "Variable importance (trained on all folds)")
+```
+
+### Calibration plots
+
+```{r fig-calibration, fig.width=14, fig.height=4}
+# Calibration: predicted prob vs observed proportion (decile bins)
+calibration_data <- roc_plot_data |>
+    pivot_longer(cols = all_of(MODEL_NAMES), names_to = "model",
+                 values_to = "predicted") |>
+    mutate(bin = ntile(predicted, 10)) |>
+    group_by(model, fold, bin) |>
+    summarise(
+        pred_mean = mean(predicted),
+        obs_mean = mean(obs),
+        n = n(), .groups = "drop"
+    )
+
+ggplot(calibration_data, aes(x = pred_mean, y = obs_mean, colour = model)) +
+    geom_point(size = 2) +
+    geom_line() +
+    geom_abline(linetype = "dashed", colour = "grey50") +
+    facet_wrap(~ paste("Fold", fold), nrow = 1) +
+    labs(x = "Mean predicted probability", y = "Observed proportion",
+         title = "Calibration plots (decile bins)", colour = "Model") +
+    theme_minimal(base_size = 10) +
+    coord_equal(xlim = c(0, 1), ylim = c(0, 1))
+```
+
+### Final model: train on all data, predict 2018
+
+```{r final-model}
+# Train on all 3 folds (2010-2014→2015, 2010-2015→2016, 2010-2016→2017)
+all_train <- bind_rows(fold_data)
+
+# Final predictions for 2018 using features from 2010-2017
+final_preds <- fit_and_predict(all_train, final_features)
+
+# Attach predictions to final_features for downstream use
+pred_data <- final_features |>
+    left_join(final_preds |> dplyr::select(location, all_of(MODEL_NAMES)),
+              by = "location")
+
+# Map model names to strategy names for downstream pipeline
+pred_data <- pred_data |>
+    rename(
+        pred_prob = Logistic,
+        pred_rf   = `Random Forest`,
+        pred_gam  = GAM
+    )
+# Keep Elastic Net and XGBoost as additional columns
+pred_data <- pred_data |>
+    rename(pred_enet = `Elastic Net`, pred_xgb = XGBoost)
+
+# Also store hist_count for backward compatibility (Count-ranked strategy)
+# hist_count = n_outbreak_years in the new feature set
+pred_data <- pred_data |>
+    mutate(hist_count = n_outbreak_years)
+
+cat("Final predictions for 2018: n =", nrow(pred_data), "locations\n")
+cat("Prevalence (2018):", round(100 * mean(final_preds$obs), 1), "%\n")
+```
+
+## Save Predictions
+
+Save model predictions and supporting data for use in `vaccine_impact_sim.qmd`.
+
+```{r save-predictions}
+# Pre-compute pop_lookup so vaccine_impact_sim.qmd doesn't need shapefiles
+pop_lookup <- shp_admin23 |>
+    sf::st_drop_geometry() |>
+    dplyr::select(location, pop_sum)
+
+saveRDS(
+    list(
+        pred_data     = pred_data,
+        loc_year_full = loc_year_full,
+        shp_admin23   = shp_admin23,
+        nbr_list      = nbr_list,
+        pop_lookup    = pop_lookup
+    ),
+    "data/outbreak_predictions.rds"
+)
+cat("Saved data/outbreak_predictions.rds\n")
+cat("  pred_data:     ", nrow(pred_data), "locations\n")
+cat("  loc_year_full: ", nrow(loc_year_full), "rows\n")
+cat("  shp_admin23:   ", nrow(shp_admin23), "polygons\n")
+cat("  nbr_list:      ", length(nbr_list), "entries\n")
+```

@@ -17,30 +17,26 @@ editor_options:
 ## Overview
 
 This document simulates the impact of **mixed pre-emptive and reactive cholera
-vaccination** under a fixed vaccine supply. The analysis:
-
-1. Trains a logistic regression model on 2010--2015 outbreak data to predict risk
-2. Estimates outbreak probability $p$ via Beta-Binomial MLE
-3. Computes the **optimal pre-emptive fraction** $\alpha^*$ using the analytical
-   framework from `analytic_hetero.qmd`
-4. Simulates vaccination impact for 4 allocation strategies across varying $\alpha$
+vaccination** under a fixed vaccine supply. Model predictions come from
+`outbreak_prediction.qmd` (saved to `data/outbreak_predictions.rds`).
 
 **Scenario parameters**:
 
 - Countries: COD (DRC, high-risk), NGA (Nigeria, medium-risk), CMR (Cameroon, low-risk)
-- Single-dose OCV for both pre-emptive and reactive use ($\nu = 1, r \in {0.2, 0.4, 0.6}$)
-- Cost ratio $R = C_I / C_V$, where $C_V$ is cost of vaccination per person and $C_I$ is cost of infection per person (accounting for severity of the disease). Total cost of vaccinating a population with size $n$ would be $n C_V$ and total cost of infection would be $n A C_I$, where $A$ is the attack rate (or cumulative incidence) in the population expressed as a proportion.
+- Single-dose OCV for both pre-emptive and reactive use ($\nu = 1, r \in \{0.2, 0.4, 0.6\}$)
+- Cost ratio $R = C_I / C_V$, where $C_V$ is cost of vaccination per person and $C_I$ is cost of infection per person. Total cost of vaccinating a population with size $n$ would be $n C_V$ and total cost of infection would be $n A C_I$, where $A$ is the attack rate.
 - Coverage fraction varied: $f \in \{0.3, 0.5, 0.7\}$ (doses adjusted accordingly)
-- Evaluation window: 2016--2018 (3 years, matching model prediction horizon $k = 3$)
+- Evaluation window: 2016--2018
 - $\alpha$: fraction of supply allocated to the pre-emptive vaccination; $1 - \alpha$ held for reactive vaccination
 
 | Strategy | Ranking basis |
 |----------|--------------|
 | Model-ranked | Predicted outbreak probability (logistic regression) |
 | RF-ranked | Predicted outbreak probability (random forest) |
-| Count-ranked | Historical outbreak count (2011--2015) |
+| GAM-ranked | Predicted outbreak probability (GAM) |
+| Count-ranked | Historical outbreak count (2010--2017) |
 | Random | Uniform random selection |
-| Perfect ranking | Actual 2016--2018 outbreak burden (perfect ranking, $\rho = 1$) |
+| Perfect ranking | Actual 2016--2018 outbreak burden ($\rho = 1$) |
 | Oracle | Perfect foreknowledge of outbreak realization |
 
 
@@ -49,547 +45,28 @@ vaccination** under a fixed vaccine supply. The analysis:
 knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
 library(tidyverse)
 library(sf)
-library(terra)
-library(exactextractr)
 library(patchwork)
 library(pROC)
 library(scales)
 library(knitr)
-library(mgcv) # GAM
-library(randomForest) # random forest
-library(gbm) # gradient boosting
-library(class) # k-NN
 source("R/analytic_utils.R")
 source("R/spatial_setup.R")
 ```
 
-
-## Data Loading
-
-### Outbreak surveillance data
-
-```{r load-outbreak-data}
-# Raw surveillance data: each row = (location, time interval TL-TR, outbreak_number)
-# Location format: "REGION::COUNTRY::ADMIN1::ADMIN2" (3 separators = admin2)
-ts_outbreak <- readr::read_rds(
-    "data/outbreak_files_Oct2024/time_series_outbreak_extraction.rds"
-)
-# Keep admin2 (adm=2) and admin3 (adm=3) only
-ts23 <- ts_outbreak |>
-    mutate(adm = str_count(location, "::") - 1L) |>
-    filter(adm %in% c(2, 3))
-
-# Collapse time-series rows into one row per outbreak event, extracting
-# start/end years, duration, and a unique ID
-outbreak_events <- ts23 |>
-    group_by(location, adm, outbreak_number) |>
-    summarise(
-        year_start     = year(min(TL)),
-        year_end       = year(max(TR)),
-        duration_weeks = as.numeric(difftime(max(TR), min(TL), units = "weeks")),
-        id_outbreak    = paste(first(location), min(TL), max(TR), sep = "_"),
-        .groups        = "drop"
-    )
-
-all_years <- 2010:2023
-all_locs <- unique(ts23$location)
-
-# loc_year_full: complete (location × year) panel with n_active = number of
-# outbreaks ACTIVE (ongoing) in that year. Used for the outcome variable.
-loc_year <- outbreak_events %>%
-    mutate(years = map2(year_start, pmin(year_end, 2023L), seq)) %>%
-    unnest(years) %>%
-    rename(year = years) %>%
-    filter(year %in% all_years) %>%
-    count(location, year, name = "n_active")
-
-loc_year_full <- expand_grid(location = all_locs, year = all_years) %>%
-    left_join(loc_year, by = c("location", "year")) %>%
-    replace_na(list(n_active = 0L))
-
-# loc_year_end_full: complete (location × year) panel with n_ended = number of
-# outbreaks that ENDED in that year. Used for feature construction (hist_count)
-# because an outbreak's end year marks when it became observable.
-loc_year_end_full <- outbreak_events %>%
-    filter(year_end %in% all_years) %>%
-    count(location, year_end, name = "n_ended") %>%
-    rename(year = year_end) %>%
-    right_join(expand_grid(location = all_locs, year = all_years),
-        by = c("location", "year")
-    ) %>%
-    replace_na(list(n_ended = 0L))
-
-cat("Surveillance locations:", length(all_locs), "\n")
-cat("Year range:", range(all_years), "\n")
-cat("Total outbreak events:", nrow(outbreak_events), "\n")
-cat("Total outbreak-end-years:", sum(loc_year_end_full$n_ended), "\n")
-```
-
-### Shapefiles and spatial neighbours
-
-```{r load-shapefiles}
-# Shapefiles are keyed by location_period_id; we need to map them to
-# the human-readable location strings (e.g. "AFR::COD::Kinshasa::...").
-shp_all <- readr::read_rds(
-    "data/outbreak_files_Oct2024/outbreak_shapefiles.rds"
-)
-
-# Build a lookup: for each location, keep the most recent location_period_id
-# (a location can have multiple period IDs if boundaries changed over time)
-loc_id_map <- ts23 %>%
-    distinct(location_period_id, location) %>%
-    group_by(location) %>%
-    slice_max(as.integer(location_period_id), n = 1, with_ties = FALSE) %>%
-    ungroup()
-
-# Join shapefile geometries to location names via the ID map
-shp_named <- shp_all %>%
-    left_join(loc_id_map, by = c("lctn_pr" = "location_period_id"))
-
-# Keep only admin2/3 polygons (3 or 4 "::" separators in location string)
-shp_admin23 <- shp_named %>%
-    filter(!is.na(location), str_count(location, "::") %in% c(3, 4))
-
-cat("ADM2/3 polygons:", nrow(shp_admin23), "\n")
-
-# Build a spatial neighbour list: for each polygon, find all neighbours
-# whose centroid is within DIST_LIMIT_KM km (geodesic distance).
-# Used for the nbr_hist feature (spatial contagion signal).
-DIST_LIMIT_KM <- 50
-centroids_sf <- shp_admin23 %>%
-    st_make_valid() %>%
-    st_point_on_surface()
-
-# Pairwise geodesic distance matrix (meters); convert to km
-dist_mat_sp <- st_distance(centroids_sf) |> units::drop_units()
-dist_mat_sp <- dist_mat_sp / 1000 # m -> km
-rownames(dist_mat_sp) <- colnames(dist_mat_sp) <- shp_admin23$location
-diag(dist_mat_sp) <- Inf
-
-# For each location, store neighbours within the distance limit (sorted)
-nbr_list <- setNames(
-    lapply(shp_admin23$location, function(loc) {
-        d <- dist_mat_sp[loc, ]
-        names(sort(d[d <= DIST_LIMIT_KM]))
-    }),
-    shp_admin23$location
-)
-
-# Extract centroid coordinates for GAM spatial smooth
-centroid_coords <- centroids_sf |>
-    st_coordinates() |>
-    as_tibble() |>
-    rename(lon = X, lat = Y) |>
-    mutate(location = shp_admin23$location)
-```
-
-### Population raster
-
-```{r load-population}
-pop_raster <- readr::read_rds("data/ppp_20km_mean_af_2017_20221123.rds")
-pop_raster <- terra::rast(pop_raster)  # convert RasterLayer → SpatRaster
-cat("Raster dimensions:", dim(pop_raster), "\n")
-cat("Resolution:", res(pop_raster), "degrees (~20 km)\n")
-```
-
-
-## Population Extraction
-
-Aggregate the 20 km population raster to ADM2 polygons via zonal statistics.
-
-The raster stores **mean population per ~1 km² source cell**, having been
-aggregated from the WorldPop ~1 km PPP (People Per Pixel) product to 20 km
-resolution by averaging. Each 20 km pixel spans approximately
-$(0.167° \times 111\;\text{km/°})^2 \approx 344\;\text{km}^2$ at the equator,
-i.e.\ roughly 344 underlying 1 km² source cells. Because `exact_extract(fun =
-"sum")` sums these per-km² means, the result must be multiplied by the pixel
-area (~344 km²) to recover actual population counts. Verification: the
-continent-wide raster sum ($\approx$ 3.65 M) $\times$ 344 $\approx$ 1.26
-billion, matching Africa's 2017 population.
-
-```{r population-extraction}
-POP_SCALE <- 344 # pixel area in km² ≈ (0.167° × 111 km)²
-
-shp_pop <- shp_admin23 |>
-    st_make_valid() |>
-    st_transform(crs(pop_raster))
-
-# Sum mean-population values within each polygon, then scale to actual counts
-pop_by_adm2 <- exactextractr::exact_extract(pop_raster, shp_pop,
-    fun = "sum",
-    progress = FALSE
-)
-pop_by_adm2 <- pop_by_adm2 * POP_SCALE
-
-shp_admin23$pop_sum <- pop_by_adm2
-
-cat(
-    "Polygons with population > 0:",
-    sum(!is.na(pop_by_adm2) & pop_by_adm2 > 0), "of", nrow(shp_admin23), "\n"
-)
-cat("Total population:", format(round(sum(pop_by_adm2, na.rm = TRUE)), big.mark = ","), "\n")
-cat(
-    "Range:", format(round(min(pop_by_adm2, na.rm = TRUE)), big.mark = ","), "-",
-    format(round(max(pop_by_adm2, na.rm = TRUE)), big.mark = ","), "\n"
-)
-```
-
-
-## Risk Prediction Model
-
-### Model overview
-
-We constructed a spatial outbreak risk prediction model to rank
-administrative-2 (admin-2) units by their prospective outbreak probability.
-The model is trained on historical surveillance data and produces
-location-level risk scores that are used to guide pre-emptive vaccine
-allocation.
-
-### Temporal structure
-
-The prediction task is framed as a binary classification problem: for each
-admin-2 unit, predict whether at least one cholera outbreak will occur during
-a future $k$-year window. We adopt a rolling temporal cross-validation
-design with three time parameters:
-
-- $T$ — the feature window width (years). Features are computed from the most
-  recent $T$ years of surveillance data ending at the split year $s$.
-- $k$ — the prediction horizon (years). The outcome is defined as any
-  outbreak occurrence during the $k$-year window $[s+1, s+k]$.
-- $L$ — the lead-time gap between the end of the feature window and the
-  start of the outcome window (default $L = 0$).
-
-For the final model, we use $T = 5$ and $k = 3$, with $L = 0$. This means
-features are derived from the five most recent years of surveillance data,
-and the model predicts outbreak occurrence over the subsequent three years.
-
-### Feature engineering
-
-Two features are computed for each location at each split year $s$:
-
-1. **Recent outbreak count** (`hist_count`): the number of distinct outbreaks
-   that ended within the recent $T$-year window $[s - T + 1, s]$. We use
-   outbreak end dates rather than start dates because an outbreak is only
-   fully observable after it concludes.
-
-2. **Spatial neighbourhood signal** (`nbr_hist`): the mean `hist_count` of
-   all admin-2 units whose centroids lie within a 50 km geodesic distance.
-   This feature captures spatial contagion—locations near recently affected
-   areas are at elevated risk.
-
-### Training and prediction split
-
-The model is trained exclusively on pre-2016 data and evaluated against
-observed outbreaks during 2016--2018. Specifically:
-
-- **Training** ($s = 2014$, $k = 1$): features from outbreaks ending in
-  2010--2014, outcome = any outbreak active in 2015. The single-year outcome
-  ensures that the training period (ending 2015) does not overlap with the
-  evaluation period (2016--2018).
-- **Prediction** ($s = 2015$): features from outbreaks ending in 2011--2015.
-  The trained model produces a risk score per location, which is evaluated
-  against outbreak occurrence in each of 2016, 2017, and 2018 individually,
-  as well as the pooled 2016--2018 period.
-
-### Classifiers
-
-We fit three classifiers on the training data:
-
-1. **Logistic regression**: $P(\text{outbreak} \mid \texttt{hist\_count},
-   \texttt{nbr\_hist})$, fitted via maximum likelihood (`glm`, binomial
-   family). This yields calibrated probabilities and interpretable
-   coefficients.
-
-2. **Random forest**: a 500-tree ensemble (`randomForest`) using the same
-   two features. This captures nonlinear interactions between features
-   without parametric assumptions. Predicted probabilities are the proportion
-   of trees voting for the outbreak class.
-
-3. **GAM with spatial smooth**: a generalized additive model (`mgcv::gam`)
-   with `hist_count` as a linear term and a 2D thin-plate regression spline
-   $s(\text{lon}, \text{lat})$ on centroid coordinates. The spatial smooth
-   replaces `nbr_hist`, learning a flexible risk surface from the data
-   without requiring a fixed distance cutoff.
-
-The three classifiers produce risk scores labelled **Model-ranked** (logistic),
-**RF-ranked** (random forest), and **GAM-ranked** (GAM-spatial) in subsequent
-analyses.
-
-```{r model-functions}
-# Build (location × split_year) feature matrix for temporal cross-validation.
-#
-# Timeline for each split year s (all_years = 2010:2023):
-#
-#   |--- all history ---|-- last T --|-- gap --|--- outcome ---|
-#  2010 ............ s-T+1 ......... s ..... s+L+1 ......... s+L+k
-#
-# Feature window ending at s:
-#   last T years [s-T+1, s] → hist_count (recent outbreak count)
-#
-# Parameters:
-#   T_val — recent window width (years); hist_count uses the last T years
-#   k_val — prediction horizon (years); outcome = any outbreak in next k years
-#   L_val — lead-time gap between feature window end and outcome start
-#            (default 0 = predict the immediately following years)
-#
-# valid_splits: the set of years s where both the feature window [s-T+1, s]
-# and the outcome window [s+L+1, s+L+k] fit within all_years.
-# E.g., T=5, k=3, L=0, all_years=2010:2023 → valid s = 2014:2020.
-build_model_df <- function(T_val, k_val, L_val = 0L,
-                           nbr_map = nbr_list,
-                           coord_lookup = NULL) {
-    # Determine which years can serve as split points:
-    # need T years of history before s, and k+L years of future after s.
-    valid_splits <- all_years[
-        all_years >= (min(all_years) + T_val - 1L) &
-            (all_years + L_val + k_val) <= max(all_years)
-    ]
-
-    map_dfr(valid_splits, function(s) {
-        recent_yrs <- seq(s - T_val + 1L, s)  # last T years → hist_count
-        test_yrs   <- seq(s + L_val + 1L, s + L_val + k_val) # outcome window
-
-        # Feature 1: hist_count — number of outbreaks ending in the last T years
-        hc <- tibble(location = all_locs) |>
-            left_join(
-                loc_year_end_full |>
-                    filter(year %in% recent_yrs) |>
-                    group_by(location) |>
-                    summarise(hist_count = sum(n_ended), .groups = "drop"),
-                by = "location"
-            ) |>
-            replace_na(list(hist_count = 0L))
-
-        # Feature 2: nbr_hist — mean hist_count of neighbours within distance limit
-        # (spatial contagion signal: locations near recent outbreaks are riskier)
-        sv <- setNames(hc$hist_count, hc$location)
-        nbr_df <- hc |>
-            mutate(nbr_hist = map_dbl(location, function(loc) {
-                nbrs <- nbr_map[[loc]]
-                if (is.null(nbrs) || length(nbrs) == 0L) {
-                    return(0)
-                }
-                nbrs <- nbrs[nbrs %in% names(sv)]
-                if (length(nbrs) == 0L) {
-                    return(0)
-                }
-                mean(sv[nbrs])
-            })) |>
-            dplyr::select(location, nbr_hist)
-
-        # Outcome: obs = 1 if any active outbreak during the test window
-        out <- tibble(location = all_locs) |>
-            left_join(
-                loc_year_full |>
-                    filter(year %in% test_yrs) |>
-                    group_by(location) |>
-                    summarise(obs = as.integer(sum(n_active) > 0L), .groups = "drop"),
-                by = "location"
-            ) |>
-            replace_na(list(obs = 0L))
-
-        # Combine all features + outcome, tagged with split_year
-        result <- hc |>
-            left_join(nbr_df, by = "location") |>
-            left_join(out, by = "location") |>
-            mutate(split_year = s)
-
-        if (!is.null(coord_lookup)) {
-            result <- result |> left_join(coord_lookup, by = "location")
-        }
-        result
-    })
-}
-```
-
-```{r train-final-model}
-# Non-overlapping temporal split:
-#   Train: features through 2014, outcome = 2015 (T=5, k=1)
-#   Predict: features through 2015, applied to evaluation years 2016-2018
-# Training outcome (2015) does not overlap evaluation (2016-2018).
-T_val <- 5L
-k_val <- 1L
-
-df_model <- build_model_df(T_val = T_val, k_val = k_val,
-                           coord_lookup = centroid_coords)
-
-# Train: split_year=2014 → features [2010,2014], outcome = 2015
-# Predict: split_year=2015 → features [2011,2015]
-train_data <- df_model |> filter(split_year == 2014)
-pred_data  <- df_model |> filter(split_year == 2015)
-
-cat("Training observations:", nrow(train_data), "\n")
-cat("Prediction locations:", nrow(pred_data), "\n")
-
-if (nrow(train_data) == 0 || nrow(pred_data) == 0) {
-    stop("No data available. Check all_years range.")
-}
-
-# --- Classifier 1: Logistic regression ---
-fit_final <- glm(
-    obs ~ hist_count + nbr_hist,
-    data   = train_data,
-    family = binomial
-)
-pred_data$pred_prob <- predict(fit_final, newdata = pred_data, type = "response")
-
-# --- Classifier 2: Random forest ---
-set.seed(42)
-rf_fit_all <- randomForest(factor(obs) ~ hist_count + nbr_hist,
-    data = train_data, ntree = 500
-)
-pred_data$pred_rf <- predict(rf_fit_all, newdata = pred_data, type = "prob")[, "1"]
-
-# --- Classifier 3: GAM with spatial smooth ---
-# Replaces nbr_hist with a 2D thin-plate spline on centroid coordinates.
-# The spatial smooth captures neighbourhood effects more flexibly than
-# the fixed-radius nbr_hist average.
-k_spatial <- min(50, floor(nrow(train_data) / 2))
-gam_fit_all <- gam(
-    obs ~ hist_count + s(lon, lat, bs = "tp", k = k_spatial),
-    data = train_data, family = binomial, method = "REML"
-)
-pred_data$pred_gam <- as.numeric(
-    predict(gam_fit_all, newdata = pred_data, type = "response")
-)
-
-cat(
-    "Observed outbreak prevalence (training, 2015):",
-    round(100 * mean(train_data$obs), 1), "%\n"
-)
-cat(
-    "Predicted probability range (logistic):",
-    round(min(pred_data$pred_prob), 4), "-",
-    round(max(pred_data$pred_prob), 4), "\n"
-)
-cat(
-    "Predicted probability range (RF):",
-    round(min(pred_data$pred_rf), 4), "-",
-    round(max(pred_data$pred_rf), 4), "\n"
-)
-cat(
-    "Predicted probability range (GAM-spatial):",
-    round(min(pred_data$pred_gam), 4), "-",
-    round(max(pred_data$pred_gam), 4), "\n"
-)
-
-summary(fit_final)$coefficients |>
-    as.data.frame() |>
-    tibble::rownames_to_column("Term") |>
-    rename(SE = `Std. Error`, z = `z value`, p = `Pr(>|z|)`) |>
-    mutate(OR = exp(Estimate)) |>
-    dplyr::select(Term, Estimate, SE, z, p, OR) |>
-    knitr::kable(
-        digits = 3,
-        caption = "Logistic regression coefficients (trained on 2010-2014, outcome 2015)"
-    )
-```
-
-### Multi-year evaluation: forecast degradation
-
-The model was trained to predict 2015 outbreaks. We now evaluate how well its
-risk ranking holds when applied to 2016, 2017, and 2018 individually, and to
-the pooled 2016--2018 period. Declining performance at longer horizons would
-indicate that outbreak risk patterns are not temporally stable.
-
-```{r multi-year-eval}
-# Evaluate predictions against each year and pooled 2016-2018
-eval_years_individual <- 2016:2018
-
-eval_by_year <- map_dfr(c(eval_years_individual, 0L), function(yr) {
-    # yr = 0 is a sentinel for pooled 2016-2018
-    if (yr > 0) {
-        outcome_yr <- loc_year_full |>
-            filter(year == yr) |>
-            group_by(location) |>
-            summarise(
-                n_ob = sum(n_active > 0),
-                any_outbreak = as.integer(n_ob > 0),
-                .groups = "drop"
-            )
-        label <- as.character(yr)
-    } else {
-        outcome_yr <- loc_year_full |>
-            filter(year %in% eval_years_individual) |>
-            group_by(location) |>
-            summarise(
-                n_ob = sum(n_active > 0),
-                any_outbreak = as.integer(n_ob > 0),
-                .groups = "drop"
-            )
-        label <- "2016-2018"
-    }
-
-    pred_eval <- pred_data |>
-        left_join(outcome_yr, by = "location") |>
-        replace_na(list(n_ob = 0L, any_outbreak = 0L))
-
-    classifiers <- c("pred_prob", "pred_rf", "pred_gam")
-    labels <- c("Logistic", "Random Forest", "GAM-spatial")
-
-    map_dfr(seq_along(classifiers), function(j) {
-        pred_col <- pred_eval[[classifiers[j]]]
-        roc_obj <- pROC::roc(pred_eval$any_outbreak, pred_col, quiet = TRUE)
-        tibble(
-            eval_period = label,
-            classifier = labels[j],
-            rho = cor(pred_col, pred_eval$n_ob, method = "spearman"),
-            AUC = as.numeric(pROC::auc(roc_obj))
-        )
-    })
-})
-
-# Also add Count-ranked (hist_count) as a baseline
-eval_by_year_with_baseline <- map_dfr(c(eval_years_individual, 0L), function(yr) {
-    if (yr > 0) {
-        outcome_yr <- loc_year_full |>
-            filter(year == yr) |>
-            group_by(location) |>
-            summarise(n_ob = sum(n_active > 0),
-                      any_outbreak = as.integer(n_ob > 0), .groups = "drop")
-        label <- as.character(yr)
-    } else {
-        outcome_yr <- loc_year_full |>
-            filter(year %in% eval_years_individual) |>
-            group_by(location) |>
-            summarise(n_ob = sum(n_active > 0),
-                      any_outbreak = as.integer(n_ob > 0), .groups = "drop")
-        label <- "2016-2018"
-    }
-    pred_eval <- pred_data |>
-        left_join(outcome_yr, by = "location") |>
-        replace_na(list(n_ob = 0L, any_outbreak = 0L))
-    roc_obj <- pROC::roc(pred_eval$any_outbreak, pred_eval$hist_count, quiet = TRUE)
-    tibble(
-        eval_period = label, classifier = "Count-ranked",
-        rho = cor(pred_eval$hist_count, pred_eval$n_ob, method = "spearman"),
-        AUC = as.numeric(pROC::auc(roc_obj))
-    )
-})
-
-eval_by_year <- bind_rows(eval_by_year, eval_by_year_with_baseline) |>
-    mutate(eval_period = factor(eval_period,
-        levels = c("2016", "2017", "2018", "2016-2018")))
-
-eval_by_year |>
-    arrange(eval_period, desc(rho)) |>
-    knitr::kable(
-        digits = 3,
-        caption = "Forecast degradation: model trained on 2014→2015, evaluated on 2016-2018"
-    )
-
-# Bar chart
-ggplot(eval_by_year, aes(x = classifier, y = rho, fill = classifier)) +
-    geom_col(width = 0.6) +
-    geom_text(aes(label = sprintf("%.3f", rho)), vjust = -0.3, size = 3) +
-    facet_wrap(~ eval_period, nrow = 1) +
-    labs(x = NULL, y = "Spearman rho",
-         title = "Targeting accuracy by evaluation year",
-         subtitle = "Model trained on features through 2014, outcome 2015") +
-    theme_minimal(base_size = 11) +
-    theme(legend.position = "none",
-          axis.text.x = element_text(angle = 45, hjust = 1)) +
-    ylim(0, NA)
+## Load Predictions
+
+```{r load-predictions}
+preds_rds     <- readRDS("data/outbreak_predictions.rds")
+pred_data     <- preds_rds$pred_data
+loc_year_full <- preds_rds$loc_year_full
+shp_admin23   <- preds_rds$shp_admin23
+nbr_list      <- preds_rds$nbr_list
+pop_lookup    <- preds_rds$pop_lookup
+
+cat("Loaded outbreak_predictions.rds\n")
+cat("  pred_data:     ", nrow(pred_data), "locations\n")
+cat("  loc_year_full: ", nrow(loc_year_full), "rows\n")
+cat("  shp_admin23:   ", nrow(shp_admin23), "polygons\n")
 ```
 
 ## Build Simulation Dataset
@@ -607,7 +84,9 @@ ATTACK_RATE <- 0.005
 
 DOSES_PER_PERSON <- 1 # single-dose OCV
 
-# Evaluation window matches the prediction horizon (k=3 → 2016-2018)
+# Evaluation window: 2016-2018 (3 years of observed outcomes for impact simulation)
+# The final model predicts 2018, but we use 2016-2018 for richer impact evaluation
+# since the validation folds already confirmed model quality for 2015-2017.
 eval_years <- 2016:2018
 
 # Compute ground-truth outbreak outcomes during the evaluation window:
@@ -623,10 +102,9 @@ outbreak_eval <- loc_year_full |>
     )
 
 # Build the master simulation data frame: one row per location, with
-# features (hist_count, nbr_hist), model predictions
-# (pred_prob, pred_rf, pred_gam), and evaluation outcomes (n_outbreak_years, any_outbreak)
+# model predictions and evaluation outcomes
 sim_df_all <- pred_data |>
-    dplyr::select(location, hist_count, nbr_hist, obs, pred_prob, pred_rf, pred_gam) |>
+    dplyr::select(location, hist_count, pred_prob, pred_rf, pred_gam) |>
     left_join(outbreak_eval, by = "location") |>
     replace_na(list(n_outbreak_years = 0L, any_outbreak = 0L))
 
@@ -681,14 +159,9 @@ P_total <- sum(sim_df$pop_sum)
 ```
 
 
-## Classification Method Comparison (DRC)
-
-The logistic regression above is the simplest approach. Here we compare several
-classification methods — all trained on the same features (`hist_count`,
-`nbr_hist`) and the same train/test split — to see whether a more
-flexible model improves targeting accuracy ($\rho$) for DRC.
-
-```{r classifier-comparison}
+```{r classifier-comparison-REMOVED, eval=FALSE, include=FALSE}
+# OLD DRC-only classifier comparison — superseded by the 5-model expanding
+# window CV above. Kept here as inactive code for reference.
 # Compare 5 classifiers for DRC only: Logistic, GAM, Random Forest, GBM, k-NN.
 # All use the same 2 features (hist_count, nbr_hist) and same
 # train/test split. The goal is to see whether nonlinear methods improve
@@ -783,9 +256,7 @@ classifier_preds <- tibble(
     )
 ```
 
-### Targeting accuracy ($\rho$) by classifier
-
-```{r classifier-rho-comparison}
+```{r classifier-rho-comparison, eval=FALSE, include=FALSE}
 # Evaluate each classifier's targeting accuracy:
 # - Spearman rho: rank correlation between predicted prob and outbreak burden
 # - AUC: area under the ROC curve for binary outbreak classification
@@ -833,7 +304,7 @@ knitr::kable(rho_table,
 )
 ```
 
-```{r fig-classifier-rho, fig.width=8, fig.height=5}
+```{r fig-classifier-rho, eval=FALSE, include=FALSE}
 rho_plot_df <- rho_table |>
     mutate(
         Method = fct_reorder(Method, rho_spearman),
@@ -862,7 +333,7 @@ ggplot(rho_plot_df, aes(x = Method, y = rho_spearman, fill = type)) +
     guides(fill = "none")
 ```
 
-```{r fig-classifier-scatter, fig.width=14, fig.height=8}
+```{r fig-classifier-scatter, eval=FALSE, include=FALSE}
 # Scatter: predicted probability vs actual outcomes for each classifier
 scatter_df <- classifier_preds |>
     pivot_longer(
@@ -2305,7 +1776,7 @@ single_year_results <- map_dfr(SELECTED_COUNTRIES, function(ctry) {
 
         sim_1y <- df_c |>
             dplyr::select(
-                location, hist_count, nbr_hist,
+                location, hist_count,
                 pred_prob, pred_rf, pred_gam, pop_sum, country
             ) |>
             left_join(outbreak_yr, by = "location") |>
