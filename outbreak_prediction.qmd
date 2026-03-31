@@ -665,18 +665,14 @@ wrap_plots(roc_plots, nrow = 1)
 
 ### Variable importance
 
-```{r fig-variable-importance, fig.width=14, fig.height=14}
-#| fig-cap: "Variable importance by temporal fold. Each model is trained on the
-#|   corresponding fold's data only. Random Forest uses permutation importance;
-#|   XGBoost uses gain. Importance values are normalised to [0, 1] within each
-#|   fold and model to allow comparison across folds."
-# Variable importance for each temporal fold (RF permutation + XGBoost gain)
-# For fold i, train on that fold's data only to see which features matter
-# in each time window.
+```{r compute-variable-importance}
+# Train RF and XGBoost on each temporal fold independently; extract importance.
+# RF: permutation importance. XGBoost: gain.
+# Importance is normalised to [0,1] within each fold × model.
 imp_by_fold <- map_dfr(1:4, function(i) {
     d <- fold_data[[i]]
     fe <- temporal_folds[i, ]
-    fold_label <- sprintf("Fold %d\n(%d-%d → %d)",
+    fold_label <- sprintf("Fold %d (%d-%d\u2192%d)",
                           i, fe$train_end - T_WINDOW + 1L, fe$train_end,
                           fe$outcome_year)
 
@@ -691,7 +687,8 @@ imp_by_fold <- map_dfr(1:4, function(i) {
         feature    = names(rf_fit$variable.importance),
         importance = rf_fit$variable.importance,
         model      = "Random Forest",
-        fold       = fold_label
+        fold       = fold_label,
+        fold_num   = i
     )
 
     # XGBoost
@@ -719,28 +716,61 @@ imp_by_fold <- map_dfr(1:4, function(i) {
         feature    = xgb_raw$Feature,
         importance = xgb_raw$Gain,
         model      = "XGBoost",
-        fold       = fold_label
+        fold       = fold_label,
+        fold_num   = i
     )
 
     bind_rows(rf_imp, xgb_imp)
-})
-
-# Normalise importance within each fold × model to [0,1] for comparability
-imp_by_fold <- imp_by_fold |>
+}) |>
+    # Normalise to [0,1] within each fold × model
     group_by(fold, model) |>
     mutate(importance = importance / max(importance, na.rm = TRUE)) |>
     ungroup()
 
-# Order features by mean importance across all folds/models
+# Feature order: by mean importance across all folds and models
 feat_order <- imp_by_fold |>
     group_by(feature) |>
-    summarise(mean_imp = mean(importance, na.rm = TRUE)) |>
+    summarise(mean_imp = mean(importance, na.rm = TRUE), .groups = "drop") |>
     arrange(mean_imp) |>
     pull(feature)
 
 imp_by_fold <- imp_by_fold |>
     mutate(feature = factor(feature, levels = feat_order))
+```
 
+#### Aggregated across all temporal folds
+
+```{r fig-variable-importance-agg, fig.width=10, fig.height=6}
+#| fig-cap: "Variable importance aggregated across all four temporal folds. Points
+#|   show the mean normalised importance; error bars show ±1 SD across folds.
+#|   Features are ordered by mean importance across both models. Random Forest
+#|   uses permutation importance; XGBoost uses gain."
+imp_summary <- imp_by_fold |>
+    group_by(feature, model) |>
+    summarise(mean_imp = mean(importance), sd_imp = sd(importance),
+              .groups = "drop")
+
+ggplot(imp_summary, aes(x = mean_imp, y = feature, colour = model)) +
+    geom_errorbarh(aes(xmin = pmax(mean_imp - sd_imp, 0),
+                       xmax = mean_imp + sd_imp),
+                   height = 0.3, position = position_dodge(0.6)) +
+    geom_point(size = 2.5, position = position_dodge(0.6)) +
+    scale_colour_manual(values = c("Random Forest" = "steelblue",
+                                   "XGBoost" = "darkorange")) +
+    labs(x = "Mean normalised importance (±1 SD across 4 folds)",
+         y = NULL, colour = "Model",
+         title = "Variable importance aggregated across temporal folds") +
+    theme_minimal(base_size = 11) +
+    theme(legend.position = "bottom")
+```
+
+#### By temporal fold
+
+```{r fig-variable-importance-fold, fig.width=14, fig.height=14}
+#| fig-cap: "Variable importance by temporal fold. Each panel shows one fold
+#|   trained independently on that fold's data. Importance values are normalised
+#|   to [0, 1] within each fold and model. Features are ordered by mean
+#|   importance across all folds."
 ggplot(imp_by_fold, aes(x = importance, y = feature, fill = model)) +
     geom_col(position = "dodge", width = 0.7) +
     facet_wrap(~ fold, nrow = 2) +
@@ -783,13 +813,26 @@ ggplot(calibration_data, aes(x = pred_mean, y = obs_mean, colour = model)) +
     coord_equal(xlim = c(0, 1), ylim = c(0, 1))
 ```
 
-### Final model: train on all data, predict 2018
+### Final model: train on all data, predict 2019
+
+The final model is trained on all four validation folds combined (outcomes
+2015–2018). Predictions for **2019** are generated from features built over the
+most recent T = 5 years of available surveillance data (2014–2018). Specifically,
+`build_features(2018)` constructs the same 18 features (12 same-unit, 6
+neighbour) as the validation folds, but using `feat_yrs = 2014:2018`. No 2019
+outcome data enter the model — this is a prospective forecast. The 2019
+ground-truth outcomes (where available in the surveillance data) are attached
+downstream in `vaccine_impact_sim.qmd` for impact evaluation.
 
 ```{r final-model}
-# Train on all 4 folds (2010-2014→2015, 2011-2015→2016, 2012-2016→2017, 2013-2017→2018)
+# Train on all 4 folds (outcomes 2015-2018); predict 2019
+# final_features = build_features(2018): feat_yrs = 2014:2018 (T=5 window)
+# No outcome column is available for 2019 at prediction time.
 all_train <- bind_rows(fold_data)
 
-# Final predictions for 2018 using features from 2010-2017
+# Generate 2019 risk scores: fit_and_predict uses final_features as the test
+# set (features only, no obs); model outputs are predicted probabilities of
+# outbreak occurrence in 2019.
 final_preds <- fit_and_predict(all_train, final_features)
 
 # Attach predictions to final_features for downstream use
@@ -814,7 +857,8 @@ pred_data <- pred_data |>
     mutate(hist_count = n_outbreak_years)
 
 cat("Final predictions for 2019: n =", nrow(pred_data), "locations\n")
-cat("Prevalence (2018, last fold):", round(100 * mean(final_preds$obs), 1), "%\n")
+cat("Outcome prevalence (fold 4, 2018):",
+    round(100 * mean(fold_data[["fold4"]]$obs), 1), "%\n")
 ```
 
 ## Save Predictions
