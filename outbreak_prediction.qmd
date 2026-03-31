@@ -437,8 +437,12 @@ fit_and_predict <- function(train, test, features = ALL_FEATURES) {
             best_auc <- max(cv_fit$cvm); best_enet <- cv_fit
         }
     }
-    preds$`Elastic Net` <- as.numeric(
-        predict(best_enet, newx = X_test, s = "lambda.min", type = "response"))
+    preds$`Elastic Net` <- if (!is.null(best_enet)) {
+        as.numeric(predict(best_enet, newx = X_test, s = "lambda.min", type = "response"))
+    } else {
+        # Fallback to logistic regression when cv.glmnet fails (e.g., tiny folds)
+        as.numeric(predict(lr_fit, newdata = test, type = "response"))
+    }
 
     # 3. Random forest (ranger)
     set.seed(42)
@@ -447,7 +451,8 @@ fit_and_predict <- function(train, test, features = ALL_FEATURES) {
         num.trees = 500, probability = TRUE,
         min.node.size = 5, mtry = max(1, floor(sqrt(length(features))))
     )
-    preds$`Random Forest` <- predict(rf_fit, data = test)$predictions[, "1"]
+    rf_preds <- predict(rf_fit, data = test)$predictions
+    preds$`Random Forest` <- if ("1" %in% colnames(rf_preds)) rf_preds[, "1"] else rep(0, nrow(test))
 
     # 4. XGBoost
     set.seed(42)
@@ -965,4 +970,219 @@ cat("  pred_data_k3:     ", nrow(pred_data_k3), "locations\n")
 cat("  loc_year_full:    ", nrow(loc_year_full), "rows\n")
 cat("  shp_admin23:      ", nrow(shp_admin23), "polygons\n")
 cat("  nbr_list:         ", length(nbr_list), "entries\n")
+```
+
+# COD-Specific Model
+
+The global model's within-country rho is very low (~0.06 for COD) because
+most of its discriminative power comes from between-country variation, not
+within-DRC spatial patterns. A COD-only model forces all features to explain
+*within-country* spatial heterogeneity — which is exactly what pre-emptive
+vaccine allocation requires.
+
+**Approach**: identical pipeline to the global model (same T=5 rolling feature
+window, same 5 classifiers, same rolling temporal CV), but restricted to COD
+locations only. Rho from this model can be directly compared to the global
+model's COD rho and used as the targeting accuracy input in
+`vaccine_impact_sim.qmd`.
+
+```{r cod-setup}
+# Restrict all location sets to COD admin-2/3 units
+cod_locs <- all_locs[str_detect(all_locs, "::COD::")]
+cat("COD locations:", length(cod_locs), "\n")
+cat("Global locations:", length(all_locs), "\n")
+cat("COD fraction: ", round(100 * length(cod_locs) / length(all_locs), 1), "%\n")
+
+# COD-only outbreak panel
+loc_year_full_cod <- loc_year_full |> filter(location %in% cod_locs)
+outbreak_year_summary_cod <- outbreak_year_summary |> filter(location %in% cod_locs)
+
+# COD-only neighbour list (subset; distances already computed)
+nbr_list_cod <- nbr_list[cod_locs]
+
+# COD-only feature builder (uses global outbreak_year_summary to allow
+# cross-border neighbour lookups, but restricts output rows to COD)
+build_features_cod <- function(year_end, T = T_WINDOW) {
+    # Build full features (includes neighbours from non-COD locations)
+    # then restrict to COD locations only
+    build_features(year_end, T, nbr_map = nbr_list_cod,
+                   coord_lookup = centroid_coords |> filter(location %in% cod_locs))
+}
+
+# Verify outbreak prevalence within COD
+cod_prev <- loc_year_full_cod |>
+    group_by(year) |>
+    summarise(prev = mean(n_active > 0), .groups = "drop")
+cat("\nCOD annual outbreak prevalence:\n")
+print(cod_prev)
+```
+
+```{r cod-temporal-cv}
+# Build fold data restricted to COD locations
+# Same T=5 rolling window, same fold structure as global k=1 model (9 folds)
+cod_temporal_folds <- temporal_folds_list$k1  # same fold dates
+
+make_fold_data_cod <- function(tf) {
+    fd <- map(1:nrow(tf), function(i) {
+        fe <- tf[i, ]
+        feat <- build_features_cod(fe$train_end)
+        outcome <- loc_year_full_cod |>
+            filter(year %in% (fe$outcome_start:fe$outcome_end)) |>
+            group_by(location) |>
+            summarise(obs = as.integer(sum(n_active) > 0L), .groups = "drop")
+        feat |>
+            left_join(outcome, by = "location") |>
+            replace_na(list(obs = 0L))
+    })
+    names(fd) <- paste0("fold", seq_along(fd))
+    fd
+}
+
+cod_fold_data <- make_fold_data_cod(cod_temporal_folds)
+N_FOLDS_COD <- length(cod_fold_data)
+
+cat(sprintf("\nCOD temporal folds (k=1, T=%d, rolling):\n", T_WINDOW))
+for (i in 1:N_FOLDS_COD) {
+    fe <- cod_temporal_folds[i, ]
+    d  <- cod_fold_data[[i]]
+    cat(sprintf(
+        "  Fold %d: features [%d,%d] → outcome %d | n=%d, prev=%.1f%%\n",
+        i, fe$train_end - T_WINDOW + 1L, fe$train_end,
+        fe$outcome_start, nrow(d), 100 * mean(d$obs)
+    ))
+}
+```
+
+```{r cod-temporal-predictions}
+# Rolling CV: train on fold i-1, test on fold i (folds 2:N_FOLDS_COD)
+cod_pred_list <- map(2:N_FOLDS_COD, function(i) {
+    fit_and_predict(cod_fold_data[[i - 1]], cod_fold_data[[i]]) |>
+        mutate(fold = i)
+})
+names(cod_pred_list) <- paste0("fold", 2:N_FOLDS_COD)
+cod_pred_df <- bind_rows(cod_pred_list)
+```
+
+```{r cod-temporal-eval}
+#| tbl-cap: "COD-specific model: rolling temporal CV metrics (train on fold i-1,
+#|   test on fold i). Compare rho here with the global model's COD rho (~0.06)."
+cod_temporal_results <- map_dfr(2:N_FOLDS_COD, function(i) {
+    preds <- cod_pred_list[[paste0("fold", i)]]
+    fe <- cod_temporal_folds[i, ]
+    map_dfr(MODEL_NAMES, function(m) {
+        tryCatch(
+            eval_metrics(preds$obs, preds[[m]]) |>
+                mutate(model = m, fold = i, outcome_year = fe$outcome_start),
+            error = function(e)
+                tibble(rho = NA, AUC_ROC = NA, AUC_PR = NA, Brier = NA,
+                       Sensitivity = NA, Specificity = NA, Threshold = NA,
+                       model = m, fold = i, outcome_year = fe$outcome_start)
+        )
+    })
+})
+
+cod_temporal_results |>
+    dplyr::select(fold, outcome_year, model, rho, AUC_ROC, AUC_PR, Brier) |>
+    arrange(fold, desc(rho)) |>
+    knitr::kable(digits = 3,
+        caption = "COD-only model: rolling temporal CV (k=1)")
+```
+
+```{r cod-rho-summary}
+#| tbl-cap: "COD-specific model: mean rho across folds 2-9, compared to the
+#|   global model's COD rho."
+cod_rho_summary <- cod_temporal_results |>
+    group_by(model) |>
+    summarise(
+        rho_mean = mean(rho, na.rm = TRUE),
+        rho_sd   = sd(rho, na.rm = TRUE),
+        AUC_mean = mean(AUC_ROC, na.rm = TRUE),
+        n_folds  = sum(!is.na(rho)),
+        .groups  = "drop"
+    ) |>
+    arrange(desc(rho_mean))
+
+# Global model COD rho for comparison (from temporal_pred_df, COD locations only)
+global_cod_rho <- map_dfr(2:N_FOLDS, function(i) {
+    preds <- temporal_pred_df |> filter(fold == i)
+    # Restrict to COD locations
+    preds_cod <- preds |> filter(location %in% cod_locs)
+    if (nrow(preds_cod) == 0 || var(preds_cod$obs) == 0) return(NULL)
+    map_dfr(MODEL_NAMES, function(m) {
+        tibble(
+            model = m, fold = i,
+            rho = tryCatch(cor(preds_cod[[m]], preds_cod$obs, method = "spearman"),
+                           error = function(e) NA_real_)
+        )
+    })
+}) |>
+    group_by(model) |>
+    summarise(rho_global_cod = mean(rho, na.rm = TRUE), .groups = "drop")
+
+cod_rho_summary |>
+    left_join(global_cod_rho, by = "model") |>
+    dplyr::select(model, rho_mean, rho_sd, rho_global_cod, AUC_mean, n_folds) |>
+    knitr::kable(
+        digits = 3,
+        col.names = c("Model", "rho (COD model)", "SD", "rho (global, COD subset)",
+                      "AUC_ROC", "Folds"),
+        caption = "COD-specific vs global model: mean rho across temporal folds"
+    )
+```
+
+```{r fig-cod-rho-by-fold, fig.width=10, fig.height=5}
+#| fig-cap: "COD-specific model rho by temporal fold. Each point is the Spearman
+#|   rank correlation between predicted probability and observed outbreak in that
+#|   fold's test year. Folds where the model fails (e.g. all-zero outcome) are
+#|   shown as NA and omitted. The horizontal dashed line marks rho = 0."
+cod_temporal_results |>
+    filter(!is.na(rho)) |>
+    mutate(model = factor(model, levels = MODEL_NAMES)) |>
+    ggplot(aes(x = factor(outcome_year), y = rho, colour = model, group = model)) +
+    geom_hline(yintercept = 0, linetype = "dashed", colour = "grey50") +
+    geom_line(linewidth = 0.6) +
+    geom_point(size = 2.5) +
+    scale_colour_brewer(palette = "Set1") +
+    labs(x = "Outcome year", y = "Spearman \u03c1",
+         colour = "Model",
+         title = "COD-specific model: rho by temporal fold (k=1, rolling CV)") +
+    theme_minimal(base_size = 11) +
+    theme(legend.position = "bottom")
+```
+
+```{r fig-cod-roc-curves, fig.width=14, fig.height=8}
+#| fig-cap: "ROC curves for the COD-specific model, temporal folds 2-9.
+#|   Training restricted to COD locations only; all features computed from
+#|   COD outbreak history and 50 km COD neighbours."
+cod_roc_df <- map_dfr(2:N_FOLDS_COD, function(i) {
+    d <- cod_pred_list[[paste0("fold", i)]]
+    fe <- cod_temporal_folds[i, ]
+    map_dfr(MODEL_NAMES, function(m) {
+        tryCatch({
+            roc_obj <- pROC::roc(d$obs, d[[m]], quiet = TRUE)
+            tibble(fpr = 1 - roc_obj$specificities,
+                   tpr = roc_obj$sensitivities,
+                   model = m, fold = i,
+                   outcome_year = fe$outcome_start,
+                   auc = as.numeric(pROC::auc(roc_obj)))
+        }, error = function(e) NULL)
+    })
+})
+
+cod_roc_plots <- map(2:N_FOLDS_COD, function(i) {
+    d <- cod_roc_df |> filter(fold == i)
+    yr <- cod_temporal_folds$outcome_start[i]
+    ggplot(d, aes(x = fpr, y = tpr, colour = model)) +
+        geom_step(direction = "hv", linewidth = 0.5) +
+        geom_abline(linetype = "dashed", colour = "grey60") +
+        labs(title = sprintf("Fold %d (outcome %d)", i, yr),
+             x = "1 - Specificity", y = "Sensitivity", colour = "Model") +
+        coord_equal() +
+        theme_minimal(base_size = 9) +
+        theme(plot.title = element_text(size = 8))
+})
+
+wrap_plots(cod_roc_plots, nrow = 2) +
+    plot_layout(guides = "collect") &
+    theme(legend.position = "bottom")
 ```
