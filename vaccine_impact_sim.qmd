@@ -2268,3 +2268,183 @@ cod_alpha_table |>
         caption = "COD: optimal alpha comparison — global vs COD-specific model"
     )
 ```
+
+# Top-Risk Scenario: ~200 Million People in Highest-Risk ADM2 Regions
+
+A key motivation for pre-emptive vaccination is that most ADM2 regions have
+very low outbreak probability, making pure reactive vaccination optimal on
+average. We test whether restricting the analysis to the **highest-risk ADM2
+regions** — those whose cumulative population just exceeds 200 million — reveals
+a meaningful role for pre-emptive allocation ($\alpha^* > 0$).
+
+The selection criterion is simple: rank all ADM2 regions by ensemble mean
+predicted risk (k=1 model), then take the top regions whose populations sum to
+~200 million. This mimics a targeting scenario where decision-makers direct
+vaccines toward the highest-burden regions.
+
+```{r top200m-setup}
+# ── 1. Compute ensemble mean risk score for all k=1 locations ──
+pred_ens <- pred_data |>
+    mutate(score_ens = (pred_prob + pred_enet + pred_rf + pred_xgb + pred_gam) / 5) |>
+    dplyr::select(location, score_ens, pred_prob, pred_rf, pred_gam, hist_count) |>
+    left_join(pop_lookup, by = "location") |>
+    filter(!is.na(score_ens), !is.na(pop_sum), pop_sum > 0)
+
+# ── 2. Identify the 200M population threshold ──
+pred_ens_sorted <- pred_ens |> arrange(desc(score_ens))
+cum_pop <- cumsum(pred_ens_sorted$pop_sum)
+n_top <- which(cum_pop >= 200e6)[1]   # first index where cumulative pop >= 200M
+
+top200m_locs  <- pred_ens_sorted$location[seq_len(n_top)]
+cutoff_score  <- pred_ens_sorted$score_ens[n_top]
+
+cat(sprintf("200M target: top %d ADM2 regions\n", n_top))
+cat(sprintf("Risk score cutoff: %.4f\n", cutoff_score))
+cat(sprintf("Total population in top regions: %.1f million\n",
+            sum(pred_ens_sorted$pop_sum[seq_len(n_top)]) / 1e6))
+
+# Country breakdown
+country_breakdown <- pred_ens_sorted[seq_len(n_top), ] |>
+    mutate(country = str_extract(location, "(?<=::)[A-Z]{3}(?=::)")) |>
+    group_by(country) |>
+    summarise(n_locs = n(), pop_M = sum(pop_sum) / 1e6, .groups = "drop") |>
+    arrange(desc(pop_M))
+print(country_breakdown)
+```
+
+```{r top200m-sim-data}
+# ── 3. Build simulation data frame for top-200M locations ──
+# Use 3-year eval window (2021-2023) to match main analysis
+outbreak_eval_top <- loc_year_full |>
+    filter(year %in% eval_years_k3) |>
+    group_by(location) |>
+    summarise(
+        n_outbreak_years = sum(n_active > 0),
+        any_outbreak     = as.integer(sum(n_active > 0) > 0),
+        .groups = "drop"
+    )
+
+sim_df_top <- pred_ens_sorted[seq_len(n_top), ] |>
+    left_join(outbreak_eval_top, by = "location") |>
+    replace_na(list(n_outbreak_years = 0L, any_outbreak = 0L)) |>
+    mutate(
+        country   = str_extract(location, "(?<=::)[A-Z]{3}(?=::)"),
+        obs_rate  = n_outbreak_years / length(eval_years_k3),
+        est_cases = pop_sum * ATTACK_RATE * n_outbreak_years
+    )
+
+P_top      <- sum(sim_df_top$pop_sum)
+n_top_locs <- nrow(sim_df_top)
+
+cat(sprintf("\nTop-200M simulation data:\n"))
+cat(sprintf("  n locations:      %d\n", n_top_locs))
+cat(sprintf("  total population: %.1f million\n", P_top / 1e6))
+cat(sprintf("  mean obs_rate:    %.4f\n", mean(sim_df_top$obs_rate)))
+cat(sprintf("  mean p (3-yr):    %.4f\n",
+            sum(sim_df_top$n_outbreak_years) / (n_top_locs * length(eval_years_k3))))
+```
+
+```{r top200m-bb-fit}
+# ── 4. Beta-Binomial MLE on top-200M locations ──
+bb_top <- fit_betabinom(sim_df_top$n_outbreak_years, n_trials)
+
+cat(sprintf("Beta-Binomial fit (top-200M regions, k=3yr):\n"))
+cat(sprintf("  Beta(a=%.4f, b=%.4f)\n", bb_top$a, bb_top$b))
+cat(sprintf("  Mean outbreak probability: p = %.4f\n", bb_top$p))
+cat(sprintf("  Convergence: %d\n", bb_top$convergence))
+
+# Rho for key strategies
+rho_top <- compute_strategy_rhos(sim_df_top)
+cat("\nSpearman rho (top-200M regions):\n")
+print(rho_top)
+
+# Analytical alpha* across f values
+a_ew_top <- map_dfr(f_values, function(fv) {
+    a_star <- get_alpha_star_beta(R_val, fv, bb_top$a, bb_top$b, r_val)
+    tibble(f = fv, alpha_star_ew = a_star)
+})
+cat("\nAnalytical alpha* (equal-weight, Beta-Binomial):\n")
+print(a_ew_top)
+```
+
+```{r top200m-alpha-star, fig.width=12, fig.height=5}
+#| fig-cap: "Cost curves for the top-200M high-risk ADM2 regions. Each panel shows
+#|   one coverage level f. Lines = strategies; diamond = MC-optimal alpha*.
+#|   Dashed vertical = analytical (equal-weight) alpha*. A non-zero alpha* indicates
+#|   that pre-emptive allocation reduces expected cost even within this high-risk subset."
+
+alpha_grid_top <- seq(0, 1, length.out = 51)
+
+strategies_top <- list(
+    `Perfect ranking` = sim_df_top$est_cases,
+    `Model-ranked`    = sim_df_top$pred_prob,
+    `RF-ranked`       = sim_df_top$pred_rf,
+    `GAM-ranked`      = sim_df_top$pred_gam,
+    `Count-ranked`    = sim_df_top$hist_count
+)
+
+# Cost curves (MC-based)
+cost_curves_top <- map_dfr(f_values, function(fv) {
+    imap_dfr(strategies_top, function(score, strat_name) {
+        costs <- sapply(alpha_grid_top, function(a) {
+            cost_popweighted_mc(a, fv, sim_df_top$pop_sum, sim_df_top$obs_rate,
+                score, R_val, r_val, ATTACK_RATE, n_mc = 300)
+        })
+        tibble(alpha = alpha_grid_top, cost = costs,
+               strategy = strat_name, f = fv)
+    })
+})
+
+# MC-optimal alpha* for each strategy x f
+pw_results_top <- map_dfr(f_values, function(fv) {
+    imap_dfr(strategies_top, function(score, strat_name) {
+        res <- get_alpha_star_pw(fv, sim_df_top$pop_sum, sim_df_top$obs_rate,
+                                 score, R_val, r_val, ATTACK_RATE, n_mc = 300)
+        tibble(strategy = strat_name, f = fv,
+               alpha_star_pw = res$alpha_star,
+               alpha_star_ew = a_ew_top$alpha_star_ew[a_ew_top$f == fv])
+    })
+})
+
+# Join for annotation
+curves_annotated <- cost_curves_top |>
+    left_join(pw_results_top |> dplyr::select(strategy, f, alpha_star_pw),
+              by = c("strategy", "f"))
+optima_pts <- curves_annotated |>
+    filter(abs(alpha - alpha_star_pw) < 0.011)
+
+ggplot(cost_curves_top, aes(x = alpha, y = cost, colour = strategy)) +
+    geom_line(linewidth = 0.8) +
+    geom_point(data = optima_pts, aes(x = alpha_star_pw),
+               shape = 18, size = 3.5) +
+    geom_vline(data = a_ew_top, aes(xintercept = alpha_star_ew),
+               linetype = "dashed", colour = "grey30", linewidth = 0.6) +
+    scale_colour_manual(values = STRATEGY_COLOURS[names(strategies_top)]) +
+    facet_wrap(~f, labeller = label_both) +
+    labs(x = expression(alpha ~ "(pre-emptive fraction)"),
+         y = "Expected cost per capita (C_V units)",
+         colour = "Strategy",
+         title = sprintf("Top-200M high-risk ADM2 regions (n=%d, p=%.4f)",
+                         n_top_locs, bb_top$p),
+         subtitle = sprintf(
+             "R=%.0f, r=%.1f | Dashed = analytical \u03b1*, Diamond = MC-optimal \u03b1*",
+             R_val, r_val)) +
+    theme_minimal(base_size = 11) +
+    theme(legend.position = "bottom")
+```
+
+```{r top200m-summary-table}
+#| tbl-cap: "Top-200M high-risk ADM2 regions: optimal pre-emptive fraction alpha*
+#|   from analytical (Beta-Binomial) and MC approaches, with Spearman rho."
+pw_results_top |>
+    left_join(rho_top, by = "strategy") |>
+    dplyr::select(strategy, f, rho, alpha_star_pw, alpha_star_ew) |>
+    knitr::kable(
+        digits = 3,
+        col.names = c("Strategy", "f", "\u03c1",
+                      "\u03b1*_pw (MC)", "\u03b1*_ew (analytical)"),
+        caption = sprintf(
+            "Top-200M regions (n=%d, Beta(%.3f, %.3f), mean p=%.4f): optimal alpha",
+            n_top_locs, bb_top$a, bb_top$b, bb_top$p)
+    )
+```
