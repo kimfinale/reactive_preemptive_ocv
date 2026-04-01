@@ -531,6 +531,45 @@ get_alpha_star_pw <- function(f, pop, prob, score, R, r, AR, nu = 1,
          alpha_grid = alpha_grid,
          costs      = costs)
 }
+
+# ── Analytical alpha* (Beta-Binomial, perfect targeting) ───────────────────
+# mean_risk_pre: E[p | top f_pre fraction selected] from Beta(a,b) distribution
+mean_risk_pre <- function(f_pre, a, b) {
+    if (f_pre <= 0) return(0)
+    if (f_pre >= 1) return(a / (a + b))
+    q <- qbeta(1 - f_pre, a, b)
+    (a / ((a + b) * f_pre)) * (1 - pbeta(q, a + 1, b))
+}
+
+# cost_beta: analytical expected cost assuming perfect targeting and Beta(a,b) risk
+cost_beta <- function(alpha, f, a, b, R, r, nu = 1) {
+    alpha <- pmax(0, pmin(1, alpha))
+    p     <- a / (a + b)
+    f_pre <- alpha * f
+    f_react_cap <- (1 - alpha) * f
+    p_bar_pre <- vapply(f_pre, function(fp) mean_risk_pre(fp, a, b), numeric(1))
+    E_pre <- f_pre * p_bar_pre
+    c_pre_val <- f_pre + E_pre * (1 - nu) * R
+    E_rem <- p - E_pre
+    is_rich <- f_react_cap >= E_rem
+    c_react_val <- ifelse(is_rich,
+        E_rem * (1 + (1 - r) * R),
+        f_react_cap * (1 + (1 - r) * R) + (E_rem - f_react_cap) * R)
+    c_pre_val + c_react_val
+}
+
+get_alpha_star_beta <- function(R, f, a, b, r, nu = 1) {
+    tryCatch(
+        optim(par = 0.5, fn = cost_beta, f = f, a = a, b = b, R = R, r = r,
+              nu = nu, method = "L-BFGS-B", lower = 0, upper = 1)$par,
+        error = function(e) {
+            ag <- seq(0, 1, length.out = 101)
+            costs <- sapply(ag, function(al)
+                tryCatch(cost_beta(al, f, a, b, R, r, nu), error = function(e2) Inf))
+            if (all(!is.finite(costs))) NA_real_ else ag[which.min(costs)]
+        }
+    )
+}
 ```
 
 ## Beta-Binomial fit on 2018–2020 predicted risks
@@ -595,6 +634,12 @@ strategies <- list(
     `Random Forest` = sim_df$pred_rf
 )
 
+# Analytical alpha* (assumes perfect targeting via Beta-Binomial)
+alpha_star_ew_by_f <- map_dfr(f_values, function(fv) {
+    a_star <- get_alpha_star_beta(R_val, fv, bb$a, bb$b, r_val, nu_val)
+    tibble(f = fv, alpha_star_ew = a_star)
+})
+
 # Cost curves (for plotting) and optimal alpha
 alpha_results <- map_dfr(f_values, function(fv) {
     imap_dfr(strategies, function(score, strat_name) {
@@ -611,14 +656,19 @@ alpha_results <- map_dfr(f_values, function(fv) {
                rho = rho_val, alpha_star_pw = res$alpha_star,
                cost_star = res$cost_star)
     })
-})
+}) |>
+    left_join(alpha_star_ew_by_f, by = "f")
 
 alpha_results |>
+    dplyr::select(strategy, f, rho, alpha_star_ew, alpha_star_pw, cost_star) |>
     knitr::kable(
         digits = 3,
-        col.names = c("Strategy", "f", "\u03c1 (OOS)", "\u03b1*_pw (MC)", "Cost*"),
+        col.names = c("Strategy", "f", "\u03c1 (OOS)",
+                      "\u03b1*_ew (analytical, perfect targeting)",
+                      "\u03b1*_pw (MC, \u03c1-imperfect)",
+                      "Cost* (MC)"),
         caption = sprintf(
-            "MC-optimal alpha* by strategy and f | R=%.0f, r=%.1f, AR=%.3f\nBeta(a=%.4f, b=%.4f), mean p=%.4f",
+            "Optimal alpha*: analytical (perfect targeting) vs MC (imperfect targeting, \u03c1\u22480.2) | R=%.0f, r=%.1f, AR=%.3f | Beta(a=%.4f, b=%.4f), mean p=%.4f",
             R_val, r_val, AR_val, bb$a, bb$b, bb$p)
     )
 ```
@@ -647,7 +697,12 @@ optima_pts <- cost_curves |>
               by = c("strategy", "f")) |>
     filter(abs(alpha - alpha_star_pw) < 0.011)
 
+# Analytical alpha* as vertical line (same for all strategies within each f)
+vline_ew <- alpha_star_ew_by_f
+
 ggplot(cost_curves, aes(x = alpha, y = cost, colour = strategy)) +
+    geom_vline(data = vline_ew, aes(xintercept = alpha_star_ew),
+               linetype = "dashed", colour = "grey40", linewidth = 0.7) +
     geom_line(linewidth = 0.8) +
     geom_point(data = optima_pts, aes(x = alpha_star_pw),
                shape = 18, size = 4) +
@@ -659,7 +714,7 @@ ggplot(cost_curves, aes(x = alpha, y = cost, colour = strategy)) +
          title = sprintf(
              "MC cost curves | train: 2010-2014 features / 2015-2017 outcomes; predict: 2018-2020"),
          subtitle = sprintf(
-             "R=%.0f, r=%.1f, AR=%.3f | Beta(%.3f, %.3f), mean p=%.4f | Diamond = MC-optimal \u03b1*",
+             "R=%.0f, r=%.1f, AR=%.3f | Beta(%.3f, %.3f), mean p=%.4f | Diamond = MC-optimal \u03b1* | Dashed line = analytical \u03b1* (perfect targeting)",
              R_val, r_val, AR_val, bb$a, bb$b, bb$p)) +
     theme_minimal(base_size = 11) +
     theme(legend.position = "bottom")
