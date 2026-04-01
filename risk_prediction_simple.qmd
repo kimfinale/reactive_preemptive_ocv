@@ -688,6 +688,113 @@ ggplot(cost_curves, aes(x = alpha, y = cost, colour = strategy)) +
     theme(legend.position = "bottom")
 ```
 
+# Top-25% High-Risk Scenario
+
+Restrict the analysis to the top **25%** of ADM2 regions ranked by ensemble
+predicted risk. Within this subset, mean outbreak probability is substantially
+higher, which may shift the optimal allocation toward pre-emptive vaccination
+(α* > 0).
+
+```{r top25-setup}
+TOP_PCT <- 0.25
+n_top   <- ceiling(nrow(sim_df) * TOP_PCT)
+
+sim_top <- sim_df |>
+    arrange(desc(risk_ens)) |>
+    slice_head(n = n_top)
+
+cat(sprintf("Top %.0f%% subset: %d locations (of %d), %.0f M population\n",
+            TOP_PCT * 100, nrow(sim_top), nrow(sim_df),
+            sum(sim_top$pop_sum) / 1e6))
+cat(sprintf("Mean obs_rate: %.4f (subset) vs %.4f (all)\n",
+            mean(sim_top$obs_rate), mean(sim_df$obs_rate)))
+
+bb_top <- fit_betabinom(sim_top$n_outbreak_years, N_TRIALS)
+cat(sprintf("Beta-Binomial (top %.0f%%): a=%.4f, b=%.4f, mean p=%.4f (convergence=%d)\n",
+            TOP_PCT * 100, bb_top$a, bb_top$b, bb_top$p, bb_top$convergence))
+```
+
+```{r top25-mc-alpha-star}
+# Rho within subset (re-estimated on top-25% locations only)
+rho_top <- c(
+    Ensemble        = cor(sim_top$risk_ens,      sim_top$obs_rate, method = "spearman"),
+    Logistic        = cor(sim_top$pred_logistic,  sim_top$obs_rate, method = "spearman"),
+    GAM             = cor(sim_top$pred_gam,        sim_top$obs_rate, method = "spearman"),
+    `Random Forest` = cor(sim_top$pred_rf,         sim_top$obs_rate, method = "spearman")
+)
+rho_top["Ensemble (2x rho)"] <- 2 * rho_top["Ensemble"]
+
+cat("Spearman rho within top 25%:\n")
+print(round(rho_top, 3))
+
+score_2rho_top <- make_rank_score(sim_top$obs_rate, target_rho = 2 * rho_top["Ensemble"])
+
+strategies_top <- list(
+    Ensemble            = sim_top$risk_ens,
+    Logistic            = sim_top$pred_logistic,
+    GAM                 = sim_top$pred_gam,
+    `Random Forest`     = sim_top$pred_rf,
+    `Ensemble (2x rho)` = score_2rho_top
+)
+
+alpha_results_top <- map_dfr(r_values, function(rv) {
+    imap_dfr(strategies_top, function(score, strat_name) {
+        res <- get_alpha_star_pw(f_val, sim_top$pop_sum, sim_top$obs_rate,
+                                 score, R_val, rv, AR_val, nu_val, n_mc = 500)
+        tibble(strategy = strat_name, r = rv,
+               rho = rho_top[[strat_name]],
+               alpha_star_pw = res$alpha_star,
+               cost_star = res$cost_star)
+    })
+})
+
+alpha_results_top |>
+    knitr::kable(
+        digits = 3,
+        col.names = c("Strategy", "r", "\u03c1 (in-subset)", "\u03b1* (MC)", "Cost* (MC)"),
+        caption = sprintf(
+            "MC-optimal alpha* (top %.0f%% high-risk ADM2) | f=%.1f, R=%.0f, AR=%.3f | Beta(a=%.4f, b=%.4f), mean p=%.4f",
+            TOP_PCT * 100, f_val, R_val, AR_val, bb_top$a, bb_top$b, bb_top$p)
+    )
+```
+
+```{r fig-top25-cost-curves, fig.width=12, fig.height=5}
+#| fig-cap: "MC cost curves for the top-25% high-risk ADM2 subset, faceted by
+#|   reactive effectiveness r (f=0.5 fixed). Diamond = MC-optimal alpha*."
+
+alpha_grid_plot <- seq(0, 1, length.out = 51)
+
+cost_curves_top <- map_dfr(r_values, function(rv) {
+    imap_dfr(strategies_top, function(score, strat_name) {
+        costs <- sapply(alpha_grid_plot, function(a)
+            cost_popweighted_mc(a, f_val, sim_top$pop_sum, sim_top$obs_rate,
+                                score, R_val, rv, AR_val, nu_val, n_mc = 300))
+        tibble(alpha = alpha_grid_plot, cost = costs, strategy = strat_name, r = rv)
+    })
+})
+
+optima_top <- cost_curves_top |>
+    left_join(alpha_results_top |> dplyr::select(strategy, r, alpha_star_pw),
+              by = c("strategy", "r")) |>
+    filter(abs(alpha - alpha_star_pw) < 0.011)
+
+ggplot(cost_curves_top, aes(x = alpha, y = cost, colour = strategy)) +
+    geom_line(linewidth = 0.8) +
+    geom_point(data = optima_top, aes(x = alpha_star_pw),
+               shape = 18, size = 4) +
+    scale_colour_manual(values = STRATEGY_COLOURS) +
+    facet_wrap(~r, labeller = label_both, nrow = 1) +
+    labs(x = expression(alpha ~ "(pre-emptive fraction)"),
+         y = "Expected cost per capita (C_V units)",
+         colour = "Strategy",
+         title = sprintf("MC cost curves | top %.0f%% high-risk ADM2 (f = 0.5 fixed)", TOP_PCT * 100),
+         subtitle = sprintf(
+             "R=%.0f, AR=%.3f | Beta(%.3f, %.3f), mean p=%.4f | Diamond = MC-optimal \u03b1*",
+             R_val, AR_val, bb_top$a, bb_top$b, bb_top$p)) +
+    theme_minimal(base_size = 11) +
+    theme(legend.position = "bottom")
+```
+
 # Outbreak Risk Estimation
 
 ## Ensemble mean risk score
