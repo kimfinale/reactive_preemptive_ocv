@@ -532,43 +532,17 @@ get_alpha_star_pw <- function(f, pop, prob, score, R, r, AR, nu = 1,
          costs      = costs)
 }
 
-# ── Analytical alpha* (Beta-Binomial, perfect targeting) ───────────────────
-# mean_risk_pre: E[p | top f_pre fraction selected] from Beta(a,b) distribution
-mean_risk_pre <- function(f_pre, a, b) {
-    if (f_pre <= 0) return(0)
-    if (f_pre >= 1) return(a / (a + b))
-    q <- qbeta(1 - f_pre, a, b)
-    (a / ((a + b) * f_pre)) * (1 - pbeta(q, a + 1, b))
-}
-
-# cost_beta: analytical expected cost assuming perfect targeting and Beta(a,b) risk
-cost_beta <- function(alpha, f, a, b, R, r, nu = 1) {
-    alpha <- pmax(0, pmin(1, alpha))
-    p     <- a / (a + b)
-    f_pre <- alpha * f
-    f_react_cap <- (1 - alpha) * f
-    p_bar_pre <- vapply(f_pre, function(fp) mean_risk_pre(fp, a, b), numeric(1))
-    E_pre <- f_pre * p_bar_pre
-    c_pre_val <- f_pre + E_pre * (1 - nu) * R
-    E_rem <- p - E_pre
-    is_rich <- f_react_cap >= E_rem
-    c_react_val <- ifelse(is_rich,
-        E_rem * (1 + (1 - r) * R),
-        f_react_cap * (1 + (1 - r) * R) + (E_rem - f_react_cap) * R)
-    c_pre_val + c_react_val
-}
-
-get_alpha_star_beta <- function(R, f, a, b, r, nu = 1) {
-    tryCatch(
-        optim(par = 0.5, fn = cost_beta, f = f, a = a, b = b, R = R, r = r,
-              nu = nu, method = "L-BFGS-B", lower = 0, upper = 1)$par,
-        error = function(e) {
-            ag <- seq(0, 1, length.out = 101)
-            costs <- sapply(ag, function(al)
-                tryCatch(cost_beta(al, f, a, b, R, r, nu), error = function(e2) Inf))
-            if (all(!is.finite(costs))) NA_real_ else ag[which.min(costs)]
-        }
-    )
+# ── Synthetic score with target Spearman rho ──────────────────────────────
+# Uses Gaussian copula: creates a ranking score correlating with truth at
+# approximately target_rho (Spearman). Useful for "what if rho = 2x" sensitivity.
+make_rank_score <- function(truth, target_rho, seed = 123) {
+    set.seed(seed)
+    n        <- length(truth)
+    z_truth  <- qnorm(rank(truth, ties.method = "random") / (n + 1))
+    z_noise  <- rnorm(n)
+    rho_p    <- 2 * sin(pi * target_rho / 6)  # Gaussian copula: Spearman → Pearson
+    z_blend  <- rho_p * z_truth + sqrt(1 - rho_p^2) * z_noise
+    pnorm(z_blend)
 }
 ```
 
@@ -609,113 +583,107 @@ cat(sprintf("Beta-Binomial: a=%.4f, b=%.4f, mean p=%.4f (convergence=%d)\n",
 
 ## Optimal alpha via Monte Carlo
 
-Parameters: **R = 500** (cost ratio illness/vaccine), **r = 0.6** (reactive
-effectiveness), **ν = 1** (pre-emptive VE). Coverage $f \in \{0.3, 0.5, 0.7\}$.
-Targeting scores = each model's predicted probability for 2018–2020.
+Parameters: **R = 500** (cost ratio illness/vaccine), **ν = 1** (pre-emptive VE),
+**f = 0.5** (coverage fraction). Reactive effectiveness **r** varies over
+$\{0.2,\, 0.4\}$. An additional "Ensemble (2×ρ)" scenario doubles the ensemble's
+out-of-sample targeting accuracy to explore the sensitivity to improved risk intelligence.
 
 ```{r mc-alpha-star}
 R_val  <- 500
-r_val  <- 0.6
 nu_val <- 1
 AR_val <- 0.005
-f_values <- c(0.3, 0.5, 0.7)
+f_val  <- 0.5
+r_values <- c(0.2, 0.4)
+
+# Ensemble OOS rho (used to build the 2x-rho synthetic score)
+rho_ens_oos <- rho_oos |> filter(Model == "Ensemble") |> pull(rho)
 
 STRATEGY_COLOURS <- c(
-    Ensemble       = "black",
-    Logistic       = "steelblue",
-    GAM            = "darkgoldenrod",
-    `Random Forest` = "darkorchid"
+    Ensemble          = "black",
+    Logistic          = "steelblue",
+    GAM               = "darkgoldenrod",
+    `Random Forest`   = "darkorchid",
+    `Ensemble (2x rho)` = "firebrick"
 )
+
+# Synthetic score with 2× ensemble rho
+score_2rho <- make_rank_score(sim_df$obs_rate, target_rho = 2 * rho_ens_oos)
 
 strategies <- list(
-    Ensemble       = sim_df$risk_ens,
-    Logistic       = sim_df$pred_logistic,
-    GAM            = sim_df$pred_gam,
-    `Random Forest` = sim_df$pred_rf
+    Ensemble                    = sim_df$risk_ens,
+    Logistic                    = sim_df$pred_logistic,
+    GAM                         = sim_df$pred_gam,
+    `Random Forest`             = sim_df$pred_rf,
+    `Ensemble (2x rho)` = score_2rho
 )
 
-# Analytical alpha* (assumes perfect targeting via Beta-Binomial)
-alpha_star_ew_by_f <- map_dfr(f_values, function(fv) {
-    a_star <- get_alpha_star_beta(R_val, fv, bb$a, bb$b, r_val, nu_val)
-    tibble(f = fv, alpha_star_ew = a_star)
-})
+rho_map <- c(
+    Ensemble                    = rho_ens_oos,
+    Logistic                    = rho_oos |> filter(Model == "Logistic") |> pull(rho),
+    GAM                         = rho_oos |> filter(Model == "GAM") |> pull(rho),
+    `Random Forest`             = rho_oos |> filter(Model == "Random Forest") |> pull(rho),
+    `Ensemble (2x rho)` = 2 * rho_ens_oos
+)
 
-# Cost curves (for plotting) and optimal alpha
-alpha_results <- map_dfr(f_values, function(fv) {
+# Cost curves (for plotting) and optimal alpha — vary r, fix f=0.5
+alpha_results <- map_dfr(r_values, function(rv) {
     imap_dfr(strategies, function(score, strat_name) {
-        res <- get_alpha_star_pw(fv, sim_df$pop_sum, sim_df$obs_rate,
-                                 score, R_val, r_val, AR_val, nu_val,
+        res <- get_alpha_star_pw(f_val, sim_df$pop_sum, sim_df$obs_rate,
+                                 score, R_val, rv, AR_val, nu_val,
                                  n_mc = 500)
-        # Rho from rho_oos table (Ensemble uses ensemble rho)
-        rho_val <- if (strat_name == "Ensemble") {
-            rho_oos |> filter(Model == "Ensemble") |> pull(rho)
-        } else {
-            rho_oos |> filter(Model == strat_name) |> pull(rho)
-        }
-        tibble(strategy = strat_name, f = fv,
-               rho = rho_val, alpha_star_pw = res$alpha_star,
+        tibble(strategy = strat_name, r = rv,
+               rho = rho_map[[strat_name]],
+               alpha_star_pw = res$alpha_star,
                cost_star = res$cost_star)
     })
-}) |>
-    left_join(alpha_star_ew_by_f, by = "f")
+})
 
 alpha_results |>
-    dplyr::select(strategy, f, rho, alpha_star_ew, alpha_star_pw, cost_star) |>
     knitr::kable(
         digits = 3,
-        col.names = c("Strategy", "f", "\u03c1 (OOS)",
-                      "\u03b1*_ew (analytical, perfect targeting)",
-                      "\u03b1*_pw (MC, \u03c1-imperfect)",
-                      "Cost* (MC)"),
+        col.names = c("Strategy", "r", "\u03c1 (OOS)", "\u03b1* (MC)", "Cost* (MC)"),
         caption = sprintf(
-            "Optimal alpha*: analytical (perfect targeting) vs MC (imperfect targeting, \u03c1\u22480.2) | R=%.0f, r=%.1f, AR=%.3f | Beta(a=%.4f, b=%.4f), mean p=%.4f",
-            R_val, r_val, AR_val, bb$a, bb$b, bb$p)
+            "MC-optimal alpha* | f=%.1f, R=%.0f, AR=%.3f | Beta(a=%.4f, b=%.4f), mean p=%.4f",
+            f_val, R_val, AR_val, bb$a, bb$b, bb$p)
     )
 ```
 
 ## Cost curves
 
 ```{r fig-mc-cost-curves, fig.width=12, fig.height=5}
-#| fig-cap: "Population-weighted Monte Carlo cost curves for each targeting strategy
-#|   and coverage level f. Diamond = MC-optimal alpha*. The y-axis is expected
-#|   total cost per capita in units of C_V (vaccine cost per person). A minimum
-#|   at alpha* > 0 indicates that a mixed pre-emptive/reactive strategy is preferred."
+#| fig-cap: "Population-weighted Monte Carlo cost curves faceted by reactive
+#|   effectiveness r (f=0.5 fixed). Diamond = MC-optimal alpha*. 'Ensemble (2×ρ)'
+#|   shows the result if targeting accuracy were doubled, as a sensitivity check."
 
 alpha_grid_plot <- seq(0, 1, length.out = 51)
 
-cost_curves <- map_dfr(f_values, function(fv) {
+cost_curves <- map_dfr(r_values, function(rv) {
     imap_dfr(strategies, function(score, strat_name) {
         costs <- sapply(alpha_grid_plot, function(a)
-            cost_popweighted_mc(a, fv, sim_df$pop_sum, sim_df$obs_rate,
-                                score, R_val, r_val, AR_val, nu_val, n_mc = 300))
-        tibble(alpha = alpha_grid_plot, cost = costs, strategy = strat_name, f = fv)
+            cost_popweighted_mc(a, f_val, sim_df$pop_sum, sim_df$obs_rate,
+                                score, R_val, rv, AR_val, nu_val, n_mc = 300))
+        tibble(alpha = alpha_grid_plot, cost = costs, strategy = strat_name, r = rv)
     })
 })
 
 optima_pts <- cost_curves |>
-    left_join(alpha_results |> dplyr::select(strategy, f, alpha_star_pw),
-              by = c("strategy", "f")) |>
+    left_join(alpha_results |> dplyr::select(strategy, r, alpha_star_pw),
+              by = c("strategy", "r")) |>
     filter(abs(alpha - alpha_star_pw) < 0.011)
 
-# Analytical alpha* as vertical line (same for all strategies within each f)
-vline_ew <- alpha_star_ew_by_f
-
 ggplot(cost_curves, aes(x = alpha, y = cost, colour = strategy)) +
-    geom_vline(data = vline_ew, aes(xintercept = alpha_star_ew),
-               linetype = "dashed", colour = "grey40", linewidth = 0.7) +
     geom_line(linewidth = 0.8) +
     geom_point(data = optima_pts, aes(x = alpha_star_pw),
                shape = 18, size = 4) +
     scale_colour_manual(values = STRATEGY_COLOURS) +
-    facet_wrap(~f, labeller = label_both) +
+    facet_wrap(~r, labeller = label_both, nrow = 1) +
     labs(x = expression(alpha ~ "(pre-emptive fraction)"),
          y = "Expected cost per capita (C_V units)",
          colour = "Strategy",
-         title = sprintf(
-             "MC cost curves | train: 2010-2014 features / 2015-2017 outcomes; predict: 2018-2020"),
+         title = "MC cost curves | f = 0.5 fixed, varying reactive effectiveness r",
          subtitle = sprintf(
-             "R=%.0f, r=%.1f, AR=%.3f | Beta(%.3f, %.3f), mean p=%.4f | Diamond = MC-optimal \u03b1* | Dashed line = analytical \u03b1* (perfect targeting)",
-             R_val, r_val, AR_val, bb$a, bb$b, bb$p)) +
+             "R=%.0f, AR=%.3f | Beta(%.3f, %.3f), mean p=%.4f | Diamond = MC-optimal \u03b1*",
+             R_val, AR_val, bb$a, bb$b, bb$p)) +
     theme_minimal(base_size = 11) +
     theme(legend.position = "bottom")
 ```
