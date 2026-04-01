@@ -1,0 +1,565 @@
+---
+title: "Outbreak Risk Prediction: Simple One-Step Model"
+author: "Jong-Hoon Kim"
+date: "`r Sys.Date()`"
+format:
+  html:
+    html-math-method: katex
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    embed-resources: true
+editor_options:
+  chunk_output_type: console
+---
+
+## Overview
+
+A single-step prediction exercise:
+
+- **Training**: features built from 2010–2014 surveillance data; outcome = any
+  outbreak in 2015–2017 (k=3 window)
+- **Prediction**: features built from 2013–2017 surveillance data; predict
+  probability of any outbreak in 2018–2020
+- **Models**: logistic regression, GAM, random forest
+- **Output**: predicted risk per ADM2 unit; cumulative population vs. risk curve
+
+# Setup
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(tidyverse)
+library(sf)
+library(terra)
+library(exactextractr)
+library(patchwork)
+library(pROC)
+library(scales)
+library(knitr)
+library(mgcv)    # GAM
+library(ranger)  # random forest
+source("R/analytic_utils.R")
+source("R/spatial_setup.R")
+```
+
+# Data
+
+## Outbreak surveillance
+
+```{r load-data}
+ts_outbreak <- readr::read_rds(
+    "data/outbreak_files_Oct2024/time_series_outbreak_extraction.rds"
+)
+ts23 <- ts_outbreak |>
+    mutate(adm = str_count(location, "::") - 1L) |>
+    filter(adm %in% c(2, 3))
+
+outbreak_events <- ts23 |>
+    group_by(location, adm, outbreak_number) |>
+    summarise(
+        year_start     = year(min(TL)),
+        year_end       = year(max(TR)),
+        duration_weeks = as.numeric(difftime(max(TR), min(TL), units = "weeks")),
+        total_cases    = sum(sCh, na.rm = TRUE),
+        .groups        = "drop"
+    )
+
+all_years <- 2010:2023
+all_locs  <- unique(ts23$location)
+
+outbreak_year_summary <- outbreak_events |>
+    filter(year_end %in% all_years) |>
+    group_by(location, year = year_end) |>
+    summarise(
+        outbreak_count    = n(),
+        total_cases       = sum(total_cases, na.rm = TRUE),
+        max_duration_days = max(duration_weeks * 7, na.rm = TRUE),
+        mean_duration_days = mean(duration_weeks * 7, na.rm = TRUE),
+        .groups = "drop"
+    ) |>
+    right_join(expand_grid(location = all_locs, year = all_years),
+               by = c("location", "year")) |>
+    replace_na(list(outbreak_count = 0L, total_cases = 0,
+                    max_duration_days = 0, mean_duration_days = 0))
+
+# loc_year_full: outbreaks active in each year
+loc_year_full <- outbreak_events |>
+    mutate(years = map2(year_start, pmin(year_end, 2023L), seq)) |>
+    unnest(years) |>
+    rename(year = years) |>
+    filter(year %in% all_years) |>
+    count(location, year, name = "n_active") |>
+    right_join(expand_grid(location = all_locs, year = all_years),
+               by = c("location", "year")) |>
+    replace_na(list(n_active = 0L))
+
+cat("Locations:", length(all_locs), "| Years:", range(all_years), "\n")
+```
+
+## Shapefiles and spatial neighbours
+
+```{r load-shapefiles}
+shp_all <- readr::read_rds(
+    "data/outbreak_files_Oct2024/outbreak_shapefiles.rds"
+)
+loc_id_map <- ts23 |>
+    distinct(location_period_id, location) |>
+    group_by(location) |>
+    slice_max(as.integer(location_period_id), n = 1, with_ties = FALSE) |>
+    ungroup()
+
+shp_admin23 <- shp_all |>
+    left_join(loc_id_map, by = c("lctn_pr" = "location_period_id")) |>
+    filter(!is.na(location), str_count(location, "::") %in% c(3, 4))
+
+cat("ADM2/3 polygons:", nrow(shp_admin23), "\n")
+
+# 50 km neighbour list
+DIST_KM <- 50
+centroids_sf <- shp_admin23 |> st_make_valid() |> st_point_on_surface()
+dist_mat <- st_distance(centroids_sf) |> units::drop_units() / 1000
+rownames(dist_mat) <- colnames(dist_mat) <- shp_admin23$location
+diag(dist_mat) <- Inf
+
+nbr_list <- setNames(
+    lapply(shp_admin23$location, function(loc) {
+        d <- dist_mat[loc, ]
+        names(sort(d[d <= DIST_KM]))
+    }),
+    shp_admin23$location
+)
+
+centroid_coords <- centroids_sf |>
+    st_coordinates() |>
+    as_tibble() |>
+    rename(lon = X, lat = Y) |>
+    mutate(location = shp_admin23$location)
+```
+
+## Population raster
+
+```{r load-population}
+pop_raster <- readr::read_rds("data/ppp_20km_mean_af_2017_20221123.rds")
+pop_raster <- terra::rast(pop_raster)
+
+POP_SCALE <- 344  # pixel area ~344 km²
+shp_pop   <- shp_admin23 |> st_make_valid() |> st_transform(crs(pop_raster))
+pop_vals  <- exactextractr::exact_extract(pop_raster, shp_pop,
+                                          fun = "sum", progress = FALSE)
+shp_admin23$pop_sum <- pop_vals * POP_SCALE
+
+pop_lookup <- shp_admin23 |>
+    sf::st_drop_geometry() |>
+    dplyr::select(location, pop_sum)
+
+cat("Total population:", format(round(sum(pop_vals * POP_SCALE, na.rm = TRUE)),
+                                big.mark = ","), "\n")
+```
+
+# Feature Engineering
+
+Features are built from a T=5-year rolling window ending at a given year.
+Twelve same-unit features and six neighbour-aggregated features are used.
+
+```{r build-features-fn}
+T_WINDOW <- 5L
+
+build_features <- function(year_end, T = T_WINDOW) {
+    feat_yrs <- (year_end - T + 1L):year_end
+    n_yrs    <- length(feat_yrs)
+
+    loc_summary <- outbreak_year_summary |>
+        filter(year %in% feat_yrs) |>
+        group_by(location) |>
+        summarise(
+            n_outbreak_years    = sum(outbreak_count > 0),
+            prop_outbreak_years = n_outbreak_years / n_yrs,
+            total_outbreaks     = sum(outbreak_count),
+            mean_cases_per_year = mean(total_cases),
+            max_cases_any_year  = max(total_cases),
+            mean_duration       = mean(mean_duration_days),
+            max_duration        = max(max_duration_days),
+            .groups = "drop"
+        )
+
+    recent_1yr <- outbreak_year_summary |>
+        filter(year == year_end) |>
+        transmute(location, recent_outbreak = as.integer(outbreak_count > 0))
+
+    recent_2yr <- outbreak_year_summary |>
+        filter(year %in% intersect(c(year_end - 1L, year_end), feat_yrs)) |>
+        group_by(location) |>
+        summarise(recent_2yr_outbreaks = sum(outbreak_count > 0), .groups = "drop")
+
+    trend_df <- outbreak_year_summary |>
+        filter(year %in% feat_yrs) |>
+        group_by(location) |>
+        summarise(
+            trend = if (n() >= 2)
+                coef(lm(as.integer(outbreak_count > 0) ~ year))[2] else 0,
+            trend_cases = if (n() >= 2)
+                coef(lm(total_cases ~ year))[2] else 0,
+            .groups = "drop"
+        )
+
+    last_ob <- outbreak_year_summary |>
+        filter(year %in% feat_yrs, outbreak_count > 0) |>
+        group_by(location) |>
+        summarise(last_ob_year = max(year), .groups = "drop")
+
+    yrs_since <- tibble(location = all_locs) |>
+        left_join(last_ob, by = "location") |>
+        mutate(years_since_last_outbreak = ifelse(
+            is.na(last_ob_year), n_yrs + 1L,
+            as.integer(year_end - last_ob_year)
+        )) |>
+        dplyr::select(location, years_since_last_outbreak)
+
+    feat <- tibble(location = all_locs) |>
+        left_join(loc_summary,  by = "location") |>
+        left_join(recent_1yr,   by = "location") |>
+        left_join(recent_2yr,   by = "location") |>
+        left_join(trend_df,     by = "location") |>
+        left_join(yrs_since,    by = "location") |>
+        replace_na(list(
+            n_outbreak_years = 0L, prop_outbreak_years = 0,
+            total_outbreaks = 0L, mean_cases_per_year = 0,
+            max_cases_any_year = 0, mean_duration = 0, max_duration = 0,
+            recent_outbreak = 0L, recent_2yr_outbreaks = 0L,
+            trend = 0, trend_cases = 0
+        ))
+
+    # Neighbour features
+    make_nbr_feat <- function(values, locs, fun = mean) {
+        sv <- setNames(values, locs)
+        map_dbl(locs, function(loc) {
+            nbrs <- nbr_list[[loc]]
+            if (is.null(nbrs) || length(nbrs) == 0L) return(0)
+            nbrs <- nbrs[nbrs %in% names(sv)]
+            if (length(nbrs) == 0L) return(0)
+            fun(sv[nbrs])
+        })
+    }
+    feat <- feat |>
+        mutate(
+            nbr_prop_outbreak        = make_nbr_feat(prop_outbreak_years, location),
+            nbr_mean_cases           = make_nbr_feat(mean_cases_per_year, location),
+            nbr_recent_outbreak_prop = make_nbr_feat(recent_outbreak, location),
+            nbr_recent_2yr_prop      = make_nbr_feat(
+                as.numeric(recent_2yr_outbreaks > 0), location),
+            nbr_max_cases            = make_nbr_feat(
+                max_cases_any_year, location, fun = max),
+            nbr_trend                = make_nbr_feat(trend, location)
+        ) |>
+        left_join(centroid_coords, by = "location")
+    feat
+}
+
+ALL_FEATURES <- c(
+    "n_outbreak_years", "prop_outbreak_years", "total_outbreaks",
+    "mean_cases_per_year", "max_cases_any_year",
+    "mean_duration", "max_duration",
+    "recent_outbreak", "recent_2yr_outbreaks",
+    "trend", "trend_cases", "years_since_last_outbreak",
+    "nbr_prop_outbreak", "nbr_mean_cases",
+    "nbr_recent_outbreak_prop", "nbr_recent_2yr_prop",
+    "nbr_max_cases", "nbr_trend"
+)
+cat("Features:", length(ALL_FEATURES), "\n")
+```
+
+# Model Training and Prediction
+
+## Build training and prediction datasets
+
+```{r build-datasets}
+# ── Training data ─────────────────────────────────────────────────────────────
+# Features: 2010–2014  |  Outcome: any outbreak in 2015–2017
+TRAIN_FEAT_END  <- 2014L
+TRAIN_OUT_START <- 2015L
+TRAIN_OUT_END   <- 2017L
+
+feat_train <- build_features(TRAIN_FEAT_END)  # T=5: 2010-2014
+
+outcome_train <- loc_year_full |>
+    filter(year %in% TRAIN_OUT_START:TRAIN_OUT_END) |>
+    group_by(location) |>
+    summarise(obs = as.integer(sum(n_active) > 0L), .groups = "drop")
+
+train_df <- feat_train |>
+    left_join(outcome_train, by = "location") |>
+    replace_na(list(obs = 0L))
+
+cat(sprintf("Training: features %d-%d → outcome %d-%d\n",
+            TRAIN_FEAT_END - T_WINDOW + 1L, TRAIN_FEAT_END,
+            TRAIN_OUT_START, TRAIN_OUT_END))
+cat(sprintf("n = %d | prevalence = %.1f%%\n",
+            nrow(train_df), 100 * mean(train_df$obs)))
+
+# ── Prediction data ───────────────────────────────────────────────────────────
+# Features: 2013–2017  |  Predict: outbreak probability in 2018–2020
+PRED_FEAT_END  <- 2017L
+PRED_OUT_START <- 2018L
+PRED_OUT_END   <- 2020L
+
+feat_pred <- build_features(PRED_FEAT_END)   # T=5: 2013-2017
+
+outcome_pred <- loc_year_full |>
+    filter(year %in% PRED_OUT_START:PRED_OUT_END) |>
+    group_by(location) |>
+    summarise(obs = as.integer(sum(n_active) > 0L), .groups = "drop")
+
+pred_df <- feat_pred |>
+    left_join(outcome_pred, by = "location") |>
+    replace_na(list(obs = 0L))
+
+cat(sprintf("\nPrediction: features %d-%d → outcome %d-%d\n",
+            PRED_FEAT_END - T_WINDOW + 1L, PRED_FEAT_END,
+            PRED_OUT_START, PRED_OUT_END))
+cat(sprintf("n = %d | prevalence = %.1f%%\n",
+            nrow(pred_df), 100 * mean(pred_df$obs)))
+```
+
+## Fit models and predict
+
+```{r fit-models}
+# ── 1. Logistic regression ────────────────────────────────────────────────────
+lr_fit <- glm(obs ~ ., data = train_df[, c("obs", ALL_FEATURES)],
+              family = binomial)
+pred_df$pred_logistic <- predict(lr_fit, newdata = pred_df, type = "response")
+
+# ── 2. GAM ───────────────────────────────────────────────────────────────────
+gam_feats <- c("n_outbreak_years", "mean_cases_per_year",
+               "recent_2yr_outbreaks", "years_since_last_outbreak",
+               "nbr_prop_outbreak", "nbr_mean_cases")
+
+safe_k <- function(feat, dat, kmax = 5L)
+    max(3L, min(kmax, length(unique(dat[[feat]])) - 1L))
+
+gam_terms <- paste0(
+    "s(", gam_feats, ", k = ",
+    sapply(gam_feats, safe_k, dat = train_df), ")",
+    collapse = " + "
+)
+gam_fit <- tryCatch(
+    gam(as.formula(paste("obs ~", gam_terms)), data = train_df,
+        family = binomial, method = "REML"),
+    error = function(e) {
+        k2 <- safe_k("n_outbreak_years", train_df, 3L)
+        k3 <- safe_k("nbr_prop_outbreak", train_df, 3L)
+        gam(as.formula(sprintf(
+            "obs ~ s(n_outbreak_years, k=%d) + s(nbr_prop_outbreak, k=%d)", k2, k3)),
+            data = train_df, family = binomial, method = "REML")
+    }
+)
+pred_df$pred_gam <- as.numeric(predict(gam_fit, newdata = pred_df, type = "response"))
+
+# ── 3. Random forest ─────────────────────────────────────────────────────────
+set.seed(42)
+rf_fit <- ranger(
+    obs ~ ., data = train_df[, c("obs", ALL_FEATURES)] |> mutate(obs = factor(obs)),
+    num.trees = 500, probability = TRUE,
+    min.node.size = 5, mtry = max(1, floor(sqrt(length(ALL_FEATURES))))
+)
+rf_preds <- predict(rf_fit, data = pred_df)$predictions
+pred_df$pred_rf <- if ("1" %in% colnames(rf_preds)) rf_preds[, "1"] else rep(0, nrow(pred_df))
+
+cat("Models fitted. Prediction head:\n")
+pred_df |>
+    dplyr::select(location, obs, pred_logistic, pred_gam, pred_rf) |>
+    slice_head(n = 5) |>
+    knitr::kable(digits = 3)
+```
+
+## Model evaluation (2018–2020 held-out outcomes)
+
+```{r eval-models}
+# Evaluate against the actual 2018-2020 outcomes
+eval_model <- function(obs, pred, name) {
+    valid <- !is.na(pred) & !is.na(obs) & var(obs) > 0
+    rho     <- cor(pred[valid], obs[valid], method = "spearman")
+    auc_roc <- as.numeric(pROC::auc(pROC::roc(obs[valid], pred[valid], quiet = TRUE)))
+    brier   <- mean((pred[valid] - obs[valid])^2)
+    tibble(Model = name, Spearman_rho = rho, AUC_ROC = auc_roc, Brier = brier)
+}
+
+bind_rows(
+    eval_model(pred_df$obs, pred_df$pred_logistic, "Logistic"),
+    eval_model(pred_df$obs, pred_df$pred_gam,      "GAM"),
+    eval_model(pred_df$obs, pred_df$pred_rf,       "Random Forest")
+) |>
+    knitr::kable(digits = 3,
+                 caption = sprintf("Model evaluation: outcome %d-%d, features %d-%d",
+                                   PRED_OUT_START, PRED_OUT_END,
+                                   PRED_FEAT_END - T_WINDOW + 1L, PRED_FEAT_END))
+```
+
+# Outbreak Risk Estimation
+
+## Ensemble mean risk score
+
+We use the ensemble mean of the three model predictions as the risk score.
+
+```{r risk-scores}
+pred_risk <- pred_df |>
+    mutate(
+        risk_ens = (pred_logistic + pred_gam + pred_rf) / 3
+    ) |>
+    left_join(pop_lookup, by = "location") |>
+    filter(!is.na(risk_ens), !is.na(pop_sum), pop_sum > 0) |>
+    arrange(desc(risk_ens))
+
+cat(sprintf("Locations with risk scores: %d\n", nrow(pred_risk)))
+cat(sprintf("Total population: %.0f million\n", sum(pred_risk$pop_sum) / 1e6))
+cat(sprintf("Mean ensemble risk: %.4f\n", mean(pred_risk$risk_ens)))
+```
+
+## Population vs. cumulative outbreak risk
+
+```{r fig-pop-risk-cdf, fig.width=12, fig.height=5}
+#| fig-cap: "Left: cumulative population (millions) living in regions with predicted
+#|   outbreak risk ≤ x (ECDF). Right: number of ADM2 regions with risk ≤ x.
+#|   The dashed vertical line marks the risk threshold above which ~200 million
+#|   people reside. Individual model scores shown alongside ensemble mean."
+
+# Build ECDFs for ensemble + individual models
+pred_long <- pred_risk |>
+    dplyr::select(location, pop_sum, obs,
+                  Ensemble = risk_ens, Logistic = pred_logistic,
+                  GAM = pred_gam, `Random Forest` = pred_rf) |>
+    pivot_longer(c(Ensemble, Logistic, GAM, `Random Forest`),
+                 names_to = "model", values_to = "risk")
+
+# Empirical CDF by model
+make_cdf <- function(df) {
+    df |>
+        arrange(risk) |>
+        mutate(
+            cum_pop   = cumsum(pop_sum),
+            cum_locs  = row_number(),
+            total_pop = sum(pop_sum),
+            n_total   = n()
+        )
+}
+
+cdf_all <- pred_long |>
+    group_by(model) |>
+    group_modify(~make_cdf(.x)) |>
+    ungroup()
+
+# 200M cutoff using ensemble
+ens_sorted <- pred_risk |> arrange(risk_ens)
+cum_pop_ens <- cumsum(ens_sorted$pop_sum)
+n_cut <- which(cum_pop_ens >= 200e6)[1]
+cutoff_200m <- ens_sorted$risk_ens[n_cut]
+
+MODEL_COLOURS <- c(
+    Ensemble = "black", Logistic = "steelblue",
+    GAM = "darkgoldenrod", `Random Forest` = "darkorchid"
+)
+
+p_pop <- ggplot(cdf_all, aes(x = risk, y = cum_pop / 1e6, colour = model,
+                              linewidth = model == "Ensemble")) +
+    geom_line() +
+    geom_vline(xintercept = cutoff_200m, linetype = "dashed",
+               colour = "firebrick", linewidth = 0.7) +
+    annotate("text", x = cutoff_200m + 0.02,
+             y = max(cdf_all$cum_pop / 1e6) * 0.3,
+             label = sprintf("p = %.3f\n200M threshold", cutoff_200m),
+             hjust = 0, colour = "firebrick", size = 3.2) +
+    scale_colour_manual(values = MODEL_COLOURS) +
+    scale_linewidth_manual(values = c("TRUE" = 1.2, "FALSE" = 0.6),
+                           guide = "none") +
+    scale_y_continuous(labels = comma) +
+    labs(x = "Predicted outbreak probability (2018–2020)",
+         y = "Cumulative population (millions)",
+         colour = "Model",
+         title = "Population ≤ risk threshold") +
+    theme_minimal(base_size = 11)
+
+p_loc <- ggplot(cdf_all, aes(x = risk, y = cum_locs, colour = model,
+                              linewidth = model == "Ensemble")) +
+    geom_line() +
+    geom_vline(xintercept = cutoff_200m, linetype = "dashed",
+               colour = "firebrick", linewidth = 0.7) +
+    scale_colour_manual(values = MODEL_COLOURS) +
+    scale_linewidth_manual(values = c("TRUE" = 1.2, "FALSE" = 0.6),
+                           guide = "none") +
+    scale_y_continuous(labels = comma) +
+    labs(x = "Predicted outbreak probability (2018–2020)",
+         y = "Cumulative number of ADM2 regions",
+         colour = "Model",
+         title = "ADM2 regions ≤ risk threshold") +
+    theme_minimal(base_size = 11)
+
+p_pop + p_loc +
+    plot_annotation(
+        title = sprintf(
+            "Outbreak risk distribution — trained on 2010–2014 features / 2015–2017 outcomes"),
+        subtitle = sprintf(
+            "Predicted for 2018–2020 | %d ADM2 regions, %.0fM total population",
+            nrow(pred_risk), sum(pred_risk$pop_sum) / 1e6)
+    ) +
+    plot_layout(guides = "collect") &
+    theme(legend.position = "bottom")
+```
+
+## Risk summary table
+
+```{r risk-summary-table}
+# Population above selected risk thresholds
+thresholds <- c(0.05, 0.10, 0.20, 0.30, 0.50)
+map_dfr(thresholds, function(thr) {
+    above <- pred_risk |> filter(risk_ens > thr)
+    tibble(
+        threshold   = thr,
+        n_regions   = nrow(above),
+        pop_M       = sum(above$pop_sum) / 1e6,
+        pct_regions = 100 * nrow(above) / nrow(pred_risk),
+        pct_pop     = 100 * sum(above$pop_sum) / sum(pred_risk$pop_sum),
+        obs_rate    = if (nrow(above) > 0) mean(above$obs) else NA_real_
+    )
+}) |>
+    knitr::kable(
+        digits = c(2, 0, 1, 1, 1, 3),
+        col.names = c("Risk > X", "Regions", "Pop (M)",
+                      "% regions", "% pop", "Outbreak rate (2018-20)"),
+        caption = "Population and region count above ensemble risk thresholds"
+    )
+```
+
+## SSA map of predicted risk (2018–2020)
+
+```{r fig-risk-map, fig.width=10, fig.height=8}
+#| fig-cap: "Ensemble mean predicted outbreak risk (2018–2020) at ADM2 level.
+#|   Grey = sub-Saharan Africa countries. Red outlines = locations with observed
+#|   outbreak in 2018–2020."
+
+ssa_sf <- sf::st_as_sf(rnaturalearthdata::countries50) |>
+    dplyr::filter(subregion %in% c("Eastern Africa", "Middle Africa",
+                                    "Southern Africa", "Western Africa")) |>
+    sf::st_make_valid() |>
+    sf::st_transform(sf::st_crs(shp_admin23))
+
+shp_risk <- shp_admin23 |>
+    left_join(pred_risk |> dplyr::select(location, risk_ens, obs),
+              by = "location") |>
+    filter(!is.na(risk_ens))
+
+ssa_bbox <- sf::st_bbox(ssa_sf)
+
+ggplot() +
+    geom_sf(data = ssa_sf, fill = "grey85", colour = "grey60", linewidth = 0.2) +
+    geom_sf(data = shp_risk, aes(fill = risk_ens), colour = NA) +
+    geom_sf(data = shp_risk |> filter(obs == 1),
+            fill = NA, colour = "firebrick", linewidth = 0.4) +
+    scale_fill_viridis_c(option = "magma", direction = -1,
+                         name = "Predicted\nrisk", limits = c(0, 1)) +
+    coord_sf(xlim = ssa_bbox[c("xmin", "xmax")],
+             ylim = ssa_bbox[c("ymin", "ymax")]) +
+    labs(title = "Predicted outbreak risk 2018–2020",
+         subtitle = "Trained on 2010–2014 features / 2015–2017 outcomes | Red outline = observed outbreak") +
+    theme_minimal(base_size = 11) +
+    theme(panel.grid = element_blank(), axis.text = element_blank(),
+          axis.ticks = element_blank(), legend.position = "right")
+```
