@@ -15,12 +15,14 @@ editor_options:
 
 ## Overview
 
-A single-step prediction exercise:
+A single-step prediction exercise with a **k=2** outcome window:
 
-- **Training**: features built from 2010–2014 surveillance data; outcome = any
-  outbreak in 2015–2017 (k=3 window)
-- **Prediction**: features built from 2013–2017 surveillance data; predict
-  probability of any outbreak in 2018–2020
+- **Training**: three temporal folds pooled
+  - Features 2010–2014 → outcome 2015–2016
+  - Features 2011–2015 → outcome 2016–2017
+  - Features 2012–2016 → outcome 2017–2018
+- **Prediction**: features built from 2014–2018 surveillance data; predict
+  probability of any outbreak in 2019–2020
 - **Models**: logistic regression, GAM, random forest
 - **Output**: predicted risk per ADM2 unit; cumulative population vs. risk curve
 
@@ -273,36 +275,41 @@ cat("Features:", length(ALL_FEATURES), "\n")
 ## Build training and prediction datasets
 
 ```{r build-datasets}
-# ── Training data ─────────────────────────────────────────────────────────────
-# Features: 2010–2014  |  Outcome: any outbreak in 2015–2017
-TRAIN_FEAT_END  <- 2014L
-TRAIN_OUT_START <- 2015L
-TRAIN_OUT_END   <- 2017L
+# ── k=2 outcome window: three training folds ──────────────────────────────────
+build_fold <- function(feat_end, out_start, out_end) {
+    feats   <- build_features(feat_end)
+    outcome <- loc_year_full |>
+        filter(year %in% out_start:out_end) |>
+        group_by(location) |>
+        summarise(obs = as.integer(sum(n_active) > 0L), .groups = "drop")
+    feats |>
+        left_join(outcome, by = "location") |>
+        replace_na(list(obs = 0L))
+}
 
-feat_train <- build_features(TRAIN_FEAT_END)  # T=5: 2010-2014
+fold1 <- build_fold(2014L, 2015L, 2016L)   # features 2010-2014 → outcome 2015-2016
+fold2 <- build_fold(2015L, 2016L, 2017L)   # features 2011-2015 → outcome 2016-2017
+fold3 <- build_fold(2016L, 2017L, 2018L)   # features 2012-2016 → outcome 2017-2018
 
-outcome_train <- loc_year_full |>
-    filter(year %in% TRAIN_OUT_START:TRAIN_OUT_END) |>
-    group_by(location) |>
-    summarise(obs = as.integer(sum(n_active) > 0L), .groups = "drop")
+train_df <- bind_rows(fold1, fold2, fold3)
 
-train_df <- feat_train |>
-    left_join(outcome_train, by = "location") |>
-    replace_na(list(obs = 0L))
-
-cat(sprintf("Training: features %d-%d → outcome %d-%d\n",
-            TRAIN_FEAT_END - T_WINDOW + 1L, TRAIN_FEAT_END,
-            TRAIN_OUT_START, TRAIN_OUT_END))
-cat(sprintf("n = %d | prevalence = %.1f%%\n",
+cat("Training folds (k=2):\n")
+cat(sprintf("  Fold 1: features 2010-2014 → outcome 2015-2016 | n=%d | prev=%.1f%%\n",
+            nrow(fold1), 100 * mean(fold1$obs)))
+cat(sprintf("  Fold 2: features 2011-2015 → outcome 2016-2017 | n=%d | prev=%.1f%%\n",
+            nrow(fold2), 100 * mean(fold2$obs)))
+cat(sprintf("  Fold 3: features 2012-2016 → outcome 2017-2018 | n=%d | prev=%.1f%%\n",
+            nrow(fold3), 100 * mean(fold3$obs)))
+cat(sprintf("Combined: n=%d | overall prevalence=%.1f%%\n",
             nrow(train_df), 100 * mean(train_df$obs)))
 
 # ── Prediction data ───────────────────────────────────────────────────────────
-# Features: 2013–2017  |  Predict: outbreak probability in 2018–2020
-PRED_FEAT_END  <- 2017L
-PRED_OUT_START <- 2018L
+# Features: 2014–2018  |  Predict: outbreak probability in 2019–2020
+PRED_FEAT_END  <- 2018L
+PRED_OUT_START <- 2019L
 PRED_OUT_END   <- 2020L
 
-feat_pred <- build_features(PRED_FEAT_END)   # T=5: 2013-2017
+feat_pred <- build_features(PRED_FEAT_END)   # T=5: 2014-2018
 
 outcome_pred <- loc_year_full |>
     filter(year %in% PRED_OUT_START:PRED_OUT_END) |>
@@ -371,10 +378,10 @@ pred_df |>
     knitr::kable(digits = 3)
 ```
 
-## Model evaluation (2018–2020 held-out outcomes)
+## Model evaluation (2019–2020 held-out outcomes)
 
 ```{r eval-models}
-# Evaluate against the actual 2018-2020 outcomes
+# Evaluate against the actual 2019-2020 outcomes
 eval_model <- function(obs, pred, name) {
     valid <- !is.na(pred) & !is.na(obs) & var(obs) > 0
     rho     <- cor(pred[valid], obs[valid], method = "spearman")
@@ -389,35 +396,31 @@ bind_rows(
     eval_model(pred_df$obs, pred_df$pred_rf,       "Random Forest")
 ) |>
     knitr::kable(digits = 3,
-                 caption = sprintf("Model evaluation: outcome %d-%d, features %d-%d",
+                 caption = sprintf("Model evaluation (k=2): outcome %d-%d, features %d-%d",
                                    PRED_OUT_START, PRED_OUT_END,
                                    PRED_FEAT_END - T_WINDOW + 1L, PRED_FEAT_END))
 ```
 
 # Targeting Accuracy (Rho) and Optimal Alpha
 
-## Rho on training period (2015–2017)
+## Rho on training folds and out-of-sample
 
-We estimate targeting accuracy $\rho$ by applying the trained models back to
-the **training features** (2010–2014) and computing Spearman rank correlation
-with the **training outcomes** (2015–2017). This in-sample $\rho$ reflects the
-best-achievable discrimination the models provide for the period they were
-trained on, and serves as a conservative upper bound for the out-of-sample
-targeting accuracy.
+In-sample $\rho$ is computed by applying the pooled-fold models back to all
+three training folds (2010–2016 features vs. 2015–2018 outcomes). Out-of-sample
+$\rho$ is computed on the 2019–2020 prediction period.
 
 ```{r rho-training}
-# Apply each trained model to training features → compare to training outcomes
-train_preds <- train_df  # already has training features + obs (2015-2017 outcomes)
-
+# In-sample: apply models to combined training data (all 3 folds)
+train_preds <- train_df
 train_preds$pred_logistic <- predict(lr_fit,  newdata = train_df, type = "response")
 train_preds$pred_gam      <- as.numeric(predict(gam_fit, newdata = train_df, type = "response"))
 rf_train <- predict(rf_fit, data = train_df)$predictions
-train_preds$pred_rf <- if ("1" %in% colnames(rf_train)) rf_train[, "1"] else rep(0, nrow(train_df))
+train_preds$pred_rf  <- if ("1" %in% colnames(rf_train)) rf_train[, "1"] else rep(0, nrow(train_df))
 train_preds$pred_ens <- (train_preds$pred_logistic + train_preds$pred_gam + train_preds$pred_rf) / 3
 
 rho_train <- tibble(
     Model = c("Logistic", "GAM", "Random Forest", "Ensemble"),
-    period = "Training (2015-2017)",
+    period = "Training (all folds, k=2)",
     rho = c(
         cor(train_preds$pred_logistic, train_preds$obs, method = "spearman"),
         cor(train_preds$pred_gam,      train_preds$obs, method = "spearman"),
@@ -426,11 +429,11 @@ rho_train <- tibble(
     )
 )
 
-# Out-of-sample rho (features 2013-2017 → outcome 2018-2020, already in pred_df)
+# Out-of-sample rho (features 2014-2018 → outcome 2019-2020)
 pred_ens_oos <- (pred_df$pred_logistic + pred_df$pred_gam + pred_df$pred_rf) / 3
 rho_oos <- tibble(
     Model = c("Logistic", "GAM", "Random Forest", "Ensemble"),
-    period = "Out-of-sample (2018-2020)",
+    period = sprintf("Out-of-sample (%d-%d)", PRED_OUT_START, PRED_OUT_END),
     rho = c(
         cor(pred_df$pred_logistic, pred_df$obs, method = "spearman"),
         cor(pred_df$pred_gam,      pred_df$obs, method = "spearman"),
@@ -444,7 +447,8 @@ rho_table <- bind_rows(rho_train, rho_oos) |>
 
 rho_table |>
     knitr::kable(digits = 3,
-                 caption = "Spearman rho: in-sample (2015-2017) vs out-of-sample (2018-2020)")
+                 caption = sprintf("Spearman rho: in-sample (training folds) vs out-of-sample (%d-%d)",
+                                   PRED_OUT_START, PRED_OUT_END))
 
 # Best model by out-of-sample rho (used as targeting score in MC below)
 best_model_name <- rho_oos |> slice_max(rho, n = 1) |> pull(Model)
@@ -605,9 +609,9 @@ make_rank_score <- function(truth, target_rho, seed = 123) {
 ## Beta-Binomial fit on 2018–2020 predicted risks
 
 ```{r bb-fit}
-# Use 3-year outcome window (2018-2020); n_trials = 3
-# k_obs = number of outbreak years per location in 2018-2020
-N_TRIALS <- 3L
+# Use 2-year outcome window (PRED_OUT_START:PRED_OUT_END); n_trials = 2
+# k_obs = number of outbreak years per location in the prediction window
+N_TRIALS <- 2L
 
 # Merge predicted risks with population and 2018-2020 outcomes
 sim_df <- pred_df |>
