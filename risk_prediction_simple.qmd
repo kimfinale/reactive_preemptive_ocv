@@ -532,6 +532,62 @@ get_alpha_star_pw <- function(f, pop, prob, score, R, r, AR, nu = 1,
          costs      = costs)
 }
 
+# ── Classifier performance helpers ────────────────────────────────────────
+# All take continuous score and binary outcome (0/1)
+
+roc_curve <- function(score, binary) {
+    n <- length(score)
+    total_pos <- sum(binary); total_neg <- n - total_pos
+    ord <- order(score, decreasing = TRUE)
+    tp  <- cumsum(binary[ord])
+    fp  <- seq_len(n) - tp
+    tibble(fpr = c(0, fp / total_neg, 1),
+           tpr = c(0, tp / total_pos, 1))
+}
+
+auc_roc_fn <- function(score, binary) {
+    n1 <- sum(binary); n0 <- length(binary) - n1
+    if (n1 == 0 || n0 == 0) return(NA_real_)
+    suppressWarnings(
+        wilcox.test(score[binary == 1], score[binary == 0], exact = FALSE)
+    )$statistic / (n1 * n0)
+}
+
+auc_pr_fn <- function(score, binary) {
+    total_pos <- sum(binary)
+    if (total_pos == 0) return(NA_real_)
+    ord  <- order(score, decreasing = TRUE)
+    tp   <- cumsum(binary[ord])
+    prec <- tp / seq_len(length(score))
+    rec  <- tp / total_pos
+    sum(diff(c(0, rec)) * prec)
+}
+
+classifier_metrics <- function(score, binary, label = "Ensemble") {
+    # Optimal threshold via Youden index (grid search)
+    thresh_grid <- seq(0, 1, length.out = 201)
+    youden <- sapply(thresh_grid, function(t) {
+        pred <- score >= t
+        tp <- sum(pred & binary); fn <- sum(!pred & binary)
+        tn <- sum(!pred & !binary); fp <- sum(pred & !binary)
+        if ((tp + fn) == 0 || (tn + fp) == 0) return(-Inf)
+        tp / (tp + fn) + tn / (tn + fp) - 1
+    })
+    best_t <- thresh_grid[which.max(youden)]
+    pred   <- score >= best_t
+    tp <- sum(pred & binary); fn <- sum(!pred & binary)
+    tn <- sum(!pred & !binary); fp <- sum(pred & !binary)
+    tibble(
+        Model       = label,
+        rho         = cor(score, binary, method = "spearman"),
+        AUC_ROC     = auc_roc_fn(score, binary),
+        AUC_PR      = auc_pr_fn(score, binary),
+        Brier       = mean((score - binary)^2),
+        Sensitivity = if ((tp + fn) > 0) tp / (tp + fn) else NA_real_,
+        Specificity = if ((tn + fp) > 0) tn / (tn + fp) else NA_real_
+    )
+}
+
 # ── Synthetic score with target Spearman rho ──────────────────────────────
 # Uses Gaussian copula: creates a ranking score correlating with truth at
 # approximately target_rho (Spearman). Useful for "what if rho = 2x" sensitivity.
@@ -569,7 +625,9 @@ sim_df <- sim_df |>
     dplyr::select(-any_of("n_outbreak_years")) |>
     left_join(ob_counts, by = "location") |>
     replace_na(list(n_outbreak_years = 0L)) |>
-    mutate(obs_rate = n_outbreak_years / N_TRIALS)
+    mutate(obs_rate   = n_outbreak_years / N_TRIALS,
+           obs_binary = as.integer(n_outbreak_years > 0),
+           country    = str_split_fixed(location, "::", 4)[, 2])
 
 cat(sprintf("Simulation data: %d locations, %.0f M population\n",
             nrow(sim_df), sum(sim_df$pop_sum) / 1e6))
@@ -581,28 +639,117 @@ cat(sprintf("Beta-Binomial: a=%.4f, b=%.4f, mean p=%.4f (convergence=%d)\n",
             bb$a, bb$b, bb$p, bb$convergence))
 ```
 
+## Beta-Binomial Diagnostics and Classifier Performance
+
+```{r bb-diagnostics, fig.width=12, fig.height=5}
+#| fig-cap: "Left: empirical ECDF (orange) vs fitted Beta(a,b) CDF (dashed red) for
+#|   per-location outbreak rates. Right: observed outbreak-year count distribution
+#|   (orange) vs Beta-Binomial PMF (red) for k = 0 … N_TRIALS."
+
+# ── CDF comparison ────────────────────────────────────────────────────────
+x_seq <- seq(0, 1, length.out = 300)
+ecdf_fn <- ecdf(sim_df$obs_rate)
+cdf_df <- tibble(
+    x           = x_seq,
+    empirical   = ecdf_fn(x_seq),
+    theoretical = pbeta(x_seq, bb$a, bb$b)
+)
+
+p_cdf <- ggplot(cdf_df, aes(x = x)) +
+    geom_line(aes(y = empirical),   colour = "darkorange",  linewidth = 0.9) +
+    geom_line(aes(y = theoretical), colour = "firebrick",   linewidth = 0.9,
+              linetype = "dashed") +
+    labs(x = "Outbreak rate", y = "CDF",
+         title = sprintf("CDF vs Beta(%.2f, %.2f)  (k=%d)", bb$a, bb$b, N_TRIALS)) +
+    theme_minimal(base_size = 11)
+
+# ── PMF comparison ────────────────────────────────────────────────────────
+bb_pmf <- sapply(0:N_TRIALS, function(k)
+    exp(lchoose(N_TRIALS, k) + lbeta(k + bb$a, N_TRIALS - k + bb$b) - lbeta(bb$a, bb$b))
+)
+obs_counts <- table(factor(sim_df$n_outbreak_years, levels = 0:N_TRIALS))
+pmf_df <- tibble(
+    k        = 0:N_TRIALS,
+    observed = as.numeric(obs_counts) / nrow(sim_df),
+    fitted   = bb_pmf
+) |> pivot_longer(c(observed, fitted), names_to = "type", values_to = "prob")
+
+p_pmf <- ggplot(pmf_df, aes(x = k, y = prob, fill = type)) +
+    geom_col(position = "dodge", width = 0.6) +
+    scale_fill_manual(values = c(observed = "darkorange", fitted = "firebrick"),
+                      labels = c(observed = "Observed", fitted = "BB PMF")) +
+    labs(x = "Outbreak years", y = "Proportion", fill = NULL,
+         title = sprintf("BB PMF  (k=%d)", N_TRIALS)) +
+    theme_minimal(base_size = 11) +
+    theme(legend.position = "bottom")
+
+p_cdf + p_pmf
+```
+
+```{r classifier-metrics}
+# Binary outcome: any outbreak in 2018-2020 window
+metrics_df <- bind_rows(
+    classifier_metrics(sim_df$risk_ens,      sim_df$obs_binary, "Ensemble"),
+    classifier_metrics(sim_df$pred_logistic, sim_df$obs_binary, "Logistic"),
+    classifier_metrics(sim_df$pred_gam,      sim_df$obs_binary, "GAM"),
+    classifier_metrics(sim_df$pred_rf,       sim_df$obs_binary, "Random Forest")
+)
+
+metrics_df |>
+    knitr::kable(digits = 3,
+                 caption = "Classifier performance (binary outcome: any outbreak 2018-2020)")
+```
+
+```{r fig-roc-curves, fig.width=8, fig.height=5}
+#| fig-cap: "ROC curves for each model. Diagonal dashed line = random classifier."
+
+roc_df <- bind_rows(
+    roc_curve(sim_df$risk_ens,      sim_df$obs_binary) |> mutate(model = "Ensemble"),
+    roc_curve(sim_df$pred_logistic, sim_df$obs_binary) |> mutate(model = "Logistic"),
+    roc_curve(sim_df$pred_gam,      sim_df$obs_binary) |> mutate(model = "GAM"),
+    roc_curve(sim_df$pred_rf,       sim_df$obs_binary) |> mutate(model = "Random Forest")
+)
+
+auc_labels <- metrics_df |>
+    transmute(model = Model,
+              label = sprintf("%s (AUC=%.3f)", Model, AUC_ROC))
+
+roc_df <- roc_df |> left_join(auc_labels, by = "model")
+
+ggplot(roc_df, aes(x = fpr, y = tpr, colour = label)) +
+    geom_abline(slope = 1, intercept = 0, linetype = "dashed", colour = "grey60") +
+    geom_line(linewidth = 0.8) +
+    scale_colour_manual(values = c(
+        setNames(c("black","steelblue","darkgoldenrod","darkorchid"),
+                 auc_labels$label))) +
+    labs(x = "False positive rate", y = "True positive rate",
+         colour = NULL, title = "ROC curves — outbreak prediction 2018-2020") +
+    theme_minimal(base_size = 11) +
+    theme(legend.position = "bottom")
+```
+
 ## Optimal alpha via Monte Carlo
 
-Parameters: **R = 500** (cost ratio illness/vaccine), **ν = 1** (pre-emptive VE),
-**f = 0.5** (coverage fraction). Reactive effectiveness **r** varies over
-$\{0.2,\, 0.4\}$. An additional "Ensemble (2×ρ)" scenario doubles the ensemble's
-out-of-sample targeting accuracy to explore the sensitivity to improved risk intelligence.
+Parameters: **R = 500** (cost ratio illness/vaccine), **ν = 1** (pre-emptive VE).
+Coverage $f \in \{0.5,\, 0.75\}$, reactive effectiveness $r \in \{0.2,\, 0.4\}$.
+An additional "Ensemble (2×ρ)" scenario doubles the ensemble's out-of-sample
+targeting accuracy to explore the sensitivity to improved risk intelligence.
 
 ```{r mc-alpha-star}
-R_val  <- 500
-nu_val <- 1
-AR_val <- 0.005
-f_val  <- 0.5
-r_values <- c(0.2, 0.4)
+R_val       <- 500
+nu_val      <- 1
+AR_val      <- 0.005
+f_values_mc <- c(0.5, 0.75)
+r_values    <- c(0.2, 0.4)
 
 # Ensemble OOS rho (used to build the 2x-rho synthetic score)
 rho_ens_oos <- rho_oos |> filter(Model == "Ensemble") |> pull(rho)
 
 STRATEGY_COLOURS <- c(
-    Ensemble          = "black",
-    Logistic          = "steelblue",
-    GAM               = "darkgoldenrod",
-    `Random Forest`   = "darkorchid",
+    Ensemble            = "black",
+    Logistic            = "steelblue",
+    GAM                 = "darkgoldenrod",
+    `Random Forest`     = "darkorchid",
     `Ensemble (2x rho)` = "firebrick"
 )
 
@@ -610,65 +757,69 @@ STRATEGY_COLOURS <- c(
 score_2rho <- make_rank_score(sim_df$obs_rate, target_rho = 2 * rho_ens_oos)
 
 strategies <- list(
-    Ensemble                    = sim_df$risk_ens,
-    Logistic                    = sim_df$pred_logistic,
-    GAM                         = sim_df$pred_gam,
-    `Random Forest`             = sim_df$pred_rf,
+    Ensemble            = sim_df$risk_ens,
+    Logistic            = sim_df$pred_logistic,
+    GAM                 = sim_df$pred_gam,
+    `Random Forest`     = sim_df$pred_rf,
     `Ensemble (2x rho)` = score_2rho
 )
 
 rho_map <- c(
-    Ensemble                    = rho_ens_oos,
-    Logistic                    = rho_oos |> filter(Model == "Logistic") |> pull(rho),
-    GAM                         = rho_oos |> filter(Model == "GAM") |> pull(rho),
-    `Random Forest`             = rho_oos |> filter(Model == "Random Forest") |> pull(rho),
+    Ensemble            = rho_ens_oos,
+    Logistic            = rho_oos |> filter(Model == "Logistic") |> pull(rho),
+    GAM                 = rho_oos |> filter(Model == "GAM") |> pull(rho),
+    `Random Forest`     = rho_oos |> filter(Model == "Random Forest") |> pull(rho),
     `Ensemble (2x rho)` = 2 * rho_ens_oos
 )
 
-# Cost curves (for plotting) and optimal alpha — vary r, fix f=0.5
-alpha_results <- map_dfr(r_values, function(rv) {
-    imap_dfr(strategies, function(score, strat_name) {
-        res <- get_alpha_star_pw(f_val, sim_df$pop_sum, sim_df$obs_rate,
-                                 score, R_val, rv, AR_val, nu_val,
-                                 n_mc = 500)
-        tibble(strategy = strat_name, r = rv,
-               rho = rho_map[[strat_name]],
-               alpha_star_pw = res$alpha_star,
-               cost_star = res$cost_star)
+# Cost curves (for plotting) and optimal alpha — vary f and r
+alpha_results <- map_dfr(f_values_mc, function(fv) {
+    map_dfr(r_values, function(rv) {
+        imap_dfr(strategies, function(score, strat_name) {
+            res <- get_alpha_star_pw(fv, sim_df$pop_sum, sim_df$obs_rate,
+                                     score, R_val, rv, AR_val, nu_val,
+                                     n_mc = 500)
+            tibble(strategy = strat_name, f = fv, r = rv,
+                   rho = rho_map[[strat_name]],
+                   alpha_star_pw = res$alpha_star,
+                   cost_star = res$cost_star)
+        })
     })
 })
 
 alpha_results |>
     knitr::kable(
         digits = 3,
-        col.names = c("Strategy", "r", "\u03c1 (OOS)", "\u03b1* (MC)", "Cost* (MC)"),
+        col.names = c("Strategy", "f", "r", "\u03c1 (OOS)", "\u03b1* (MC)", "Cost* (MC)"),
         caption = sprintf(
-            "MC-optimal alpha* | f=%.1f, R=%.0f, AR=%.3f | Beta(a=%.4f, b=%.4f), mean p=%.4f",
-            f_val, R_val, AR_val, bb$a, bb$b, bb$p)
+            "MC-optimal alpha* | R=%.0f, AR=%.3f | Beta(a=%.4f, b=%.4f), mean p=%.4f",
+            R_val, AR_val, bb$a, bb$b, bb$p)
     )
 ```
 
 ## Cost curves
 
-```{r fig-mc-cost-curves, fig.width=12, fig.height=5}
-#| fig-cap: "Population-weighted Monte Carlo cost curves faceted by reactive
-#|   effectiveness r (f=0.5 fixed). Diamond = MC-optimal alpha*. 'Ensemble (2×ρ)'
-#|   shows the result if targeting accuracy were doubled, as a sensitivity check."
+```{r fig-mc-cost-curves, fig.width=12, fig.height=8}
+#| fig-cap: "MC cost curves faceted by f (columns) and r (rows). Diamond = MC-optimal
+#|   alpha*. 'Ensemble (2x rho)' shows the sensitivity to doubled targeting accuracy."
 
 alpha_grid_plot <- seq(0, 1, length.out = 51)
 
-cost_curves <- map_dfr(r_values, function(rv) {
-    imap_dfr(strategies, function(score, strat_name) {
-        costs <- sapply(alpha_grid_plot, function(a)
-            cost_popweighted_mc(a, f_val, sim_df$pop_sum, sim_df$obs_rate,
-                                score, R_val, rv, AR_val, nu_val, n_mc = 300))
-        tibble(alpha = alpha_grid_plot, cost = costs, strategy = strat_name, r = rv)
+cost_curves <- map_dfr(f_values_mc, function(fv) {
+    map_dfr(r_values, function(rv) {
+        imap_dfr(strategies, function(score, strat_name) {
+            costs <- sapply(alpha_grid_plot, function(a)
+                cost_popweighted_mc(a, fv, sim_df$pop_sum, sim_df$obs_rate,
+                                    score, R_val, rv, AR_val, nu_val, n_mc = 300))
+            tibble(alpha = alpha_grid_plot, cost = costs,
+                   strategy = strat_name, f = fv, r = rv)
+        })
     })
 })
 
 optima_pts <- cost_curves |>
-    left_join(alpha_results |> dplyr::select(strategy, r, alpha_star_pw),
-              by = c("strategy", "r")) |>
+    left_join(alpha_results |> dplyr::select(strategy, f, r, alpha_star_pw),
+              by = c("strategy", "f", "r")) |>
     filter(abs(alpha - alpha_star_pw) < 0.011)
 
 ggplot(cost_curves, aes(x = alpha, y = cost, colour = strategy)) +
@@ -676,11 +827,11 @@ ggplot(cost_curves, aes(x = alpha, y = cost, colour = strategy)) +
     geom_point(data = optima_pts, aes(x = alpha_star_pw),
                shape = 18, size = 4) +
     scale_colour_manual(values = STRATEGY_COLOURS) +
-    facet_wrap(~r, labeller = label_both, nrow = 1) +
+    facet_grid(r ~ f, labeller = label_both) +
     labs(x = expression(alpha ~ "(pre-emptive fraction)"),
          y = "Expected cost per capita (C_V units)",
          colour = "Strategy",
-         title = "MC cost curves | f = 0.5 fixed, varying reactive effectiveness r",
+         title = "MC cost curves | all ADM2 (full dataset)",
          subtitle = sprintf(
              "R=%.0f, AR=%.3f | Beta(%.3f, %.3f), mean p=%.4f | Diamond = MC-optimal \u03b1*",
              R_val, AR_val, bb$a, bb$b, bb$p)) +
@@ -737,45 +888,48 @@ strategies_top <- list(
     `Ensemble (2x rho)` = score_2rho_top
 )
 
-alpha_results_top <- map_dfr(r_values, function(rv) {
-    imap_dfr(strategies_top, function(score, strat_name) {
-        res <- get_alpha_star_pw(f_val, sim_top$pop_sum, sim_top$obs_rate,
-                                 score, R_val, rv, AR_val, nu_val, n_mc = 500)
-        tibble(strategy = strat_name, r = rv,
-               rho = rho_top[[strat_name]],
-               alpha_star_pw = res$alpha_star,
-               cost_star = res$cost_star)
+alpha_results_top <- map_dfr(f_values_mc, function(fv) {
+    map_dfr(r_values, function(rv) {
+        imap_dfr(strategies_top, function(score, strat_name) {
+            res <- get_alpha_star_pw(fv, sim_top$pop_sum, sim_top$obs_rate,
+                                     score, R_val, rv, AR_val, nu_val, n_mc = 500)
+            tibble(strategy = strat_name, f = fv, r = rv,
+                   rho = rho_top[[strat_name]],
+                   alpha_star_pw = res$alpha_star,
+                   cost_star = res$cost_star)
+        })
     })
 })
 
 alpha_results_top |>
     knitr::kable(
         digits = 3,
-        col.names = c("Strategy", "r", "\u03c1 (in-subset)", "\u03b1* (MC)", "Cost* (MC)"),
+        col.names = c("Strategy", "f", "r", "\u03c1 (in-subset)", "\u03b1* (MC)", "Cost* (MC)"),
         caption = sprintf(
-            "MC-optimal alpha* (top %.0f%% high-risk ADM2) | f=%.1f, R=%.0f, AR=%.3f | Beta(a=%.4f, b=%.4f), mean p=%.4f",
-            TOP_PCT * 100, f_val, R_val, AR_val, bb_top$a, bb_top$b, bb_top$p)
+            "MC-optimal alpha* (top %.0f%% ADM2) | R=%.0f, AR=%.3f | Beta(a=%.4f, b=%.4f), mean p=%.4f",
+            TOP_PCT * 100, R_val, AR_val, bb_top$a, bb_top$b, bb_top$p)
     )
 ```
 
-```{r fig-top25-cost-curves, fig.width=12, fig.height=5}
+```{r fig-top25-cost-curves, fig.width=12, fig.height=8}
 #| fig-cap: "MC cost curves for the top-25% high-risk ADM2 subset, faceted by
-#|   reactive effectiveness r (f=0.5 fixed). Diamond = MC-optimal alpha*."
+#|   f (columns) and r (rows). Diamond = MC-optimal alpha*."
 
-alpha_grid_plot <- seq(0, 1, length.out = 51)
-
-cost_curves_top <- map_dfr(r_values, function(rv) {
-    imap_dfr(strategies_top, function(score, strat_name) {
-        costs <- sapply(alpha_grid_plot, function(a)
-            cost_popweighted_mc(a, f_val, sim_top$pop_sum, sim_top$obs_rate,
-                                score, R_val, rv, AR_val, nu_val, n_mc = 300))
-        tibble(alpha = alpha_grid_plot, cost = costs, strategy = strat_name, r = rv)
+cost_curves_top <- map_dfr(f_values_mc, function(fv) {
+    map_dfr(r_values, function(rv) {
+        imap_dfr(strategies_top, function(score, strat_name) {
+            costs <- sapply(alpha_grid_plot, function(a)
+                cost_popweighted_mc(a, fv, sim_top$pop_sum, sim_top$obs_rate,
+                                    score, R_val, rv, AR_val, nu_val, n_mc = 300))
+            tibble(alpha = alpha_grid_plot, cost = costs,
+                   strategy = strat_name, f = fv, r = rv)
+        })
     })
 })
 
 optima_top <- cost_curves_top |>
-    left_join(alpha_results_top |> dplyr::select(strategy, r, alpha_star_pw),
-              by = c("strategy", "r")) |>
+    left_join(alpha_results_top |> dplyr::select(strategy, f, r, alpha_star_pw),
+              by = c("strategy", "f", "r")) |>
     filter(abs(alpha - alpha_star_pw) < 0.011)
 
 ggplot(cost_curves_top, aes(x = alpha, y = cost, colour = strategy)) +
@@ -783,14 +937,236 @@ ggplot(cost_curves_top, aes(x = alpha, y = cost, colour = strategy)) +
     geom_point(data = optima_top, aes(x = alpha_star_pw),
                shape = 18, size = 4) +
     scale_colour_manual(values = STRATEGY_COLOURS) +
-    facet_wrap(~r, labeller = label_both, nrow = 1) +
+    facet_grid(r ~ f, labeller = label_both) +
     labs(x = expression(alpha ~ "(pre-emptive fraction)"),
          y = "Expected cost per capita (C_V units)",
          colour = "Strategy",
-         title = sprintf("MC cost curves | top %.0f%% high-risk ADM2 (f = 0.5 fixed)", TOP_PCT * 100),
+         title = sprintf("MC cost curves | top %.0f%% high-risk ADM2", TOP_PCT * 100),
          subtitle = sprintf(
              "R=%.0f, AR=%.3f | Beta(%.3f, %.3f), mean p=%.4f | Diamond = MC-optimal \u03b1*",
              R_val, AR_val, bb_top$a, bb_top$b, bb_top$p)) +
+    theme_minimal(base_size = 11) +
+    theme(legend.position = "bottom")
+```
+
+# Top-10% High-Risk Scenario
+
+Restricting further to the top **10%** of ADM2 regions by ensemble predicted
+risk isolates the highest-burden areas and increases mean p substantially.
+
+```{r top10-setup}
+TOP_PCT10 <- 0.10
+n_top10   <- ceiling(nrow(sim_df) * TOP_PCT10)
+
+sim_top10 <- sim_df |>
+    arrange(desc(risk_ens)) |>
+    slice_head(n = n_top10)
+
+cat(sprintf("Top %.0f%% subset: %d locations (of %d), %.0f M population\n",
+            TOP_PCT10 * 100, nrow(sim_top10), nrow(sim_df),
+            sum(sim_top10$pop_sum) / 1e6))
+cat(sprintf("Mean obs_rate: %.4f (subset) vs %.4f (all)\n",
+            mean(sim_top10$obs_rate), mean(sim_df$obs_rate)))
+
+bb_top10 <- fit_betabinom(sim_top10$n_outbreak_years, N_TRIALS)
+cat(sprintf("Beta-Binomial (top %.0f%%): a=%.4f, b=%.4f, mean p=%.4f (convergence=%d)\n",
+            TOP_PCT10 * 100, bb_top10$a, bb_top10$b, bb_top10$p, bb_top10$convergence))
+```
+
+```{r top10-mc-alpha-star}
+rho_top10 <- c(
+    Ensemble        = cor(sim_top10$risk_ens,      sim_top10$obs_rate, method = "spearman"),
+    Logistic        = cor(sim_top10$pred_logistic,  sim_top10$obs_rate, method = "spearman"),
+    GAM             = cor(sim_top10$pred_gam,        sim_top10$obs_rate, method = "spearman"),
+    `Random Forest` = cor(sim_top10$pred_rf,         sim_top10$obs_rate, method = "spearman")
+)
+rho_top10["Ensemble (2x rho)"] <- 2 * rho_top10["Ensemble"]
+
+cat("Spearman rho within top 10%:\n")
+print(round(rho_top10, 3))
+
+score_2rho_top10 <- make_rank_score(sim_top10$obs_rate, target_rho = 2 * rho_top10["Ensemble"])
+
+strategies_top10 <- list(
+    Ensemble            = sim_top10$risk_ens,
+    Logistic            = sim_top10$pred_logistic,
+    GAM                 = sim_top10$pred_gam,
+    `Random Forest`     = sim_top10$pred_rf,
+    `Ensemble (2x rho)` = score_2rho_top10
+)
+
+alpha_results_top10 <- map_dfr(f_values_mc, function(fv) {
+    map_dfr(r_values, function(rv) {
+        imap_dfr(strategies_top10, function(score, strat_name) {
+            res <- get_alpha_star_pw(fv, sim_top10$pop_sum, sim_top10$obs_rate,
+                                     score, R_val, rv, AR_val, nu_val, n_mc = 500)
+            tibble(strategy = strat_name, f = fv, r = rv,
+                   rho = rho_top10[[strat_name]],
+                   alpha_star_pw = res$alpha_star,
+                   cost_star = res$cost_star)
+        })
+    })
+})
+
+alpha_results_top10 |>
+    knitr::kable(
+        digits = 3,
+        col.names = c("Strategy", "f", "r", "\u03c1 (in-subset)", "\u03b1* (MC)", "Cost* (MC)"),
+        caption = sprintf(
+            "MC-optimal alpha* (top %.0f%% ADM2) | R=%.0f, AR=%.3f | Beta(a=%.4f, b=%.4f), mean p=%.4f",
+            TOP_PCT10 * 100, R_val, AR_val, bb_top10$a, bb_top10$b, bb_top10$p)
+    )
+```
+
+```{r fig-top10-cost-curves, fig.width=12, fig.height=8}
+#| fig-cap: "MC cost curves for the top-10% high-risk ADM2 subset, faceted by
+#|   f (columns) and r (rows). Diamond = MC-optimal alpha*."
+
+cost_curves_top10 <- map_dfr(f_values_mc, function(fv) {
+    map_dfr(r_values, function(rv) {
+        imap_dfr(strategies_top10, function(score, strat_name) {
+            costs <- sapply(alpha_grid_plot, function(a)
+                cost_popweighted_mc(a, fv, sim_top10$pop_sum, sim_top10$obs_rate,
+                                    score, R_val, rv, AR_val, nu_val, n_mc = 300))
+            tibble(alpha = alpha_grid_plot, cost = costs,
+                   strategy = strat_name, f = fv, r = rv)
+        })
+    })
+})
+
+optima_top10 <- cost_curves_top10 |>
+    left_join(alpha_results_top10 |> dplyr::select(strategy, f, r, alpha_star_pw),
+              by = c("strategy", "f", "r")) |>
+    filter(abs(alpha - alpha_star_pw) < 0.011)
+
+ggplot(cost_curves_top10, aes(x = alpha, y = cost, colour = strategy)) +
+    geom_line(linewidth = 0.8) +
+    geom_point(data = optima_top10, aes(x = alpha_star_pw),
+               shape = 18, size = 4) +
+    scale_colour_manual(values = STRATEGY_COLOURS) +
+    facet_grid(r ~ f, labeller = label_both) +
+    labs(x = expression(alpha ~ "(pre-emptive fraction)"),
+         y = "Expected cost per capita (C_V units)",
+         colour = "Strategy",
+         title = sprintf("MC cost curves | top %.0f%% high-risk ADM2", TOP_PCT10 * 100),
+         subtitle = sprintf(
+             "R=%.0f, AR=%.3f | Beta(%.3f, %.3f), mean p=%.4f | Diamond = MC-optimal \u03b1*",
+             R_val, AR_val, bb_top10$a, bb_top10$b, bb_top10$p)) +
+    theme_minimal(base_size = 11) +
+    theme(legend.position = "bottom")
+```
+
+# Top-3-Countries Scenario
+
+Select the **top 3 countries** by mean ensemble risk across their ADM2 regions
+included in the simulation dataset, then restrict the analysis to those countries.
+
+```{r top3-setup}
+country_risk <- sim_df |>
+    group_by(country) |>
+    summarise(mean_risk = mean(risk_ens),
+              n_adm2    = n(),
+              mean_obs  = mean(obs_rate),
+              .groups = "drop") |>
+    arrange(desc(mean_risk))
+
+top3_ctry <- country_risk |> slice_head(n = 3) |> pull(country)
+
+cat("Top 3 countries by mean ensemble risk:\n")
+country_risk |> slice_head(n = 5) |> print()
+
+sim_top3 <- sim_df |> filter(country %in% top3_ctry)
+
+cat(sprintf("\nTop-3 subset: %d locations, %.0f M population\n",
+            nrow(sim_top3), sum(sim_top3$pop_sum) / 1e6))
+cat(sprintf("Mean obs_rate: %.4f (subset) vs %.4f (all)\n",
+            mean(sim_top3$obs_rate), mean(sim_df$obs_rate)))
+
+bb_top3 <- fit_betabinom(sim_top3$n_outbreak_years, N_TRIALS)
+cat(sprintf("Beta-Binomial (top-3 countries): a=%.4f, b=%.4f, mean p=%.4f (convergence=%d)\n",
+            bb_top3$a, bb_top3$b, bb_top3$p, bb_top3$convergence))
+```
+
+```{r top3-mc-alpha-star}
+rho_top3 <- c(
+    Ensemble        = cor(sim_top3$risk_ens,      sim_top3$obs_rate, method = "spearman"),
+    Logistic        = cor(sim_top3$pred_logistic,  sim_top3$obs_rate, method = "spearman"),
+    GAM             = cor(sim_top3$pred_gam,        sim_top3$obs_rate, method = "spearman"),
+    `Random Forest` = cor(sim_top3$pred_rf,         sim_top3$obs_rate, method = "spearman")
+)
+rho_top3["Ensemble (2x rho)"] <- 2 * rho_top3["Ensemble"]
+
+cat("Spearman rho within top-3 countries:\n")
+print(round(rho_top3, 3))
+
+score_2rho_top3 <- make_rank_score(sim_top3$obs_rate, target_rho = 2 * rho_top3["Ensemble"])
+
+strategies_top3 <- list(
+    Ensemble            = sim_top3$risk_ens,
+    Logistic            = sim_top3$pred_logistic,
+    GAM                 = sim_top3$pred_gam,
+    `Random Forest`     = sim_top3$pred_rf,
+    `Ensemble (2x rho)` = score_2rho_top3
+)
+
+alpha_results_top3 <- map_dfr(f_values_mc, function(fv) {
+    map_dfr(r_values, function(rv) {
+        imap_dfr(strategies_top3, function(score, strat_name) {
+            res <- get_alpha_star_pw(fv, sim_top3$pop_sum, sim_top3$obs_rate,
+                                     score, R_val, rv, AR_val, nu_val, n_mc = 500)
+            tibble(strategy = strat_name, f = fv, r = rv,
+                   rho = rho_top3[[strat_name]],
+                   alpha_star_pw = res$alpha_star,
+                   cost_star = res$cost_star)
+        })
+    })
+})
+
+alpha_results_top3 |>
+    knitr::kable(
+        digits = 3,
+        col.names = c("Strategy", "f", "r", "\u03c1 (in-subset)", "\u03b1* (MC)", "Cost* (MC)"),
+        caption = sprintf(
+            "MC-optimal alpha* (top-3 countries: %s) | R=%.0f, AR=%.3f | Beta(a=%.4f, b=%.4f), mean p=%.4f",
+            paste(top3_ctry, collapse = ", "), R_val, AR_val, bb_top3$a, bb_top3$b, bb_top3$p)
+    )
+```
+
+```{r fig-top3-cost-curves, fig.width=12, fig.height=8}
+#| fig-cap: "MC cost curves for the top-3 countries by mean ADM2 risk, faceted by
+#|   f (columns) and r (rows). Diamond = MC-optimal alpha*."
+
+cost_curves_top3 <- map_dfr(f_values_mc, function(fv) {
+    map_dfr(r_values, function(rv) {
+        imap_dfr(strategies_top3, function(score, strat_name) {
+            costs <- sapply(alpha_grid_plot, function(a)
+                cost_popweighted_mc(a, fv, sim_top3$pop_sum, sim_top3$obs_rate,
+                                    score, R_val, rv, AR_val, nu_val, n_mc = 300))
+            tibble(alpha = alpha_grid_plot, cost = costs,
+                   strategy = strat_name, f = fv, r = rv)
+        })
+    })
+})
+
+optima_top3 <- cost_curves_top3 |>
+    left_join(alpha_results_top3 |> dplyr::select(strategy, f, r, alpha_star_pw),
+              by = c("strategy", "f", "r")) |>
+    filter(abs(alpha - alpha_star_pw) < 0.011)
+
+ggplot(cost_curves_top3, aes(x = alpha, y = cost, colour = strategy)) +
+    geom_line(linewidth = 0.8) +
+    geom_point(data = optima_top3, aes(x = alpha_star_pw),
+               shape = 18, size = 4) +
+    scale_colour_manual(values = STRATEGY_COLOURS) +
+    facet_grid(r ~ f, labeller = label_both) +
+    labs(x = expression(alpha ~ "(pre-emptive fraction)"),
+         y = "Expected cost per capita (C_V units)",
+         colour = "Strategy",
+         title = sprintf("MC cost curves | top-3 countries (%s)",
+                         paste(top3_ctry, collapse = ", ")),
+         subtitle = sprintf(
+             "R=%.0f, AR=%.3f | Beta(%.3f, %.3f), mean p=%.4f | Diamond = MC-optimal \u03b1*",
+             R_val, AR_val, bb_top3$a, bb_top3$b, bb_top3$p)) +
     theme_minimal(base_size = 11) +
     theme(legend.position = "bottom")
 ```
