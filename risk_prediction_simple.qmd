@@ -394,6 +394,277 @@ bind_rows(
                                    PRED_FEAT_END - T_WINDOW + 1L, PRED_FEAT_END))
 ```
 
+# Targeting Accuracy (Rho) and Optimal Alpha
+
+## Rho on training period (2015–2017)
+
+We estimate targeting accuracy $\rho$ by applying the trained models back to
+the **training features** (2010–2014) and computing Spearman rank correlation
+with the **training outcomes** (2015–2017). This in-sample $\rho$ reflects the
+best-achievable discrimination the models provide for the period they were
+trained on, and serves as a conservative upper bound for the out-of-sample
+targeting accuracy.
+
+```{r rho-training}
+# Apply each trained model to training features → compare to training outcomes
+train_preds <- train_df  # already has training features + obs (2015-2017 outcomes)
+
+train_preds$pred_logistic <- predict(lr_fit,  newdata = train_df, type = "response")
+train_preds$pred_gam      <- as.numeric(predict(gam_fit, newdata = train_df, type = "response"))
+rf_train <- predict(rf_fit, data = train_df)$predictions
+train_preds$pred_rf <- if ("1" %in% colnames(rf_train)) rf_train[, "1"] else rep(0, nrow(train_df))
+train_preds$pred_ens <- (train_preds$pred_logistic + train_preds$pred_gam + train_preds$pred_rf) / 3
+
+rho_train <- tibble(
+    Model = c("Logistic", "GAM", "Random Forest", "Ensemble"),
+    period = "Training (2015-2017)",
+    rho = c(
+        cor(train_preds$pred_logistic, train_preds$obs, method = "spearman"),
+        cor(train_preds$pred_gam,      train_preds$obs, method = "spearman"),
+        cor(train_preds$pred_rf,       train_preds$obs, method = "spearman"),
+        cor(train_preds$pred_ens,      train_preds$obs, method = "spearman")
+    )
+)
+
+# Out-of-sample rho (features 2013-2017 → outcome 2018-2020, already in pred_df)
+pred_ens_oos <- (pred_df$pred_logistic + pred_df$pred_gam + pred_df$pred_rf) / 3
+rho_oos <- tibble(
+    Model = c("Logistic", "GAM", "Random Forest", "Ensemble"),
+    period = "Out-of-sample (2018-2020)",
+    rho = c(
+        cor(pred_df$pred_logistic, pred_df$obs, method = "spearman"),
+        cor(pred_df$pred_gam,      pred_df$obs, method = "spearman"),
+        cor(pred_df$pred_rf,       pred_df$obs, method = "spearman"),
+        cor(pred_ens_oos,          pred_df$obs, method = "spearman")
+    )
+)
+
+rho_table <- bind_rows(rho_train, rho_oos) |>
+    pivot_wider(names_from = period, values_from = rho)
+
+rho_table |>
+    knitr::kable(digits = 3,
+                 caption = "Spearman rho: in-sample (2015-2017) vs out-of-sample (2018-2020)")
+
+# Best model by out-of-sample rho (used as targeting score in MC below)
+best_model_name <- rho_oos |> slice_max(rho, n = 1) |> pull(Model)
+rho_best_oos    <- rho_oos |> filter(Model == best_model_name) |> pull(rho)
+cat(sprintf("\nBest model (OOS): %s  rho = %.3f\n", best_model_name, rho_best_oos))
+```
+
+## MC helper functions
+
+```{r mc-helpers}
+# ── Beta-Binomial MLE ──────────────────────────────────────────────────────
+fit_betabinom <- function(k_obs, n_trials) {
+    ll <- function(par, k, n) {
+        a <- exp(par[1]); b <- exp(par[2])
+        sum(lchoose(n, k) + lbeta(k + a, n - k + b) - lbeta(a, b))
+    }
+    p_init <- mean(k_obs) / n_trials
+    v_init <- var(k_obs / n_trials)
+    a_init <- max(p_init * (p_init * (1 - p_init) / max(v_init, 1e-6) - 1), 0.1)
+    b_init <- max((1 - p_init) * (p_init * (1 - p_init) / max(v_init, 1e-6) - 1), 0.1)
+    fit <- optim(par = log(c(a_init, b_init)), fn = ll, k = k_obs, n = n_trials,
+                 method = "Nelder-Mead", control = list(fnscale = -1, maxit = 5000))
+    list(a = exp(fit$par[1]), b = exp(fit$par[2]),
+         p = exp(fit$par[1]) / (exp(fit$par[1]) + exp(fit$par[2])),
+         convergence = fit$convergence)
+}
+
+# ── Population-weighted MC cost function ──────────────────────────────────
+# Sweeps alpha on a grid; at each alpha:
+#   1. Rank locations by score (descending); fill pre-emptive budget alpha*f*P
+#   2. Draw Bernoulli outbreak for each location using obs_rate
+#   3. Reactive budget (1-alpha)*f*P covers outbreak locations not pre-vaccinated
+#   4. Return (vaccination cost + illness cost) / P_total
+cost_popweighted_mc <- function(alpha, f, pop, prob, score, R, r, AR, nu = 1,
+                                n_mc = 300, seed = 42) {
+    set.seed(seed)
+    n <- length(pop)
+    P <- sum(pop)
+    pre_budget   <- alpha * f * P
+    react_budget <- (1 - alpha) * f * P
+
+    # Pre-emptive allocation: rank by score, fill budget
+    ord <- order(score, decreasing = TRUE)
+    cum_pre <- cumsum(pop[ord])
+    n_pre <- sum(cum_pre <= pre_budget)
+    pre_locs <- ord[seq_len(max(n_pre, 0L))]
+
+    total_cost <- mean(replicate(n_mc, {
+        outbreaks <- rbinom(n, 1L, prob)
+        ob_locs   <- which(outbreaks == 1L & !seq_len(n) %in% pre_locs)
+
+        # Reactive: cover outbreak locs not pre-vaccinated, in pop-descending order
+        if (length(ob_locs) > 0 && react_budget > 0) {
+            ob_ord <- ob_locs[order(pop[ob_locs], decreasing = TRUE)]
+            cum_react <- cumsum(pop[ob_ord])
+            n_react <- sum(cum_react <= react_budget)
+            react_locs <- ob_ord[seq_len(max(n_react, 0L))]
+        } else {
+            react_locs <- integer(0)
+        }
+
+        # Cost: vaccination + illness
+        cost_vax     <- (sum(pop[pre_locs]) + sum(pop[react_locs])) / P
+        ill_pre      <- sum(pop[intersect(pre_locs, which(outbreaks == 1L))]) *
+                            (1 - nu) * AR * R / P
+        ill_react    <- sum(pop[intersect(react_locs, which(outbreaks == 1L))]) *
+                            (1 - r) * AR * R / P
+        ob_unvax_locs <- setdiff(which(outbreaks == 1L),
+                                  union(pre_locs, react_locs))
+        ill_unvax    <- sum(pop[ob_unvax_locs]) * AR * R / P
+        cost_vax + ill_pre + ill_react + ill_unvax
+    }))
+    total_cost
+}
+
+# ── Optimal alpha via grid search ─────────────────────────────────────────
+get_alpha_star_pw <- function(f, pop, prob, score, R, r, AR, nu = 1,
+                               n_mc = 300, n_grid = 51) {
+    alpha_grid <- seq(0, 1, length.out = n_grid)
+    costs <- sapply(alpha_grid, function(a)
+        cost_popweighted_mc(a, f, pop, prob, score, R, r, AR, nu, n_mc = n_mc))
+    list(alpha_star = alpha_grid[which.min(costs)],
+         cost_star  = min(costs),
+         alpha_grid = alpha_grid,
+         costs      = costs)
+}
+```
+
+## Beta-Binomial fit on 2018–2020 predicted risks
+
+```{r bb-fit}
+# Use 3-year outcome window (2018-2020); n_trials = 3
+# k_obs = number of outbreak years per location in 2018-2020
+N_TRIALS <- 3L
+
+# Merge predicted risks with population and 2018-2020 outcomes
+sim_df <- pred_df |>
+    mutate(risk_ens = (pred_logistic + pred_gam + pred_rf) / 3) |>
+    left_join(pop_lookup, by = "location") |>
+    filter(!is.na(risk_ens), !is.na(pop_sum), pop_sum > 0)
+
+# n_outbreak_years = count of years in 2018-2020 with active outbreak
+ob_counts <- loc_year_full |>
+    filter(year %in% PRED_OUT_START:PRED_OUT_END) |>
+    group_by(location) |>
+    summarise(n_outbreak_years = sum(n_active > 0), .groups = "drop")
+
+sim_df <- sim_df |>
+    dplyr::select(-any_of("n_outbreak_years")) |>
+    left_join(ob_counts, by = "location") |>
+    replace_na(list(n_outbreak_years = 0L)) |>
+    mutate(obs_rate = n_outbreak_years / N_TRIALS)
+
+cat(sprintf("Simulation data: %d locations, %.0f M population\n",
+            nrow(sim_df), sum(sim_df$pop_sum) / 1e6))
+cat(sprintf("Mean obs_rate (3-yr): %.4f\n", mean(sim_df$obs_rate)))
+
+# Beta-Binomial MLE
+bb <- fit_betabinom(sim_df$n_outbreak_years, N_TRIALS)
+cat(sprintf("Beta-Binomial: a=%.4f, b=%.4f, mean p=%.4f (convergence=%d)\n",
+            bb$a, bb$b, bb$p, bb$convergence))
+```
+
+## Optimal alpha via Monte Carlo
+
+Parameters: **R = 500** (cost ratio illness/vaccine), **r = 0.6** (reactive
+effectiveness), **ν = 1** (pre-emptive VE). Coverage $f \in \{0.3, 0.5, 0.7\}$.
+Targeting scores = each model's predicted probability for 2018–2020.
+
+```{r mc-alpha-star}
+R_val  <- 500
+r_val  <- 0.6
+nu_val <- 1
+AR_val <- 0.005
+f_values <- c(0.3, 0.5, 0.7)
+
+STRATEGY_COLOURS <- c(
+    Ensemble       = "black",
+    Logistic       = "steelblue",
+    GAM            = "darkgoldenrod",
+    `Random Forest` = "darkorchid"
+)
+
+strategies <- list(
+    Ensemble       = sim_df$risk_ens,
+    Logistic       = sim_df$pred_logistic,
+    GAM            = sim_df$pred_gam,
+    `Random Forest` = sim_df$pred_rf
+)
+
+# Cost curves (for plotting) and optimal alpha
+alpha_results <- map_dfr(f_values, function(fv) {
+    imap_dfr(strategies, function(score, strat_name) {
+        res <- get_alpha_star_pw(fv, sim_df$pop_sum, sim_df$obs_rate,
+                                 score, R_val, r_val, AR_val, nu_val,
+                                 n_mc = 500)
+        # Rho from rho_oos table (Ensemble uses ensemble rho)
+        rho_val <- if (strat_name == "Ensemble") {
+            rho_oos |> filter(Model == "Ensemble") |> pull(rho)
+        } else {
+            rho_oos |> filter(Model == strat_name) |> pull(rho)
+        }
+        tibble(strategy = strat_name, f = fv,
+               rho = rho_val, alpha_star_pw = res$alpha_star,
+               cost_star = res$cost_star)
+    })
+})
+
+alpha_results |>
+    knitr::kable(
+        digits = 3,
+        col.names = c("Strategy", "f", "\u03c1 (OOS)", "\u03b1*_pw (MC)", "Cost*"),
+        caption = sprintf(
+            "MC-optimal alpha* by strategy and f | R=%.0f, r=%.1f, AR=%.3f\nBeta(a=%.4f, b=%.4f), mean p=%.4f",
+            R_val, r_val, AR_val, bb$a, bb$b, bb$p)
+    )
+```
+
+## Cost curves
+
+```{r fig-mc-cost-curves, fig.width=12, fig.height=5}
+#| fig-cap: "Population-weighted Monte Carlo cost curves for each targeting strategy
+#|   and coverage level f. Diamond = MC-optimal alpha*. The y-axis is expected
+#|   total cost per capita in units of C_V (vaccine cost per person). A minimum
+#|   at alpha* > 0 indicates that a mixed pre-emptive/reactive strategy is preferred."
+
+alpha_grid_plot <- seq(0, 1, length.out = 51)
+
+cost_curves <- map_dfr(f_values, function(fv) {
+    imap_dfr(strategies, function(score, strat_name) {
+        costs <- sapply(alpha_grid_plot, function(a)
+            cost_popweighted_mc(a, fv, sim_df$pop_sum, sim_df$obs_rate,
+                                score, R_val, r_val, AR_val, nu_val, n_mc = 300))
+        tibble(alpha = alpha_grid_plot, cost = costs, strategy = strat_name, f = fv)
+    })
+})
+
+optima_pts <- cost_curves |>
+    left_join(alpha_results |> dplyr::select(strategy, f, alpha_star_pw),
+              by = c("strategy", "f")) |>
+    filter(abs(alpha - alpha_star_pw) < 0.011)
+
+ggplot(cost_curves, aes(x = alpha, y = cost, colour = strategy)) +
+    geom_line(linewidth = 0.8) +
+    geom_point(data = optima_pts, aes(x = alpha_star_pw),
+               shape = 18, size = 4) +
+    scale_colour_manual(values = STRATEGY_COLOURS) +
+    facet_wrap(~f, labeller = label_both) +
+    labs(x = expression(alpha ~ "(pre-emptive fraction)"),
+         y = "Expected cost per capita (C_V units)",
+         colour = "Strategy",
+         title = sprintf(
+             "MC cost curves | train: 2010-2014 features / 2015-2017 outcomes; predict: 2018-2020"),
+         subtitle = sprintf(
+             "R=%.0f, r=%.1f, AR=%.3f | Beta(%.3f, %.3f), mean p=%.4f | Diamond = MC-optimal \u03b1*",
+             R_val, r_val, AR_val, bb$a, bb$b, bb$p)) +
+    theme_minimal(base_size = 11) +
+    theme(legend.position = "bottom")
+```
+
 # Outbreak Risk Estimation
 
 ## Ensemble mean risk score
