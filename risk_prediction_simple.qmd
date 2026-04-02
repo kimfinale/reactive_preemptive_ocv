@@ -1428,3 +1428,183 @@ ggplot() +
     theme(panel.grid = element_blank(), axis.text = element_blank(),
           axis.ticks = element_blank(), legend.position = "right")
 ```
+
+# Alternative: k=3 outcome window, predict 2020–2022
+
+Increase outcome window to k=3 years and shift prediction target to 2020–2022.
+Three temporal folds:
+
+- Features 2010–2014 → outcome 2015–2017
+- Features 2011–2015 → outcome 2016–2018
+- Features 2012–2016 → outcome 2017–2019
+
+Prediction: features 2015–2019 → outcome 2020–2022.
+
+## Build training and prediction datasets (k=3)
+
+```{r build-datasets-k3}
+K3_OUT <- 3L
+
+build_fold_k3 <- function(feat_end, out_start, out_end) {
+    feats   <- build_features(feat_end)
+    outcome <- loc_year_full |>
+        filter(year %in% out_start:out_end) |>
+        group_by(location) |>
+        summarise(obs = as.integer(sum(n_active) > 0L), .groups = "drop")
+    feats |>
+        left_join(outcome, by = "location") |>
+        replace_na(list(obs = 0L))
+}
+
+fold1_k3 <- build_fold_k3(2014L, 2015L, 2017L)  # features 2010-2014 → outcome 2015-2017
+fold2_k3 <- build_fold_k3(2015L, 2016L, 2018L)  # features 2011-2015 → outcome 2016-2018
+fold3_k3 <- build_fold_k3(2016L, 2017L, 2019L)  # features 2012-2016 → outcome 2017-2019
+
+train_k3 <- bind_rows(fold1_k3, fold2_k3, fold3_k3)
+
+cat("Training folds (k=3):\n")
+cat(sprintf("  Fold 1: features 2010-2014 → outcome 2015-2017 | n=%d | prev=%.1f%%\n",
+            nrow(fold1_k3), 100 * mean(fold1_k3$obs)))
+cat(sprintf("  Fold 2: features 2011-2015 → outcome 2016-2018 | n=%d | prev=%.1f%%\n",
+            nrow(fold2_k3), 100 * mean(fold2_k3$obs)))
+cat(sprintf("  Fold 3: features 2012-2016 → outcome 2017-2019 | n=%d | prev=%.1f%%\n",
+            nrow(fold3_k3), 100 * mean(fold3_k3$obs)))
+cat(sprintf("Combined: n=%d | overall prevalence=%.1f%%\n",
+            nrow(train_k3), 100 * mean(train_k3$obs)))
+
+# Prediction: features 2015-2019 → outcome 2020-2022
+PRED_FEAT_END_K3  <- 2019L
+PRED_OUT_START_K3 <- 2020L
+PRED_OUT_END_K3   <- 2022L
+
+feat_pred_k3 <- build_features(PRED_FEAT_END_K3)   # T=5: 2015-2019
+
+outcome_pred_k3 <- loc_year_full |>
+    filter(year %in% PRED_OUT_START_K3:PRED_OUT_END_K3) |>
+    group_by(location) |>
+    summarise(obs = as.integer(sum(n_active) > 0L), .groups = "drop")
+
+pred_k3 <- feat_pred_k3 |>
+    left_join(outcome_pred_k3, by = "location") |>
+    replace_na(list(obs = 0L))
+
+cat(sprintf("\nPrediction: features %d-%d → outcome %d-%d\n",
+            PRED_FEAT_END_K3 - T_WINDOW + 1L, PRED_FEAT_END_K3,
+            PRED_OUT_START_K3, PRED_OUT_END_K3))
+cat(sprintf("n = %d | prevalence = %.1f%%\n",
+            nrow(pred_k3), 100 * mean(pred_k3$obs)))
+```
+
+## Fit models and predict (k=3)
+
+```{r fit-models-k3}
+# ── 1. Logistic regression ────────────────────────────────────────────────────
+lr_fit_k3 <- glm(obs ~ ., data = train_k3[, c("obs", ALL_FEATURES)],
+                 family = binomial)
+pred_k3$pred_logistic <- predict(lr_fit_k3, newdata = pred_k3, type = "response")
+
+# ── 2. GAM ────────────────────────────────────────────────────────────────────
+gam_terms_k3 <- paste0(
+    "s(", gam_feats, ", k = ",
+    sapply(gam_feats, safe_k, dat = train_k3), ")",
+    collapse = " + "
+)
+gam_fit_k3 <- tryCatch(
+    gam(as.formula(paste("obs ~", gam_terms_k3)), data = train_k3,
+        family = binomial, method = "REML"),
+    error = function(e) {
+        k2 <- safe_k("n_outbreak_years", train_k3, 3L)
+        k3 <- safe_k("nbr_prop_outbreak", train_k3, 3L)
+        gam(as.formula(sprintf(
+            "obs ~ s(n_outbreak_years, k=%d) + s(nbr_prop_outbreak, k=%d)", k2, k3)),
+            data = train_k3, family = binomial, method = "REML")
+    }
+)
+pred_k3$pred_gam <- as.numeric(predict(gam_fit_k3, newdata = pred_k3, type = "response"))
+
+# ── 3. Random forest ──────────────────────────────────────────────────────────
+set.seed(42)
+rf_fit_k3 <- ranger(
+    obs ~ ., data = train_k3[, c("obs", ALL_FEATURES)] |> mutate(obs = factor(obs)),
+    num.trees = 500, probability = TRUE,
+    min.node.size = 5, mtry = max(1, floor(sqrt(length(ALL_FEATURES))))
+)
+rf_preds_k3 <- predict(rf_fit_k3, data = pred_k3)$predictions
+pred_k3$pred_rf <- if ("1" %in% colnames(rf_preds_k3)) rf_preds_k3[, "1"] else rep(0, nrow(pred_k3))
+pred_k3$pred_ens <- (pred_k3$pred_logistic + pred_k3$pred_gam + pred_k3$pred_rf) / 3
+
+cat("Models fitted (k=3). Prediction head:\n")
+pred_k3 |>
+    dplyr::select(location, obs, pred_logistic, pred_gam, pred_rf) |>
+    slice_head(n = 5) |>
+    knitr::kable(digits = 3)
+```
+
+## Model evaluation and rho (k=3, 2020–2022)
+
+```{r eval-rho-k3}
+# Out-of-sample evaluation
+bind_rows(
+    eval_model(pred_k3$obs, pred_k3$pred_logistic, "Logistic"),
+    eval_model(pred_k3$obs, pred_k3$pred_gam,      "GAM"),
+    eval_model(pred_k3$obs, pred_k3$pred_rf,       "Random Forest"),
+    eval_model(pred_k3$obs, pred_k3$pred_ens,      "Ensemble")
+) |>
+    knitr::kable(digits = 3,
+                 caption = sprintf("Model evaluation (k=3): outcome %d-%d, features %d-%d",
+                                   PRED_OUT_START_K3, PRED_OUT_END_K3,
+                                   PRED_FEAT_END_K3 - T_WINDOW + 1L, PRED_FEAT_END_K3))
+
+# In-sample rho on training data
+train_k3_preds <- train_k3
+train_k3_preds$pred_logistic <- predict(lr_fit_k3,  newdata = train_k3, type = "response")
+train_k3_preds$pred_gam      <- as.numeric(predict(gam_fit_k3, newdata = train_k3, type = "response"))
+rf_train_k3 <- predict(rf_fit_k3, data = train_k3)$predictions
+train_k3_preds$pred_rf  <- if ("1" %in% colnames(rf_train_k3)) rf_train_k3[, "1"] else rep(0, nrow(train_k3))
+train_k3_preds$pred_ens <- (train_k3_preds$pred_logistic + train_k3_preds$pred_gam + train_k3_preds$pred_rf) / 3
+
+rho_k3_train <- tibble(
+    Model  = c("Logistic", "GAM", "Random Forest", "Ensemble"),
+    period = "Training (all folds, k=3)",
+    rho    = c(
+        cor(train_k3_preds$pred_logistic, train_k3_preds$obs, method = "spearman"),
+        cor(train_k3_preds$pred_gam,      train_k3_preds$obs, method = "spearman"),
+        cor(train_k3_preds$pred_rf,       train_k3_preds$obs, method = "spearman"),
+        cor(train_k3_preds$pred_ens,      train_k3_preds$obs, method = "spearman")
+    )
+)
+
+rho_k3_oos <- tibble(
+    Model  = c("Logistic", "GAM", "Random Forest", "Ensemble"),
+    period = sprintf("Out-of-sample (%d-%d)", PRED_OUT_START_K3, PRED_OUT_END_K3),
+    rho    = c(
+        cor(pred_k3$pred_logistic, pred_k3$obs, method = "spearman"),
+        cor(pred_k3$pred_gam,      pred_k3$obs, method = "spearman"),
+        cor(pred_k3$pred_rf,       pred_k3$obs, method = "spearman"),
+        cor(pred_k3$pred_ens,      pred_k3$obs, method = "spearman")
+    )
+)
+
+bind_rows(rho_k3_train, rho_k3_oos) |>
+    pivot_wider(names_from = period, values_from = rho) |>
+    knitr::kable(digits = 3,
+                 caption = sprintf("Spearman rho (k=3): in-sample vs out-of-sample (%d-%d)",
+                                   PRED_OUT_START_K3, PRED_OUT_END_K3))
+
+# Compare k=2 vs k=3 OOS rho side-by-side
+tibble(
+    Model = c("Logistic", "GAM", "Random Forest", "Ensemble"),
+    rho_k2_oos = c(
+        cor(pred_df$pred_logistic, pred_df$obs, method = "spearman"),
+        cor(pred_df$pred_gam,      pred_df$obs, method = "spearman"),
+        cor(pred_df$pred_rf,       pred_df$obs, method = "spearman"),
+        cor((pred_df$pred_logistic + pred_df$pred_gam + pred_df$pred_rf) / 3,
+            pred_df$obs, method = "spearman")
+    ),
+    rho_k3_oos = rho_k3_oos$rho
+) |>
+    knitr::kable(digits = 3,
+                 caption = sprintf("OOS rho comparison: k=2 (predict %d-%d) vs k=3 (predict %d-%d)",
+                                   PRED_OUT_START, PRED_OUT_END,
+                                   PRED_OUT_START_K3, PRED_OUT_END_K3))
+```
