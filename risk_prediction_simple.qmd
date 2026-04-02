@@ -56,8 +56,13 @@ ts23 <- ts_outbreak |>
     mutate(adm = str_count(location, "::") - 1L) |>
     filter(adm %in% c(2, 3))
 
-outbreak_events <- ts23 |>
-    group_by(location, adm, outbreak_number) |>
+ts2 <- ts_outbreak |>
+    mutate(adm = str_count(location, "::") - 1L) |>
+    filter(adm %in% c(2))
+
+outbreak_events <- ts2 |>
+    group_by(location, adm, location_period_id, outbreak_number) |>
+    # group_by(location_period_id, outbreak_number) |>
     summarise(
         year_start     = year(min(TL)),
         year_end       = year(max(TR)),
@@ -67,7 +72,7 @@ outbreak_events <- ts23 |>
     )
 
 all_years <- 2010:2023
-all_locs  <- unique(ts23$location)
+all_locs  <- unique(ts2$location)
 
 outbreak_year_summary <- outbreak_events |>
     filter(year_end %in% all_years) |>
@@ -104,38 +109,38 @@ cat("Locations:", length(all_locs), "| Years:", range(all_years), "\n")
 shp_all <- readr::read_rds(
     "data/outbreak_files_Oct2024/outbreak_shapefiles.rds"
 )
-loc_id_map <- ts23 |>
+loc_id_map <- ts2 |>
     distinct(location_period_id, location) |>
     group_by(location) |>
     slice_max(as.integer(location_period_id), n = 1, with_ties = FALSE) |>
     ungroup()
 
-shp_admin23 <- shp_all |>
+shp_admin2 <- shp_all |>
     left_join(loc_id_map, by = c("lctn_pr" = "location_period_id")) |>
     filter(!is.na(location), str_count(location, "::") %in% c(3, 4))
 
-cat("ADM2/3 polygons:", nrow(shp_admin23), "\n")
+cat("ADM2 polygons:", nrow(shp_admin2), "\n")
 
 # 50 km neighbour list
 DIST_KM <- 50
-centroids_sf <- shp_admin23 |> st_make_valid() |> st_point_on_surface()
+centroids_sf <- shp_admin2 |> st_make_valid() |> st_point_on_surface()
 dist_mat <- st_distance(centroids_sf) |> units::drop_units() / 1000
-rownames(dist_mat) <- colnames(dist_mat) <- shp_admin23$location
+rownames(dist_mat) <- colnames(dist_mat) <- shp_admin2$location
 diag(dist_mat) <- Inf
 
 nbr_list <- setNames(
-    lapply(shp_admin23$location, function(loc) {
+    lapply(shp_admin2$location, function(loc) {
         d <- dist_mat[loc, ]
         names(sort(d[d <= DIST_KM]))
     }),
-    shp_admin23$location
+    shp_admin2$location
 )
 
 centroid_coords <- centroids_sf |>
     st_coordinates() |>
     as_tibble() |>
     rename(lon = X, lat = Y) |>
-    mutate(location = shp_admin23$location)
+    mutate(location = shp_admin2$location)
 ```
 
 ## Population raster
@@ -145,12 +150,12 @@ pop_raster <- readr::read_rds("data/ppp_20km_mean_af_2017_20221123.rds")
 pop_raster <- terra::rast(pop_raster)
 
 POP_SCALE <- 344  # pixel area ~344 km²
-shp_pop   <- shp_admin23 |> st_make_valid() |> st_transform(crs(pop_raster))
+shp_pop   <- shp_admin2 |> st_make_valid() |> st_transform(crs(pop_raster))
 pop_vals  <- exactextractr::exact_extract(pop_raster, shp_pop,
                                           fun = "sum", progress = FALSE)
-shp_admin23$pop_sum <- pop_vals * POP_SCALE
+shp_admin2$pop_sum <- pop_vals * POP_SCALE
 
-pop_lookup <- shp_admin23 |>
+pop_lookup <- shp_admin2 |>
     sf::st_drop_geometry() |>
     dplyr::select(location, pop_sum)
 
@@ -399,6 +404,85 @@ bind_rows(
                  caption = sprintf("Model evaluation (k=2): outcome %d-%d, features %d-%d",
                                    PRED_OUT_START, PRED_OUT_END,
                                    PRED_FEAT_END - T_WINDOW + 1L, PRED_FEAT_END))
+```
+
+## Spatial cross-validation (LOCO)
+
+Leave-one-country-out (LOCO) CV: for each country, re-train on all other
+countries (pooled across the three temporal folds) and evaluate on the
+held-out country's locations. Tests geographic generalisability independent
+of temporal hold-out. Cross-border neighbour features for held-out locations
+may still reference training-set locations, which is realistic for prospective
+use.
+
+```{r spatial-cv}
+# Extract country from location (Continent::Country::ADM1::ADM2)
+get_country <- function(loc) str_split_fixed(loc, "::", 4)[, 2]
+
+train_sc  <- train_df |> mutate(country = get_country(location))
+countries <- sort(unique(train_sc$country))
+cat("Countries in training data:", length(countries), "\n")
+print(countries)
+
+fit_lr_sp <- function(tr)
+    glm(obs ~ ., data = tr[, c("obs", ALL_FEATURES)], family = binomial)
+
+fit_rf_sp <- function(tr)
+    ranger(obs ~ .,
+           data = tr[, c("obs", ALL_FEATURES)] |> mutate(obs = factor(obs)),
+           num.trees = 500L, probability = TRUE,
+           min.node.size = 5L,
+           mtry = max(1L, floor(sqrt(length(ALL_FEATURES)))),
+           seed = 42L)
+
+pred_rf_sp <- function(fit, te) {
+    p <- predict(fit, data = te)$predictions
+    if ("1" %in% colnames(p)) p[, "1"] else rep(0, nrow(te))
+}
+
+spat_cv <- map_dfr(countries, function(co) {
+    tr <- filter(train_sc, country != co)
+    te <- filter(train_sc, country == co)
+    # Skip if either split is degenerate
+    if (nrow(te) < 5L || var(tr$obs) == 0 || var(te$obs) == 0) return(NULL)
+
+    lr_p  <- tryCatch(predict(fit_lr_sp(tr), newdata = te, type = "response"),
+                      error = function(e) rep(NA_real_, nrow(te)))
+    rf_p  <- tryCatch(pred_rf_sp(fit_rf_sp(tr), te),
+                      error = function(e) rep(NA_real_, nrow(te)))
+    ens_p <- (lr_p + rf_p) / 2
+
+    bind_rows(
+        eval_model(te$obs, lr_p,  "Logistic"),
+        eval_model(te$obs, rf_p,  "Random Forest"),
+        eval_model(te$obs, ens_p, "Ensemble")
+    ) |> mutate(country = co, n_locs = nrow(te), prev = mean(te$obs))
+})
+
+cat(sprintf("LOCO folds evaluated: %d / %d countries\n",
+            n_distinct(spat_cv$country), length(countries)))
+
+# Per-country detail
+spat_cv |>
+    dplyr::select(country, Model, n_locs, prev, AUC_ROC, Spearman_rho, Brier) |>
+    arrange(country, Model) |>
+    knitr::kable(digits = 3, caption = "Spatial LOCO CV: per-country results")
+```
+
+```{r spatial-cv-summary}
+spat_cv |>
+    group_by(Model) |>
+    summarise(
+        n_countries = n_distinct(country),
+        mean_AUC    = mean(AUC_ROC,      na.rm = TRUE),
+        sd_AUC      = sd(AUC_ROC,        na.rm = TRUE),
+        mean_rho    = mean(Spearman_rho,  na.rm = TRUE),
+        sd_rho      = sd(Spearman_rho,   na.rm = TRUE),
+        mean_Brier  = mean(Brier,         na.rm = TRUE),
+        .groups = "drop"
+    ) |>
+    knitr::kable(digits = 3,
+                 caption = "Spatial LOCO CV: mean ± SD across countries")
 ```
 
 # Targeting Accuracy (Rho) and Optimal Alpha
@@ -1320,9 +1404,9 @@ ssa_sf <- sf::st_as_sf(rnaturalearthdata::countries50) |>
     dplyr::filter(subregion %in% c("Eastern Africa", "Middle Africa",
                                     "Southern Africa", "Western Africa")) |>
     sf::st_make_valid() |>
-    sf::st_transform(sf::st_crs(shp_admin23))
+    sf::st_transform(sf::st_crs(shp_admin2))
 
-shp_risk <- shp_admin23 |>
+shp_risk <- shp_admin2 |>
     left_join(pred_risk |> dplyr::select(location, risk_ens, obs),
               by = "location") |>
     filter(!is.na(risk_ens))
