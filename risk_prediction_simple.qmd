@@ -1608,3 +1608,160 @@ tibble(
                                    PRED_OUT_START, PRED_OUT_END,
                                    PRED_OUT_START_K3, PRED_OUT_END_K3))
 ```
+
+# Alternative: new outbreak emergence (year_start-based outcome)
+
+The previous sections define `obs = 1` if any outbreak was **active** in the
+outcome window — including outbreaks that started before the window and simply
+continued. Here we redefine the outcome using `year_start` only, so `obs = 1`
+iff a **new** outbreak emerged in the outcome window. This is a stricter and
+arguably more policy-relevant definition: can we predict where cholera will
+newly ignite?
+
+## Build datasets (new-emergence outcome)
+
+```{r build-datasets-new}
+# loc_year_new: one row per (location, year_start) — counts new outbreaks
+loc_year_new <- outbreak_events |>
+    filter(year_start %in% all_years) |>
+    count(location, year = year_start, name = "n_new") |>
+    right_join(expand_grid(location = all_locs, year = all_years),
+               by = c("location", "year")) |>
+    replace_na(list(n_new = 0L))
+
+cat("New-emergence table: rows =", nrow(loc_year_new),
+    "| overall annual prevalence =",
+    sprintf("%.1f%%\n", 100 * mean(loc_year_new$n_new > 0)))
+
+# Helper: build one fold with new-emergence outcome
+build_fold_new <- function(feat_end, out_start, out_end) {
+    feats   <- build_features(feat_end)
+    outcome <- loc_year_new |>
+        filter(year %in% out_start:out_end) |>
+        group_by(location) |>
+        summarise(obs = as.integer(sum(n_new) > 0L), .groups = "drop")
+    feats |>
+        left_join(outcome, by = "location") |>
+        replace_na(list(obs = 0L))
+}
+
+# Three temporal folds (k=2 window)
+fold1_new <- build_fold_new(2014L, 2015L, 2016L)
+fold2_new <- build_fold_new(2015L, 2016L, 2017L)
+fold3_new <- build_fold_new(2016L, 2017L, 2018L)
+train_new <- bind_rows(fold1_new, fold2_new, fold3_new)
+
+cat("Training folds (new-emergence, k=2):\n")
+cat(sprintf("  Fold 1: features 2010-2014 → outcome 2015-2016 | n=%d | prev=%.1f%%\n",
+            nrow(fold1_new), 100 * mean(fold1_new$obs)))
+cat(sprintf("  Fold 2: features 2011-2015 → outcome 2016-2017 | n=%d | prev=%.1f%%\n",
+            nrow(fold2_new), 100 * mean(fold2_new$obs)))
+cat(sprintf("  Fold 3: features 2012-2016 → outcome 2017-2018 | n=%d | prev=%.1f%%\n",
+            nrow(fold3_new), 100 * mean(fold3_new$obs)))
+cat(sprintf("Combined: n=%d | overall prevalence=%.1f%%\n",
+            nrow(train_new), 100 * mean(train_new$obs)))
+
+# Prediction: features 2014-2018 → new outbreaks in 2019-2020
+feat_pred_new <- build_features(2018L)
+
+outcome_pred_new <- loc_year_new |>
+    filter(year %in% 2019L:2020L) |>
+    group_by(location) |>
+    summarise(obs = as.integer(sum(n_new) > 0L), .groups = "drop")
+
+pred_new <- feat_pred_new |>
+    left_join(outcome_pred_new, by = "location") |>
+    replace_na(list(obs = 0L))
+
+cat(sprintf("\nPrediction: features 2014-2018 → new outbreaks 2019-2020\n"))
+cat(sprintf("n = %d | prevalence = %.1f%%\n",
+            nrow(pred_new), 100 * mean(pred_new$obs)))
+```
+
+## Fit models (new-emergence outcome)
+
+```{r fit-models-new}
+# ── 1. Logistic regression ────────────────────────────────────────────────────
+lr_fit_new <- glm(obs ~ ., data = train_new[, c("obs", ALL_FEATURES)],
+                  family = binomial)
+pred_new$pred_logistic <- predict(lr_fit_new, newdata = pred_new, type = "response")
+
+# ── 2. GAM ────────────────────────────────────────────────────────────────────
+gam_terms_new <- paste0(
+    "s(", gam_feats, ", k = ",
+    sapply(gam_feats, safe_k, dat = train_new), ")",
+    collapse = " + "
+)
+gam_fit_new <- tryCatch(
+    gam(as.formula(paste("obs ~", gam_terms_new)), data = train_new,
+        family = binomial, method = "REML"),
+    error = function(e) {
+        k2 <- safe_k("n_outbreak_years", train_new, 3L)
+        k3 <- safe_k("nbr_prop_outbreak", train_new, 3L)
+        gam(as.formula(sprintf(
+            "obs ~ s(n_outbreak_years, k=%d) + s(nbr_prop_outbreak, k=%d)", k2, k3)),
+            data = train_new, family = binomial, method = "REML")
+    }
+)
+pred_new$pred_gam <- as.numeric(predict(gam_fit_new, newdata = pred_new, type = "response"))
+
+# ── 3. Random forest ──────────────────────────────────────────────────────────
+set.seed(42)
+rf_fit_new <- ranger(
+    obs ~ ., data = train_new[, c("obs", ALL_FEATURES)] |> mutate(obs = factor(obs)),
+    num.trees = 500, probability = TRUE,
+    min.node.size = 5, mtry = max(1, floor(sqrt(length(ALL_FEATURES))))
+)
+rf_preds_new <- predict(rf_fit_new, data = pred_new)$predictions
+pred_new$pred_rf <- if ("1" %in% colnames(rf_preds_new)) rf_preds_new[, "1"] else rep(0, nrow(pred_new))
+
+pred_new$pred_ens <- (pred_new$pred_logistic + pred_new$pred_gam + pred_new$pred_rf) / 3
+
+cat("Models fitted (new-emergence). Prediction head:\n")
+pred_new |>
+    dplyr::select(location, obs, pred_logistic, pred_gam, pred_rf) |>
+    slice_head(n = 5) |>
+    knitr::kable(digits = 3)
+```
+
+## Evaluation and comparison with active-outbreak definition
+
+```{r eval-rho-new}
+eval_rho <- function(obs, pred, model, outcome_def) {
+    valid <- !is.na(pred) & !is.na(obs)
+    tibble(
+        outcome  = outcome_def,
+        model    = model,
+        spearman = cor(pred[valid], obs[valid], method = "spearman"),
+        auc_roc  = as.numeric(pROC::auc(pROC::roc(obs[valid], pred[valid], quiet = TRUE))),
+        brier    = mean((pred[valid] - obs[valid])^2)
+    )
+}
+
+# New-emergence OOS metrics
+metrics_new <- bind_rows(
+    eval_rho(pred_new$obs, pred_new$pred_logistic, "Logistic",      "new emergence"),
+    eval_rho(pred_new$obs, pred_new$pred_gam,      "GAM",           "new emergence"),
+    eval_rho(pred_new$obs, pred_new$pred_rf,       "Random Forest", "new emergence"),
+    eval_rho(pred_new$obs, pred_new$pred_ens,      "Ensemble",      "new emergence")
+)
+
+# Active-outbreak OOS metrics (recomputed for side-by-side comparison)
+pred_df_ens <- (pred_df$pred_logistic + pred_df$pred_gam + pred_df$pred_rf) / 3
+metrics_active <- bind_rows(
+    eval_rho(pred_df$obs, pred_df$pred_logistic, "Logistic",      "active outbreak"),
+    eval_rho(pred_df$obs, pred_df$pred_gam,      "GAM",           "active outbreak"),
+    eval_rho(pred_df$obs, pred_df$pred_rf,       "Random Forest", "active outbreak"),
+    eval_rho(pred_df$obs, pred_df_ens,           "Ensemble",      "active outbreak")
+)
+
+bind_rows(metrics_active, metrics_new) |>
+    pivot_wider(names_from = outcome, values_from = c(spearman, auc_roc, brier),
+                names_glue = "{outcome}_{.value}") |>
+    dplyr::select(model,
+                  `active outbreak_spearman`, `new emergence_spearman`,
+                  `active outbreak_auc_roc`,  `new emergence_auc_roc`,
+                  `active outbreak_brier`,    `new emergence_brier`) |>
+    knitr::kable(digits = 3,
+                 caption = "OOS performance (2019-2020): active-outbreak vs new-emergence outcome")
+```
