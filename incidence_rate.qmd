@@ -74,8 +74,22 @@ shp_admin2 <- shp_all |>
     filter(!is.na(location), str_count(location, "::") == 3L) |>
     st_make_valid()
 
+# Flag and remove degenerate sliver polygons before population extraction.
+# A valid ADM2 health district cannot be < 1 km²; polygons that small are
+# geometry artefacts that yield nonsensical population estimates (e.g. Moba
+# Health District has a 0.098 km² sliver giving pop = 318 despite ~1400 cases).
+shp_admin2$area_km2 <- as.numeric(st_area(shp_admin2)) / 1e6
+slivers <- shp_admin2 |> st_drop_geometry() |>
+    filter(area_km2 < 1) |>
+    select(location, area_km2)
+if (nrow(slivers) > 0) {
+    cat("Removing", nrow(slivers), "sliver polygon(s) (area < 1 km²):\n")
+    print(slivers)
+}
+shp_admin2 <- shp_admin2 |> filter(area_km2 >= 1)
+
 stopifnot(!anyDuplicated(shp_admin2$location))
-cat("ADM2 polygons:", nrow(shp_admin2), "\n")
+cat("ADM2 polygons after sliver removal:", nrow(shp_admin2), "\n")
 ```
 
 ## Population raster
