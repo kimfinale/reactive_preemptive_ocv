@@ -1,0 +1,285 @@
+---
+title: "ADM2 Cholera Incidence Rate (2010–2014)"
+author: "Jong-Hoon Kim"
+date: "`r Sys.Date()`"
+format:
+  html:
+    html-math-method: katex
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    embed-resources: true
+editor_options:
+  chunk_output_type: console
+---
+
+## Overview
+
+This document selects ADM2 sites from the outbreak surveillance data and
+computes the mean annual cholera incidence rate (cases per 100,000 person-years)
+for each site over the 2010–2014 period. Population is derived by summing the
+WorldPop density raster over each ADM2 polygon.
+
+# Setup
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(tidyverse)
+library(sf)
+library(terra)
+library(exactextractr)
+library(scales)
+library(knitr)
+```
+
+# Data
+
+## Outbreak surveillance
+
+```{r load-data}
+ts_outbreak <- readr::read_rds(
+    "data/outbreak_files_Oct2024/time_series_outbreak_extraction.rds"
+)
+
+# Restrict to ADM2 level (location string has exactly 3 '::' separators,
+# i.e. Continent::Country::ADM1::ADM2).
+ts2 <- ts_outbreak |>
+    mutate(adm = str_count(location, "::") - 1L) |>
+    filter(adm == 2L)
+
+cat("ADM2 time-series rows:", nrow(ts2), "\n")
+cat("Unique ADM2 locations:", n_distinct(ts2$location), "\n")
+cat("Columns:", paste(names(ts2), collapse = ", "), "\n")
+```
+
+## Shapefiles
+
+```{r load-shapefiles}
+shp_all <- readr::read_rds(
+    "data/outbreak_files_Oct2024/outbreak_shapefiles.rds"
+)
+
+# Keep the most recent location_period_id per location (see risk_prediction_simple.qmd
+# for the full multi-period analysis justifying this choice: 7 locations have >1
+# period ID; 4 have identical polygons, 3 have minor-to-moderate revisions; in
+# all cases the most recent boundary is appropriate for analysis).
+loc_id_map <- ts2 |>
+    distinct(location_period_id, location) |>
+    group_by(location) |>
+    slice_max(as.integer(location_period_id), n = 1, with_ties = FALSE) |>
+    ungroup()
+
+shp_admin2 <- shp_all |>
+    left_join(loc_id_map, by = c("lctn_pr" = "location_period_id")) |>
+    filter(!is.na(location), str_count(location, "::") == 3L) |>
+    st_make_valid()
+
+stopifnot(!anyDuplicated(shp_admin2$location))
+cat("ADM2 polygons:", nrow(shp_admin2), "\n")
+```
+
+## Population raster
+
+```{r load-population}
+pop_raster <- readr::read_rds("data/ppp_20km_mean_af_2017_20221123.rds")
+pop_raster <- terra::rast(pop_raster)
+
+# The raster stores population density (persons per km²) in WGS84 at 1/6° × 1/6°
+# resolution. The geodetic pixel area at the African mid-latitude (~1.3°N) is:
+# (1/6 × 111.32)² × cos(1.3°) ≈ 344 km². Summing density values over a polygon
+# and multiplying by POP_SCALE gives total head-count.
+POP_SCALE <- 344  # pixel area: (1/6 * 111.32)^2 * cos(1.3 * pi/180) ≈ 344 km²
+
+shp_pop  <- shp_admin2 |> st_transform(crs(pop_raster))
+pop_vals <- exactextractr::exact_extract(pop_raster, shp_pop,
+                                         fun = "sum", progress = FALSE)
+shp_admin2$pop_sum <- pop_vals * POP_SCALE
+
+cat("Total population:", format(round(sum(shp_admin2$pop_sum, na.rm = TRUE)),
+                                big.mark = ","), "\n")
+```
+
+# ADM2 Site Selection
+
+Select ADM2 sites that have at least one recorded outbreak **starting** in the
+2010–2014 period. Sites with no outbreak record are retained as well (zero
+cases), to keep the denominator consistent across sites and allow comparison
+of high- and low-incidence areas.
+
+```{r select-sites}
+STUDY_YEARS <- 2010:2014
+
+# Collapse time-series rows to one row per outbreak event.
+# sCh: suspected cholera cases reported during each time-step.
+outbreak_events <- ts2 |>
+    group_by(location, location_period_id, outbreak_number) |>
+    summarise(
+        year_start  = year(min(TL)),
+        year_end    = year(max(TR)),
+        total_cases = sum(sCh, na.rm = TRUE),
+        .groups     = "drop"
+    )
+
+# Sum cases by (location, year) using year_start as the index year.
+# Using year_start ensures each outbreak is counted only once, in the year
+# it first emerged, avoiding double-counting for multi-year outbreaks.
+cases_annual <- outbreak_events |>
+    filter(year_start %in% STUDY_YEARS) |>
+    group_by(location, year = year_start) |>
+    summarise(cases = sum(total_cases, na.rm = TRUE), .groups = "drop")
+
+# Complete the panel: fill zeros for location-years with no outbreak.
+all_locs <- unique(ts2$location)
+cases_panel <- cases_annual |>
+    right_join(expand_grid(location = all_locs, year = STUDY_YEARS),
+               by = c("location", "year")) |>
+    replace_na(list(cases = 0))
+
+cat("Location-year observations:", nrow(cases_panel), "\n")
+cat("Locations with ≥1 case in 2010-2014:",
+    n_distinct(cases_panel$location[cases_panel$cases > 0]), "\n")
+```
+
+# Incidence Rate Computation
+
+Incidence rate = total cases over 2010–2014 divided by (population × 5 years),
+expressed per 100,000 person-years.
+
+```{r compute-incidence}
+# Sum cases over 2010-2014 for each location.
+cases_total <- cases_panel |>
+    group_by(location) |>
+    summarise(
+        total_cases   = sum(cases),
+        n_years       = n_distinct(year),   # should be 5 for all locations
+        .groups       = "drop"
+    )
+
+# Join population and compute incidence rate.
+pop_lookup <- shp_admin2 |>
+    sf::st_drop_geometry() |>
+    dplyr::select(location, pop_sum)
+
+incidence_df <- cases_total |>
+    left_join(pop_lookup, by = "location") |>
+    filter(!is.na(pop_sum), pop_sum > 0) |>
+    mutate(
+        # person-years = population × number of years observed
+        person_years    = pop_sum * n_years,
+        # incidence rate per 100,000 person-years
+        incidence_rate  = total_cases / person_years * 1e5
+    ) |>
+    arrange(desc(incidence_rate))
+
+cat("Sites with computable incidence rate:", nrow(incidence_df), "\n")
+cat(sprintf("Incidence rate range: %.2f – %.2f per 100,000 person-years\n",
+            min(incidence_df$incidence_rate),
+            max(incidence_df$incidence_rate)))
+```
+
+# Results
+
+## Summary table (top 20 sites by incidence rate)
+
+```{r table-top20}
+incidence_df |>
+    slice_head(n = 20) |>
+    dplyr::select(location, total_cases, pop_sum, person_years, incidence_rate) |>
+    mutate(pop_sum      = round(pop_sum),
+           person_years = round(person_years)) |>
+    knitr::kable(
+        digits  = c(0, 0, 0, 0, 2),
+        col.names = c("Location", "Total cases", "Population",
+                      "Person-years", "Rate per 100k py"),
+        caption = "Top 20 ADM2 sites by mean annual cholera incidence rate (2010–2014)"
+    )
+```
+
+## Distribution of incidence rates
+
+```{r fig-incidence-dist, fig.width=10, fig.height=4}
+#| fig-cap: "Left: histogram of incidence rates across all ADM2 sites (log10 scale,
+#|   excluding zero-case sites). Right: empirical CDF. Both exclude sites with
+#|   zero total cases."
+
+df_nonzero <- incidence_df |> filter(total_cases > 0)
+
+p_hist <- ggplot(df_nonzero, aes(x = incidence_rate)) +
+    geom_histogram(bins = 40, fill = "steelblue", colour = "white", linewidth = 0.2) +
+    scale_x_log10(labels = comma) +
+    labs(x = "Incidence rate per 100,000 py (log scale)",
+         y = "Number of ADM2 sites",
+         title = sprintf("Distribution across %d sites with ≥1 case",
+                         nrow(df_nonzero))) +
+    theme_minimal(base_size = 11)
+
+p_cdf <- ggplot(df_nonzero |> arrange(incidence_rate) |>
+                    mutate(ecdf = seq_len(n()) / n()),
+                aes(x = incidence_rate, y = ecdf)) +
+    geom_line(colour = "steelblue", linewidth = 0.9) +
+    scale_x_log10(labels = comma) +
+    labs(x = "Incidence rate per 100,000 py (log scale)",
+         y = "Cumulative proportion of sites",
+         title = "ECDF of incidence rates") +
+    theme_minimal(base_size = 11)
+
+library(patchwork)
+p_hist + p_cdf
+```
+
+## Map of incidence rates
+
+```{r fig-incidence-map, fig.width=10, fig.height=8}
+#| fig-cap: "Mean annual cholera incidence rate (2010–2014) per ADM2. Grey =
+#|   sub-Saharan Africa country boundaries. Sites with zero cases are shown in
+#|   light grey."
+
+library(rnaturalearthdata)
+
+ssa_sf <- sf::st_as_sf(rnaturalearthdata::countries50) |>
+    dplyr::filter(subregion %in% c("Eastern Africa", "Middle Africa",
+                                    "Southern Africa", "Western Africa")) |>
+    sf::st_make_valid() |>
+    sf::st_transform(sf::st_crs(shp_admin2))
+
+shp_rate <- shp_admin2 |>
+    left_join(incidence_df |> dplyr::select(location, incidence_rate),
+              by = "location") |>
+    replace_na(list(incidence_rate = 0))
+
+ssa_bbox <- sf::st_bbox(ssa_sf)
+
+ggplot() +
+    geom_sf(data = ssa_sf,  fill = "grey85", colour = "grey60", linewidth = 0.2) +
+    geom_sf(data = shp_rate, aes(fill = incidence_rate), colour = NA) +
+    scale_fill_viridis_c(
+        option    = "magma", direction = -1,
+        trans     = "log1p",
+        breaks    = c(0, 1, 10, 100, 1000),
+        labels    = c("0", "1", "10", "100", "1000"),
+        name      = "Rate\n(per 100k py)"
+    ) +
+    coord_sf(xlim = ssa_bbox[c("xmin", "xmax")],
+             ylim = ssa_bbox[c("ymin", "ymax")]) +
+    labs(title    = "Cholera incidence rate 2010–2014 (ADM2)",
+         subtitle = "Cases attributed to year_start; population from WorldPop 2017 raster") +
+    theme_minimal(base_size = 11) +
+    theme(panel.grid  = element_blank(),
+          axis.text   = element_blank(),
+          axis.ticks  = element_blank(),
+          legend.position = "right")
+```
+
+## Full incidence table
+
+```{r table-full}
+incidence_df |>
+    dplyr::select(location, total_cases, pop_sum, incidence_rate) |>
+    mutate(pop_sum = round(pop_sum)) |>
+    knitr::kable(
+        digits    = c(0, 0, 0, 2),
+        col.names = c("Location", "Total cases (2010–2014)",
+                      "Population", "Rate per 100k py"),
+        caption   = "Cholera incidence rates for all ADM2 sites (2010–2014)"
+    )
+```

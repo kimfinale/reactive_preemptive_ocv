@@ -52,6 +52,8 @@ source("R/spatial_setup.R")
 ts_outbreak <- readr::read_rds(
     "data/outbreak_files_Oct2024/time_series_outbreak_extraction.rds"
 )
+# ts23 keeps ADM2 and ADM3 rows (adm count = separators - 1); ts2 is ADM2-only.
+# We use ts2 for modelling so each spatial unit is consistently at ADM2 level.
 ts23 <- ts_outbreak |>
     mutate(adm = str_count(location, "::") - 1L) |>
     filter(adm %in% c(2, 3))
@@ -60,6 +62,9 @@ ts2 <- ts_outbreak |>
     mutate(adm = str_count(location, "::") - 1L) |>
     filter(adm %in% c(2))
 
+# Collapse time-series rows into one row per outbreak event to get duration
+# and total cases; grouping by location_period_id retains administrative
+# boundary changes over time.
 outbreak_events <- ts2 |>
     group_by(location, adm, location_period_id, outbreak_number) |>
     # group_by(location_period_id, outbreak_number) |>
@@ -74,6 +79,9 @@ outbreak_events <- ts2 |>
 all_years <- 2010:2023
 all_locs  <- unique(ts2$location)
 
+# outbreak_year_summary: one row per (location, year) classified by year_end.
+# The right_join with expand_grid fills in zeros for location-years with no
+# recorded outbreak, so every location has a complete annual panel.
 outbreak_year_summary <- outbreak_events |>
     filter(year_end %in% all_years) |>
     group_by(location, year = year_end) |>
@@ -89,7 +97,10 @@ outbreak_year_summary <- outbreak_events |>
     replace_na(list(outbreak_count = 0L, total_cases = 0,
                     max_duration_days = 0, mean_duration_days = 0))
 
-# loc_year_full: outbreaks active in each year
+# loc_year_full: counts outbreaks *active* in each calendar year (not just
+# those that ended that year). An outbreak spanning 2015-2017 contributes to
+# n_active for all three years. pmin caps year_end at 2023 to avoid expanding
+# beyond the study period. This is the outcome used for model training.
 loc_year_full <- outbreak_events |>
     mutate(years = map2(year_start, pmin(year_end, 2023L), seq)) |>
     unnest(years) |>
@@ -109,6 +120,82 @@ cat("Locations:", length(all_locs), "| Years:", range(all_years), "\n")
 shp_all <- readr::read_rds(
     "data/outbreak_files_Oct2024/outbreak_shapefiles.rds"
 )
+# Only 7 locations have multiple period IDs. Polygons were compared pairwise
+# using two metrics:
+#   IoU (Intersection over Union) = area(A ∩ B) / area(A ∪ B): ranges 0–1,
+#     where 1 = identical polygons and 0 = no shared area. It measures what
+#     fraction of the combined footprint both periods agree on, making it more
+#     informative than comparing areas alone (two polygons can have equal area
+#     but be in completely different locations).
+#   Centroid distance (km): straight-line distance between polygon centres;
+#     complements IoU by detecting spatial displacement even when shapes are similar.
+#
+# Results:
+#   - 4 pairs: IoU = 1.000, centroid distance ≈ 0 km — identical polygons,
+#     purely an administrative re-registration with no geographic change.
+#   - 2 pairs: IoU = 0.822–0.944, centroid distance < 1.3 km — minor boundary
+#     revisions; the polygons largely agree.
+#   - 1 pair (AFR::KEN::Nor…): IoU = 0.719, centroid distance = 43 km — the
+#     location string is coarser than the polygon; the two period IDs likely
+#     reflect a district split/merge. The newer boundary is correct for prospective use.
+# In all cases slice_max (most recent period ID) is the appropriate choice.
+# Exactly one polygon per location is required: the distance matrix and
+# exact_extract would produce duplicate rows / double-counted population otherwise.
+
+# ── Supporting evidence: multi-period location analysis ───────────────────────
+multi_period <- ts2 |>
+    distinct(location_period_id, location) |>
+    group_by(location) |>
+    filter(n() > 1) |>
+    arrange(location, as.integer(location_period_id)) |>
+    ungroup()
+cat("Locations with >1 period ID:", n_distinct(multi_period$location),
+    "out of", n_distinct(ts2$location), "total\n")
+
+shp_multi <- shp_all |>
+    filter(lctn_pr %in% multi_period$location_period_id) |>
+    left_join(multi_period, by = c("lctn_pr" = "location_period_id")) |>
+    st_make_valid() |>
+    arrange(location, as.integer(lctn_pr))
+
+poly_comparison <- multi_period |>
+    distinct(location) |>
+    pull(location) |>
+    map_dfr(function(loc) {
+        rows <- shp_multi |> filter(location == loc)
+        ids  <- rows$lctn_pr
+        combn(seq_len(nrow(rows)), 2, simplify = FALSE) |>
+            map_dfr(function(idx) {
+                a <- rows[idx[1], ]; b <- rows[idx[2], ]
+                area_a  <- as.numeric(st_area(a)) / 1e6
+                area_b  <- as.numeric(st_area(b)) / 1e6
+                inter   <- as.numeric(st_area(st_intersection(a, b))) / 1e6
+                union_  <- area_a + area_b - inter
+                tibble(
+                    location    = loc,
+                    period_id_a = ids[idx[1]],
+                    period_id_b = ids[idx[2]],
+                    area_a_km2  = area_a,
+                    area_b_km2  = area_b,
+                    ctr_dist_km = as.numeric(st_distance(
+                        st_centroid(a), st_centroid(b))) / 1000,
+                    iou         = if (union_ > 0) inter / union_ else NA_real_
+                )
+            })
+    })
+
+poly_comparison |>
+    knitr::kable(digits = 3,
+                 caption = paste("Pairwise polygon comparison for the",
+                                 n_distinct(multi_period$location),
+                                 "locations with multiple period IDs.",
+                                 "IoU = 1: identical polygon;",
+                                 "ctr_dist_km ≈ 0: no spatial shift."))
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Confirm: every location_period_id in ts2 has a polygon in shp_all.
+stopifnot(sum(!ts2$location_period_id %in% shp_all$lctn_pr) == 0)
+
 loc_id_map <- ts2 |>
     distinct(location_period_id, location) |>
     group_by(location) |>
@@ -117,15 +204,20 @@ loc_id_map <- ts2 |>
 
 shp_admin2 <- shp_all |>
     left_join(loc_id_map, by = c("lctn_pr" = "location_period_id")) |>
-    filter(!is.na(location), str_count(location, "::") %in% c(3, 4))
+    filter(!is.na(location), str_count(location, "::") %in% c(3))
 
+# Confirm: one polygon per location, all locations in ts2 are covered.
+stopifnot(!anyDuplicated(shp_admin2$location))
+stopifnot(all(unique(ts2$location) %in% shp_admin2$location))
 cat("ADM2 polygons:", nrow(shp_admin2), "\n")
-
-# 50 km neighbour list
+# 50 km threshold: captures immediate neighbours without reaching distant units.
+# st_point_on_surface is used instead of st_centroid because it guarantees
+# the point lies inside the polygon (important for elongated shapes).
 DIST_KM <- 50
 centroids_sf <- shp_admin2 |> st_make_valid() |> st_point_on_surface()
 dist_mat <- st_distance(centroids_sf) |> units::drop_units() / 1000
 rownames(dist_mat) <- colnames(dist_mat) <- shp_admin2$location
+# Set diagonal to Inf so a location is never its own neighbour.
 diag(dist_mat) <- Inf
 
 nbr_list <- setNames(
@@ -149,12 +241,19 @@ centroid_coords <- centroids_sf |>
 pop_raster <- readr::read_rds("data/ppp_20km_mean_af_2017_20221123.rds")
 pop_raster <- terra::rast(pop_raster)
 
-POP_SCALE <- 344  # pixel area ~344 km²
+# The raster stores population *density* (persons per km²) in geographic
+# coordinates (WGS84) at 1/6° × 1/6° resolution (~18.5 km per side near the
+# equator). The mid-latitude of the African extent is ~1.3°N, so the geodetic
+# pixel area is: (1/6° × 111.32 km/°)² × cos(1.3°) ≈ 344 km².
+# Multiplying the summed density values by POP_SCALE converts to a head-count
+# estimate per polygon.
+POP_SCALE <- 344  # pixel area: (1/6 * 111.32)^2 * cos(1.3 * pi/180) ≈ 344 km²
 shp_pop   <- shp_admin2 |> st_make_valid() |> st_transform(crs(pop_raster))
 pop_vals  <- exactextractr::exact_extract(pop_raster, shp_pop,
                                           fun = "sum", progress = FALSE)
 shp_admin2$pop_sum <- pop_vals * POP_SCALE
 
+# Separate lookup table so geometry is not carried into downstream data frames.
 pop_lookup <- shp_admin2 |>
     sf::st_drop_geometry() |>
     dplyr::select(location, pop_sum)
@@ -169,6 +268,8 @@ Features are built from a T=5-year rolling window ending at a given year.
 Twelve same-unit features and six neighbour-aggregated features are used.
 
 ```{r build-features-fn}
+# T_WINDOW = 5 years: long enough to estimate trend and frequency, short enough
+# to remain predictive for a 2-year outcome window without data leakage.
 T_WINDOW <- 5L
 
 build_features <- function(year_end, T = T_WINDOW) {
@@ -189,6 +290,9 @@ build_features <- function(year_end, T = T_WINDOW) {
             .groups = "drop"
         )
 
+    # recent_1yr / recent_2yr: short-horizon recency features that capture
+    # momentum — locations active just before the outcome window are at higher
+    # immediate risk, even if their 5-year average is moderate.
     recent_1yr <- outbreak_year_summary |>
         filter(year == year_end) |>
         transmute(location, recent_outbreak = as.integer(outbreak_count > 0))
@@ -214,6 +318,9 @@ build_features <- function(year_end, T = T_WINDOW) {
         group_by(location) |>
         summarise(last_ob_year = max(year), .groups = "drop")
 
+    # years_since_last_outbreak: locations with no outbreak in the window get
+    # n_yrs + 1 rather than NA, ensuring they sort beyond all active locations
+    # and are treated as "long dormant" by tree-based models.
     yrs_since <- tibble(location = all_locs) |>
         left_join(last_ob, by = "location") |>
         mutate(years_since_last_outbreak = ifelse(
@@ -236,12 +343,16 @@ build_features <- function(year_end, T = T_WINDOW) {
             trend = 0, trend_cases = 0
         ))
 
-    # Neighbour features
+    # Neighbour features aggregate the same metrics over the 50 km neighbourhood.
+    # Spatial spillover (e.g. from cross-border movement, shared water sources)
+    # means a location's own history alone may understate its risk.
     make_nbr_feat <- function(values, locs, fun = mean) {
         sv <- setNames(values, locs)
         map_dbl(locs, function(loc) {
             nbrs <- nbr_list[[loc]]
             if (is.null(nbrs) || length(nbrs) == 0L) return(0)
+            # Restrict to neighbours present in the current feature set
+            # (some locations may be absent due to boundary changes).
             nbrs <- nbrs[nbrs %in% names(sv)]
             if (length(nbrs) == 0L) return(0)
             fun(sv[nbrs])
@@ -281,6 +392,9 @@ cat("Features:", length(ALL_FEATURES), "\n")
 
 ```{r build-datasets}
 # ── k=2 outcome window: three training folds ──────────────────────────────────
+# obs = 1 if any outbreak was active in at least one year of the outcome window.
+# Pooling three temporal folds multiplies the effective sample size and exposes
+# the model to different epidemic phases (early 2010s vs. mid 2010s).
 build_fold <- function(feat_end, out_start, out_end) {
     feats   <- build_features(feat_end)
     outcome <- loc_year_full |>
@@ -296,6 +410,8 @@ fold1 <- build_fold(2014L, 2015L, 2016L)   # features 2010-2014 → outcome 2015
 fold2 <- build_fold(2015L, 2016L, 2017L)   # features 2011-2015 → outcome 2016-2017
 fold3 <- build_fold(2016L, 2017L, 2018L)   # features 2012-2016 → outcome 2017-2018
 
+# Folds overlap in time but not in the outcome window, so they are not
+# identical; pooling them is standard practice for temporal CV.
 train_df <- bind_rows(fold1, fold2, fold3)
 
 cat("Training folds (k=2):\n")
@@ -341,10 +457,14 @@ lr_fit <- glm(obs ~ ., data = train_df[, c("obs", ALL_FEATURES)],
 pred_df$pred_logistic <- predict(lr_fit, newdata = pred_df, type = "response")
 
 # ── 2. GAM ───────────────────────────────────────────────────────────────────
+# GAM uses a reduced feature set to avoid over-parameterisation; these six
+# features were selected as the most interpretable and non-collinear subset.
 gam_feats <- c("n_outbreak_years", "mean_cases_per_year",
                "recent_2yr_outbreaks", "years_since_last_outbreak",
                "nbr_prop_outbreak", "nbr_mean_cases")
 
+# safe_k caps the spline basis dimension at min(kmax, unique_values - 1) to
+# prevent rank-deficiency errors when a feature has few distinct values.
 safe_k <- function(feat, dat, kmax = 5L)
     max(3L, min(kmax, length(unique(dat[[feat]])) - 1L))
 
@@ -371,9 +491,12 @@ set.seed(42)
 rf_fit <- ranger(
     obs ~ ., data = train_df[, c("obs", ALL_FEATURES)] |> mutate(obs = factor(obs)),
     num.trees = 500, probability = TRUE,
-    min.node.size = 5, mtry = max(1, floor(sqrt(length(ALL_FEATURES))))
+    min.node.size = 5,
+    # mtry = sqrt(p) is the standard default for classification forests.
+    mtry = max(1, floor(sqrt(length(ALL_FEATURES))))
 )
 rf_preds <- predict(rf_fit, data = pred_df)$predictions
+# Column "1" is the predicted probability of the positive class (outbreak = 1).
 pred_df$pred_rf <- if ("1" %in% colnames(rf_preds)) rf_preds[, "1"] else rep(0, nrow(pred_df))
 
 cat("Models fitted. Prediction head:\n")
@@ -534,7 +657,8 @@ rho_table |>
                  caption = sprintf("Spearman rho: in-sample (training folds) vs out-of-sample (%d-%d)",
                                    PRED_OUT_START, PRED_OUT_END))
 
-# Best model by out-of-sample rho (used as targeting score in MC below)
+# Identify the best single model by OOS rho; used to anchor the 2×rho
+# sensitivity scenario in the MC cost analysis.
 best_model_name <- rho_oos |> slice_max(rho, n = 1) |> pull(Model)
 rho_best_oos    <- rho_oos |> filter(Model == best_model_name) |> pull(rho)
 cat(sprintf("\nBest model (OOS): %s  rho = %.3f\n", best_model_name, rho_best_oos))
@@ -544,11 +668,17 @@ cat(sprintf("\nBest model (OOS): %s  rho = %.3f\n", best_model_name, rho_best_oo
 
 ```{r mc-helpers}
 # ── Beta-Binomial MLE ──────────────────────────────────────────────────────
+# Fits a Beta-Binomial to the empirical distribution of outbreak counts per
+# location. The Beta prior on p captures between-location heterogeneity in
+# baseline risk, which a simple Binomial would ignore.
 fit_betabinom <- function(k_obs, n_trials) {
     ll <- function(par, k, n) {
+        # Parameters are optimised on log scale to enforce positivity (a, b > 0).
         a <- exp(par[1]); b <- exp(par[2])
         sum(lchoose(n, k) + lbeta(k + a, n - k + b) - lbeta(a, b))
     }
+    # Method-of-moments starting values for a and b derived from observed mean
+    # and variance of the rate p = k/n.
     p_init <- mean(k_obs) / n_trials
     v_init <- var(k_obs / n_trials)
     a_init <- max(p_init * (p_init * (1 - p_init) / max(v_init, 1e-6) - 1), 0.1)
@@ -682,9 +812,13 @@ classifier_metrics <- function(score, binary, label = "Ensemble") {
 make_rank_score <- function(truth, target_rho, seed = 123) {
     set.seed(seed)
     n        <- length(truth)
+    # Map ranks to normal quantiles so the copula operates in Gaussian space.
     z_truth  <- qnorm(rank(truth, ties.method = "random") / (n + 1))
     z_noise  <- rnorm(n)
+    # Convert target Spearman rho to the equivalent Pearson correlation under
+    # the Gaussian copula: rho_P = 2 sin(pi * rho_S / 6).
     rho_p    <- 2 * sin(pi * target_rho / 6)  # Gaussian copula: Spearman → Pearson
+    # Linear blend of signal and noise at the specified Pearson correlation.
     z_blend  <- rho_p * z_truth + sqrt(1 - rho_p^2) * z_noise
     pnorm(z_blend)
 }
@@ -697,13 +831,16 @@ make_rank_score <- function(truth, target_rho, seed = 123) {
 # k_obs = number of outbreak years per location in the prediction window
 N_TRIALS <- 2L
 
-# Merge predicted risks with population and 2018-2020 outcomes
+# sim_df is the master data frame for the Monte Carlo analysis; it unifies
+# predicted probabilities, population weights, and observed outbreak counts.
 sim_df <- pred_df |>
     mutate(risk_ens = (pred_logistic + pred_gam + pred_rf) / 3) |>
     left_join(pop_lookup, by = "location") |>
     filter(!is.na(risk_ens), !is.na(pop_sum), pop_sum > 0)
 
-# n_outbreak_years = count of years in 2018-2020 with active outbreak
+# n_outbreak_years: count of years in the prediction window with an active
+# outbreak (0, 1, or 2 for a 2-year window). Used as the observed count for
+# Beta-Binomial fitting.
 ob_counts <- loc_year_full |>
     filter(year %in% PRED_OUT_START:PRED_OUT_END) |>
     group_by(location) |>
@@ -713,9 +850,14 @@ sim_df <- sim_df |>
     dplyr::select(-any_of("n_outbreak_years")) |>
     left_join(ob_counts, by = "location") |>
     replace_na(list(n_outbreak_years = 0L)) |>
-    mutate(obs_rate   = n_outbreak_years / N_TRIALS,
-           obs_binary = as.integer(n_outbreak_years > 0),
-           country    = str_split_fixed(location, "::", 4)[, 2])
+    mutate(
+        # obs_rate: continuous fraction (0, 0.5, or 1) used in Beta-Binomial MLE
+        # and as the ground-truth probability in MC simulations.
+        obs_rate   = n_outbreak_years / N_TRIALS,
+        # obs_binary: binary indicator for classifier evaluation (AUC, Brier).
+        obs_binary = as.integer(n_outbreak_years > 0),
+        country    = str_split_fixed(location, "::", 4)[, 2]
+    )
 
 cat(sprintf("Simulation data: %d locations, %.0f M population\n",
             nrow(sim_df), sum(sim_df$pop_sum) / 1e6))
@@ -824,6 +966,11 @@ An additional "Ensemble (2×ρ)" scenario doubles the ensemble's out-of-sample
 targeting accuracy to explore the sensitivity to improved risk intelligence.
 
 ```{r mc-alpha-star}
+# R = C_I / C_V: cost ratio illness-to-vaccine (500 ≈ moderate-high for cholera).
+# nu = 1: pre-emptive vaccine effectiveness assumed perfect.
+# AR = 0.005: attack rate (0.5%), applied to outbreak locations.
+# f: vaccination coverage fraction swept over two values.
+# r: reactive effectiveness (fraction of cases averted), swept over two values.
 R_val       <- 500
 nu_val      <- 1
 AR_val      <- 0.005
@@ -841,7 +988,8 @@ STRATEGY_COLOURS <- c(
     `Ensemble (2x rho)` = "firebrick"
 )
 
-# Synthetic score with 2× ensemble rho
+# score_2rho: hypothetical targeting score with twice the ensemble's actual rho,
+# representing improved risk intelligence (e.g., from better surveillance data).
 score_2rho <- make_rank_score(sim_df$obs_rate, target_rho = 2 * rho_ens_oos)
 
 strategies <- list(
@@ -905,6 +1053,8 @@ cost_curves <- map_dfr(f_values_mc, function(fv) {
     })
 })
 
+# optima_pts: the grid point closest to alpha* for each strategy/f/r combination,
+# used to place the diamond marker on the cost curve plot.
 optima_pts <- cost_curves |>
     left_join(alpha_results |> dplyr::select(strategy, f, r, alpha_star_pw),
               by = c("strategy", "f", "r")) |>
@@ -1312,7 +1462,8 @@ cdf_all <- pred_long |>
     group_modify(~make_cdf(.x)) |>
     ungroup()
 
-# 200M cutoff using ensemble
+# Find the risk threshold above which ~200 million people live; used as a
+# policy-relevant reference line on the cumulative population plot.
 ens_sorted <- pred_risk |> arrange(risk_ens)
 cum_pop_ens <- cumsum(ens_sorted$pop_sum)
 n_cut <- which(cum_pop_ens >= 200e6)[1]
@@ -1621,7 +1772,10 @@ newly ignite?
 ## Build datasets (new-emergence outcome)
 
 ```{r build-datasets-new}
-# loc_year_new: one row per (location, year_start) — counts new outbreaks
+# loc_year_new: indexes outbreaks by year_start (first detected year) rather
+# than year_end. This gives a strictly "new emergence" outcome — only locations
+# where a fresh outbreak ignited in the window count as positive, not locations
+# with a long-running outbreak that simply continued from a prior period.
 loc_year_new <- outbreak_events |>
     filter(year_start %in% all_years) |>
     count(location, year = year_start, name = "n_new") |>
