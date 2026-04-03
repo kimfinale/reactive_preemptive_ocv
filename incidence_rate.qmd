@@ -465,66 +465,75 @@ ggplot(results, aes(x = rho, y = cases_per_1k_doses,
 
 ## Revised cost model
 
-The original framework normalises expected costs by $C_V$, where:
+We define the cost ratio at the **individual level**:
 
 $$
-C_I = a \cdot c_i \cdot N, \qquad C_V = c_v \cdot C \cdot N,
+R = \frac{c_i}{c_v},
 $$
 
-with $a$ = attack rate (fraction of population infected per outbreak), $c_i$ = per-case
-illness cost, $c_v$ = per-person vaccination cost, $C$ = vaccine coverage proportion,
-and $N$ = population size. Because both costs scale with $N$, it cancels throughout and
-the cost ratio is:
+where $c_i$ is the cost of illness per infected person and $c_v$ is the cost of
+vaccination per person. The population-level costs are then:
 
 $$
-R = \frac{C_I}{C_V} = \frac{a \cdot c_i}{c_v \cdot C}.
+C_I = a \cdot c_i \cdot N = a \cdot R \cdot c_v \cdot N,
+\qquad
+C_V = C \cdot c_v \cdot N,
 $$
 
-The normalised single-population expected costs are then:
+with $a$ = attack rate (fraction of the population infected during an outbreak),
+$C$ = vaccine coverage proportion (fraction of the population vaccinated), and
+$N$ = population size. Normalising by $c_v \cdot N$ (i.e. the cost of vaccinating
+every person once), the single-population expected costs are:
 
 $$
-c_\text{pre}^{(1)} = 1 + p(1-\nu)R, \qquad
-c_\text{react}^{(1)} = p\bigl[1 + (1-r)R\bigr],
+c_\text{pre}^{(1)} = C + p\,a\,(1-\nu)\,R, \qquad
+c_\text{react}^{(1)} = p\bigl[C + a\,(1-r)\,R\bigr],
 $$
 
-where $p$ is the probability of an outbreak in a given period.
+where $p$ is the outbreak probability. Setting
+$c_\text{pre}^{(1)} = c_\text{react}^{(1)}$ gives the critical probability:
+
+$$
+p_\text{crit}^{(1)} = \frac{C}{C + a\,R\,(\nu - r)}.
+$$
+
+Compared with the original formulation (where $R = a c_i / c_v C$ absorbed both
+$a$ and $C$), the individual-level definition keeps $C$ and $a$ visible,
+making it straightforward to assess how campaign coverage and attack rate jointly
+determine strategy boundaries.
 
 ## Translation to incidence rates
 
 With incidence data, we characterise each location $i$ by its **mean annual
-incidence rate** $\lambda_i$ (cases per person per year) rather than a discrete
-outbreak probability $p_i$. Over a planning horizon of $T$ years, the expected
-cumulative proportion of the population infected is:
+incidence rate** $\lambda_i$ (cases per person per year). Over a planning horizon
+of $T$ years, the expected cumulative proportion of the population infected is:
 
 $$
 q_i = \lambda_i \cdot T,
 $$
 
-which plays exactly the role of $p_i \cdot a$ in the original framework (expected
-illness per person per period). The cost ratio becomes:
+which plays exactly the role of $p_i \cdot a$ in the outbreak-probability
+framework (expected illness per person per period). The individual-level cost
+ratio $R = c_i / c_v$ is unchanged. Replacing $p \cdot a$ with $q_i$ and
+normalising by $c_v \cdot N$, the multi-location cost equations become:
 
 $$
-R_\lambda = \frac{c_i}{c_v \cdot C},
-$$
-
-with the attack rate $a$ now absorbed into $\lambda_i \cdot T$. The normalised
-cost equations are structurally unchanged:
-
-$$
-c_\text{pre}(\alpha) = f_\text{pre}\bigl[1 + \bar{q}_\text{pre}(1-\nu) R_\lambda\bigr],
+c_\text{pre}(\alpha) = f_\text{pre}\bigl[C + \bar{q}_\text{pre}(1-\nu)\,R\bigr],
 $$
 
 $$
 c_\text{react}(\alpha) = \begin{cases}
-  q_\text{rem}\bigl[1 + (1-r) R_\lambda\bigr] & \text{if } f_\text{react} \ge q_\text{rem}, \\
-  f_\text{react}\bigl[1 + (1-r) R_\lambda\bigr] + (q_\text{rem} - f_\text{react}) R_\lambda
+  q_\text{rem}\bigl[C + (1-r)\,R\bigr] & \text{if } f_\text{react} \ge q_\text{rem}, \\
+  f_\text{react}\bigl[C + (1-r)\,R\bigr] + (q_\text{rem} - f_\text{react})\,R
   & \text{otherwise,}
 \end{cases}
 $$
 
 where $f_\text{pre} = \alpha f$, $f_\text{react} = (1-\alpha)f$,
-$\bar{q}_\text{pre}$ is the mean $q_i$ among pre-emptively vaccinated locations,
-and $q_\text{rem} = \bar{q} - f_\text{pre}\bar{q}_\text{pre}$.
+$\bar{q}_\text{pre}$ is the population-weighted mean $q_i$ in the pre-emptively
+vaccinated group, and $q_\text{rem} = \bar{q} - f_\text{pre}\bar{q}_\text{pre}$.
+The term $C$ appears in every vaccination-cost component; locations that receive
+neither pre-emptive nor reactive vaccination incur only the illness cost $q_i \cdot R$.
 
 The between-location distribution of $\lambda_i$ is modelled as
 **Gamma**$(k, k/\mu)$, the natural continuous analogue of the Beta$(1,\theta)$
@@ -645,34 +654,36 @@ the true rate $\lambda_i$, and locations are ranked by score.
 
 ```{r alpha-star-setup}
 # Cost parameters (illustrative; can be varied in sensitivity analyses)
-R_LAMBDA <- 10   # c_i / (c_v * C): ratio of per-case illness cost to
-                  # per-person vaccination cost
-R_VAL    <- 0.5  # reactive effectiveness r
+R_VAL    <- 10   # c_i / c_v: individual-level cost ratio (illness cost per
+                  # infected person divided by vaccination cost per person)
+C_COV    <- 0.9  # vaccine coverage proportion C (fraction of pop vaccinated
+                  # within each targeted location)
+R_REACT  <- 0.5  # reactive effectiveness r
 NU_VAL   <- 0.90 # pre-emptive effectiveness nu
 T_PLAN   <- 3L   # planning horizon (years); matches VAX_YEARS length
 
-# q_i = lambda_i * T: expected cumulative incidence per person
+# q_i = lambda_i * T: expected cumulative incidence per person over T years.
+# Replaces p_i * a in the outbreak-probability framework.
 cases_fit <- cases_fit |>
     mutate(q_i = rate_obs * T_PLAN)
 
 # ------------------------------------------------------------------
-# Cost function: total expected cost c(alpha) for a given set of
-# location-level q_i values, ranked by a priority score.
+# Cost function: total expected cost c(alpha), normalised by c_v * N,
+# for a given set of location-level q_i values ranked by a priority score.
 #
-# alpha     : pre-emptive fraction in [0,1]
-# f         : vaccination capacity (fraction of total population coverable)
-# q         : vector of expected cumulative incidence per person (q_i = lambda*T)
-# pop       : vector of population sizes
-# score     : priority score (higher = vaccinate first)
-# R         : cost ratio c_i / (c_v * C)
-# r         : reactive effectiveness
-# nu        : pre-emptive effectiveness
+# alpha : pre-emptive fraction in [0,1]
+# f     : vaccination capacity (fraction of total population coverable)
+# q     : expected cumulative incidence per person (q_i = lambda_i * T)
+# pop   : population sizes
+# score : priority score (higher = vaccinate first)
+# R     : individual-level cost ratio c_i / c_v
+# r     : reactive effectiveness
+# nu    : pre-emptive effectiveness
+# C_cov : vaccine coverage proportion within each vaccinated location
 # ------------------------------------------------------------------
-cost_incidence <- function(alpha, f, q, pop, score, R, r, nu = 0.9) {
-    n          <- length(q)
+cost_incidence <- function(alpha, f, q, pop, score, R, r, nu = 0.9, C_cov = 0.9) {
     P          <- sum(pop)
     f_pre_cap  <- alpha * f * P        # pre-emptive population budget
-    f_re_cap   <- (1 - alpha) * f * P  # reactive population budget
 
     # Rank by score (highest first) and fill pre-emptive budget
     ord        <- order(score, decreasing = TRUE)
@@ -680,26 +691,25 @@ cost_incidence <- function(alpha, f, q, pop, score, R, r, nu = 0.9) {
     n_pre      <- sum(cum_pop <= f_pre_cap)
     pre_idx    <- ord[seq_len(max(n_pre, 0L))]
 
-    # Pre-emptive cost
+    # Pre-emptive cost: C_cov (vaccination) + q_bar_pre*(1-nu)*R (residual illness)
     if (length(pre_idx) > 0) {
         q_bar_pre <- weighted.mean(q[pre_idx], pop[pre_idx])
-        E_pre     <- sum(pop[pre_idx]) / P * q_bar_pre  # fraction of expected cases covered
     } else {
-        q_bar_pre <- 0; E_pre <- 0
+        q_bar_pre <- 0
     }
     f_pre_used <- sum(pop[pre_idx]) / P
-    c_pre      <- f_pre_used * (1 + q_bar_pre * (1 - nu) * R)
+    c_pre      <- f_pre_used * (C_cov + q_bar_pre * (1 - nu) * R)
 
-    # Expected remaining burden (fraction of population * mean q in remaining group)
-    q_rem      <- weighted.mean(q, pop) - f_pre_used * q_bar_pre
-    f_re_used  <- sum(pop[pre_idx]) / P  # (re-used below)
+    # Expected remaining illness burden in unvaccinated locations
+    q_rem   <- weighted.mean(q, pop) - f_pre_used * q_bar_pre
+    f_react <- (1 - alpha) * f
 
-    # Reactive cost (rich vs limited regime)
-    f_react    <- (1 - alpha) * f
+    # Reactive cost: C_cov + (1-r)*R per reactively covered unit;
+    # uncovered remainder pays full illness cost R
     if (f_react >= q_rem) {
-        c_react <- q_rem * (1 + (1 - r) * R)
+        c_react <- q_rem * (C_cov + (1 - r) * R)
     } else {
-        c_react <- f_react * (1 + (1 - r) * R) + (q_rem - f_react) * R
+        c_react <- f_react * (C_cov + (1 - r) * R) + (q_rem - f_react) * R
     }
 
     c_pre + c_react
@@ -724,9 +734,10 @@ alpha_star_results <- expand_grid(f = f_grid, rho = rho_grid) |>
                 q     = cases_fit$q_i,
                 pop   = cases_fit$pop_sum,
                 score = score,
-                R     = R_LAMBDA,
-                r     = R_VAL,
-                nu    = NU_VAL
+                R     = R_VAL,
+                r     = R_REACT,
+                nu    = NU_VAL,
+                C_cov = C_COV
             )
         })
 
@@ -749,8 +760,8 @@ alpha_star_results |>
         digits    = c(1, 1, 3, 4),
         col.names = c("f", "rho", "alpha*", "min cost"),
         caption   = sprintf(
-            "Optimal pre-emptive fraction alpha* | R = %g, r = %g, nu = %g, T = %d yr",
-            R_LAMBDA, R_VAL, NU_VAL, T_PLAN)
+            "Optimal pre-emptive fraction alpha* | R = %g, r = %g, C = %g, nu = %g, T = %d yr",
+            R_VAL, R_REACT, C_COV, NU_VAL, T_PLAN)
     )
 ```
 
@@ -781,8 +792,8 @@ ggplot(cost_curves, aes(x = alpha, y = cost)) +
     labs(
         x     = expression("Pre-emptive fraction " ~ alpha),
         y     = expression("Normalised expected cost " ~ italic(c)(alpha)),
-        title = sprintf("Optimal alpha* | R = %g, r = %g, nu = %g, T = %d yr",
-                        R_LAMBDA, R_VAL, NU_VAL, T_PLAN)
+        title = sprintf("Optimal alpha* | R = %g, r = %g, C = %g, nu = %g, T = %d yr",
+                        R_VAL, R_REACT, C_COV, NU_VAL, T_PLAN)
     ) +
     theme_minimal(base_size = 11) +
     theme(strip.text = element_text(face = "bold"))
@@ -802,8 +813,8 @@ ggplot(alpha_star_results,
     labs(
         x     = expression(rho ~ "(targeting accuracy)"),
         y     = expression("Optimal pre-emptive fraction " ~ alpha^"*"),
-        title = sprintf("alpha* vs targeting accuracy | R = %g, r = %g, nu = %g",
-                        R_LAMBDA, R_VAL, NU_VAL)
+        title = sprintf("alpha* vs targeting accuracy | R = %g, r = %g, C = %g, nu = %g",
+                        R_VAL, R_REACT, C_COV, NU_VAL)
     ) +
     theme_minimal(base_size = 11) +
     theme(legend.position = "bottom")
