@@ -460,3 +460,351 @@ ggplot(results, aes(x = rho, y = cases_per_1k_doses,
     theme_minimal(base_size = 11) +
     theme(legend.position = "bottom")
 ```
+
+# Optimal Pre-emptive Fraction via Incidence Rate
+
+## Revised cost model
+
+The original framework normalises expected costs by $C_V$, where:
+
+$$
+C_I = a \cdot c_i \cdot N, \qquad C_V = c_v \cdot C \cdot N,
+$$
+
+with $a$ = attack rate (fraction of population infected per outbreak), $c_i$ = per-case
+illness cost, $c_v$ = per-person vaccination cost, $C$ = vaccine coverage proportion,
+and $N$ = population size. Because both costs scale with $N$, it cancels throughout and
+the cost ratio is:
+
+$$
+R = \frac{C_I}{C_V} = \frac{a \cdot c_i}{c_v \cdot C}.
+$$
+
+The normalised single-population expected costs are then:
+
+$$
+c_\text{pre}^{(1)} = 1 + p(1-\nu)R, \qquad
+c_\text{react}^{(1)} = p\bigl[1 + (1-r)R\bigr],
+$$
+
+where $p$ is the probability of an outbreak in a given period.
+
+## Translation to incidence rates
+
+With incidence data, we characterise each location $i$ by its **mean annual
+incidence rate** $\lambda_i$ (cases per person per year) rather than a discrete
+outbreak probability $p_i$. Over a planning horizon of $T$ years, the expected
+cumulative proportion of the population infected is:
+
+$$
+q_i = \lambda_i \cdot T,
+$$
+
+which plays exactly the role of $p_i \cdot a$ in the original framework (expected
+illness per person per period). The cost ratio becomes:
+
+$$
+R_\lambda = \frac{c_i}{c_v \cdot C},
+$$
+
+with the attack rate $a$ now absorbed into $\lambda_i \cdot T$. The normalised
+cost equations are structurally unchanged:
+
+$$
+c_\text{pre}(\alpha) = f_\text{pre}\bigl[1 + \bar{q}_\text{pre}(1-\nu) R_\lambda\bigr],
+$$
+
+$$
+c_\text{react}(\alpha) = \begin{cases}
+  q_\text{rem}\bigl[1 + (1-r) R_\lambda\bigr] & \text{if } f_\text{react} \ge q_\text{rem}, \\
+  f_\text{react}\bigl[1 + (1-r) R_\lambda\bigr] + (q_\text{rem} - f_\text{react}) R_\lambda
+  & \text{otherwise,}
+\end{cases}
+$$
+
+where $f_\text{pre} = \alpha f$, $f_\text{react} = (1-\alpha)f$,
+$\bar{q}_\text{pre}$ is the mean $q_i$ among pre-emptively vaccinated locations,
+and $q_\text{rem} = \bar{q} - f_\text{pre}\bar{q}_\text{pre}$.
+
+The between-location distribution of $\lambda_i$ is modelled as
+**Gamma**$(k, k/\mu)$, the natural continuous analogue of the Beta$(1,\theta)$
+used in the outbreak-probability framework.
+
+## Gamma-Poisson fit to 2010–2012 data
+
+We model the 3-year case count at each location as:
+
+$$
+Y_i \sim \text{Poisson}(\lambda_i \cdot E_i), \qquad \lambda_i \sim \text{Gamma}(k,\, k/\mu),
+$$
+
+where $E_i = N_i \cdot 3$ is the person-years exposure. Marginalising over
+$\lambda_i$ gives the **Negative Binomial** distribution with mean $\mu \cdot E_i$
+and size (overdispersion) parameter $k$. We fit $\mu$ and $k$ by maximum likelihood.
+
+```{r gamma-poisson-fit}
+library(MASS)
+
+# Restrict to 2010-2012 (3-year horizon matching the vaccine impact section)
+FIT_YEARS <- 2010:2012
+T_HORIZON <- length(FIT_YEARS)
+
+cases_fit <- cases_panel |>
+    filter(year %in% FIT_YEARS) |>
+    group_by(location) |>
+    summarise(cases_3yr = sum(cases), .groups = "drop") |>
+    left_join(pop_lookup, by = "location") |>
+    filter(!is.na(pop_sum), pop_sum > 0)
+
+# Exposure in person-years for each location
+cases_fit <- cases_fit |>
+    mutate(
+        exposure  = pop_sum * T_HORIZON,   # person-years
+        # Naive incidence rate (cases / person-years)
+        rate_obs  = cases_3yr / exposure
+    )
+
+# Fit Negative Binomial via MASS::glm.nb (log link, log(exposure) as offset).
+# glm.nb estimates mu (mean rate) and theta (= size = shape k of the
+# Gamma mixing distribution). Larger theta → less overdispersion.
+nb_fit <- MASS::glm.nb(
+    cases_3yr ~ 1 + offset(log(exposure)),
+    data = cases_fit
+)
+
+k_hat  <- nb_fit$theta                          # Gamma shape parameter
+mu_hat <- exp(coef(nb_fit)[["(Intercept)"]])    # mean incidence rate (per py)
+
+cat(sprintf("Gamma-Poisson fit (2010-2012):\n"))
+cat(sprintf("  Mean rate mu  = %.4e cases/person-year\n", mu_hat))
+cat(sprintf("  Shape k       = %.3f\n", k_hat))
+cat(sprintf("  Mean rate * 1e5 = %.2f per 100,000 py\n", mu_hat * 1e5))
+```
+
+```{r fig-gamma-poisson, fig.width=10, fig.height=4}
+#| fig-cap: "Left: observed vs Gamma-Poisson fitted distribution of incidence
+#|   rates (2010–2012, log10 scale). Right: quantile-quantile plot of observed
+#|   vs NB-predicted quantiles."
+
+# Observed distribution
+df_obs <- cases_fit |> filter(cases_3yr > 0)
+
+# Fitted Gamma density for lambda (rate per person-year) on log10 scale
+lambda_grid <- 10^seq(-8, -1, length.out = 400)
+gamma_dens  <- dgamma(lambda_grid,
+                      shape = k_hat,
+                      rate  = k_hat / mu_hat)
+# Convert density to log10-rate axis: d(log10 lambda) = lambda * log(10) * d(lambda)
+df_gamma <- tibble(lambda = lambda_grid,
+                   dens   = gamma_dens * lambda_grid * log(10))
+
+p_hist2 <- ggplot(df_obs, aes(x = rate_obs)) +
+    geom_histogram(aes(y = after_stat(density * x * log(10))),
+                   bins = 35, fill = "steelblue", colour = "white", linewidth = 0.2) +
+    geom_line(data = df_gamma, aes(x = lambda, y = dens),
+              colour = "firebrick", linewidth = 1) +
+    scale_x_log10(labels = function(x) format(x * 1e5, big.mark = ",", digits = 3)) +
+    labs(x = "Incidence rate (per 100,000 py, log scale)",
+         y = "Density (log10 scale)",
+         title = sprintf("Gamma(%0.2f, %0.4e) fit", k_hat, k_hat / mu_hat),
+         subtitle = sprintf("Red: fitted Gamma; n = %d sites with ≥1 case",
+                            nrow(df_obs))) +
+    theme_minimal(base_size = 11)
+
+# Q-Q against fitted Gamma
+n_sites  <- nrow(cases_fit)
+probs    <- (seq_len(n_sites) - 0.5) / n_sites
+q_obs    <- sort(cases_fit$rate_obs)
+q_gamma  <- qgamma(probs, shape = k_hat, rate = k_hat / mu_hat)
+
+p_qq <- ggplot(tibble(obs = q_obs, fitted = q_gamma),
+               aes(x = fitted, y = obs)) +
+    geom_point(size = 1, alpha = 0.5, colour = "steelblue") +
+    geom_abline(slope = 1, intercept = 0, colour = "firebrick") +
+    scale_x_log10(labels = function(x) format(x * 1e5, digits = 2)) +
+    scale_y_log10(labels = function(x) format(x * 1e5, digits = 2)) +
+    labs(x = "Gamma quantiles (per 100,000 py, log scale)",
+         y = "Observed quantiles (per 100,000 py, log scale)",
+         title = "Q-Q: observed vs fitted Gamma") +
+    theme_minimal(base_size = 11)
+
+p_hist2 + p_qq
+```
+
+## Optimal pre-emptive fraction $\alpha^*$
+
+We minimise total expected cost $c(\alpha)$ over $\alpha \in [0,1]$ for each
+combination of:
+
+- Coverage fraction $f \in \{0.1,\; 0.3,\; 0.5\}$
+- Targeting accuracy $\rho \in \{0,\; 0.5,\; 1\}$
+
+For $\rho < 1$, imperfect targeting is implemented via the Gaussian copula:
+synthetic priority scores are generated with Spearman rank correlation $\rho$ to
+the true rate $\lambda_i$, and locations are ranked by score.
+
+```{r alpha-star-setup}
+# Cost parameters (illustrative; can be varied in sensitivity analyses)
+R_LAMBDA <- 10   # c_i / (c_v * C): ratio of per-case illness cost to
+                  # per-person vaccination cost
+R_VAL    <- 0.5  # reactive effectiveness r
+NU_VAL   <- 0.90 # pre-emptive effectiveness nu
+T_PLAN   <- 3L   # planning horizon (years); matches VAX_YEARS length
+
+# q_i = lambda_i * T: expected cumulative incidence per person
+cases_fit <- cases_fit |>
+    mutate(q_i = rate_obs * T_PLAN)
+
+# ------------------------------------------------------------------
+# Cost function: total expected cost c(alpha) for a given set of
+# location-level q_i values, ranked by a priority score.
+#
+# alpha     : pre-emptive fraction in [0,1]
+# f         : vaccination capacity (fraction of total population coverable)
+# q         : vector of expected cumulative incidence per person (q_i = lambda*T)
+# pop       : vector of population sizes
+# score     : priority score (higher = vaccinate first)
+# R         : cost ratio c_i / (c_v * C)
+# r         : reactive effectiveness
+# nu        : pre-emptive effectiveness
+# ------------------------------------------------------------------
+cost_incidence <- function(alpha, f, q, pop, score, R, r, nu = 0.9) {
+    n          <- length(q)
+    P          <- sum(pop)
+    f_pre_cap  <- alpha * f * P        # pre-emptive population budget
+    f_re_cap   <- (1 - alpha) * f * P  # reactive population budget
+
+    # Rank by score (highest first) and fill pre-emptive budget
+    ord        <- order(score, decreasing = TRUE)
+    cum_pop    <- cumsum(pop[ord])
+    n_pre      <- sum(cum_pop <= f_pre_cap)
+    pre_idx    <- ord[seq_len(max(n_pre, 0L))]
+
+    # Pre-emptive cost
+    if (length(pre_idx) > 0) {
+        q_bar_pre <- weighted.mean(q[pre_idx], pop[pre_idx])
+        E_pre     <- sum(pop[pre_idx]) / P * q_bar_pre  # fraction of expected cases covered
+    } else {
+        q_bar_pre <- 0; E_pre <- 0
+    }
+    f_pre_used <- sum(pop[pre_idx]) / P
+    c_pre      <- f_pre_used * (1 + q_bar_pre * (1 - nu) * R)
+
+    # Expected remaining burden (fraction of population * mean q in remaining group)
+    q_rem      <- weighted.mean(q, pop) - f_pre_used * q_bar_pre
+    f_re_used  <- sum(pop[pre_idx]) / P  # (re-used below)
+
+    # Reactive cost (rich vs limited regime)
+    f_react    <- (1 - alpha) * f
+    if (f_react >= q_rem) {
+        c_react <- q_rem * (1 + (1 - r) * R)
+    } else {
+        c_react <- f_react * (1 + (1 - r) * R) + (q_rem - f_react) * R
+    }
+
+    c_pre + c_react
+}
+```
+
+```{r alpha-star-compute}
+f_grid   <- c(0.1, 0.3, 0.5)
+rho_grid <- c(0.0, 0.5, 1.0)
+alpha_grid <- seq(0, 1, length.out = 201)
+
+alpha_star_results <- expand_grid(f = f_grid, rho = rho_grid) |>
+    pmap_dfr(function(f, rho) {
+        # Generate priority score with target Spearman rho to true lambda
+        score <- make_rank_score(cases_fit$rate_obs, target_rho = rho)
+
+        # Evaluate cost across alpha grid
+        costs <- sapply(alpha_grid, function(a) {
+            cost_incidence(
+                alpha = a,
+                f     = f,
+                q     = cases_fit$q_i,
+                pop   = cases_fit$pop_sum,
+                score = score,
+                R     = R_LAMBDA,
+                r     = R_VAL,
+                nu    = NU_VAL
+            )
+        })
+
+        alpha_opt <- alpha_grid[which.min(costs)]
+        cost_opt  <- min(costs)
+
+        tibble(
+            f         = f,
+            rho       = rho,
+            alpha_star = alpha_opt,
+            cost_min  = cost_opt,
+            # full cost curve for plotting
+            cost_curve = list(tibble(alpha = alpha_grid, cost = costs))
+        )
+    })
+
+alpha_star_results |>
+    dplyr::select(f, rho, alpha_star, cost_min) |>
+    knitr::kable(
+        digits    = c(1, 1, 3, 4),
+        col.names = c("f", "rho", "alpha*", "min cost"),
+        caption   = sprintf(
+            "Optimal pre-emptive fraction alpha* | R = %g, r = %g, nu = %g, T = %d yr",
+            R_LAMBDA, R_VAL, NU_VAL, T_PLAN)
+    )
+```
+
+```{r fig-alpha-star, fig.width=11, fig.height=9}
+#| fig-cap: "Expected cost c(alpha) as a function of the pre-emptive fraction
+#|   alpha for each combination of f (columns) and rho (rows). The vertical
+#|   dashed line marks the optimal alpha*."
+
+cost_curves <- alpha_star_results |>
+    dplyr::select(f, rho, cost_curve) |>
+    unnest(cost_curve)
+
+opt_points <- alpha_star_results |>
+    dplyr::select(f, rho, alpha_star, cost_min)
+
+ggplot(cost_curves, aes(x = alpha, y = cost)) +
+    geom_line(colour = "steelblue", linewidth = 0.9) +
+    geom_vline(data = opt_points,
+               aes(xintercept = alpha_star),
+               linetype = "dashed", colour = "firebrick", linewidth = 0.8) +
+    geom_point(data = opt_points,
+               aes(x = alpha_star, y = cost_min),
+               colour = "firebrick", size = 2.5) +
+    facet_grid(
+        rows = vars(paste0("rho = ", rho)),
+        cols = vars(paste0("f = ", f))
+    ) +
+    labs(
+        x     = expression("Pre-emptive fraction " ~ alpha),
+        y     = expression("Normalised expected cost " ~ italic(c)(alpha)),
+        title = sprintf("Optimal alpha* | R = %g, r = %g, nu = %g, T = %d yr",
+                        R_LAMBDA, R_VAL, NU_VAL, T_PLAN)
+    ) +
+    theme_minimal(base_size = 11) +
+    theme(strip.text = element_text(face = "bold"))
+```
+
+```{r fig-alpha-star-summary, fig.width=8, fig.height=4}
+#| fig-cap: "Optimal pre-emptive fraction alpha* for each (f, rho) combination."
+
+ggplot(alpha_star_results,
+       aes(x = rho, y = alpha_star,
+           colour = factor(f), group = factor(f))) +
+    geom_line(linewidth = 0.9) +
+    geom_point(size = 3) +
+    scale_colour_viridis_d(option = "plasma", end = 0.85, name = "f") +
+    scale_x_continuous(breaks = rho_grid) +
+    scale_y_continuous(limits = c(0, 1)) +
+    labs(
+        x     = expression(rho ~ "(targeting accuracy)"),
+        y     = expression("Optimal pre-emptive fraction " ~ alpha^"*"),
+        title = sprintf("alpha* vs targeting accuracy | R = %g, r = %g, nu = %g",
+                        R_LAMBDA, R_VAL, NU_VAL)
+    ) +
+    theme_minimal(base_size = 11) +
+    theme(legend.position = "bottom")
+```
