@@ -289,12 +289,15 @@ ggplot() +
 ```{r table-full}
 incidence_df |>
     dplyr::select(location, total_cases, pop_sum, incidence_rate) |>
-    mutate(pop_sum = round(pop_sum)) |>
-    knitr::kable(
-        digits    = c(0, 0, 0, 2),
-        col.names = c("Location", "Total cases (2010–2014)",
+    mutate(pop_sum        = round(pop_sum),
+           incidence_rate = round(incidence_rate, 2)) |>
+    DT::datatable(
+        colnames  = c("Location", "Total cases (2010–2014)",
                       "Population", "Rate per 100k py"),
-        caption   = "Cholera incidence rates for all ADM2 sites (2010–2014)"
+        caption   = "Cholera incidence rates for all ADM2 sites (2010–2014)",
+        rownames  = FALSE,
+        filter    = "top",
+        options   = list(pageLength = 25, scrollX = TRUE)
     )
 ```
 
