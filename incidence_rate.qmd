@@ -654,7 +654,7 @@ the true rate $\lambda_i$, and locations are ranked by score.
 
 ```{r alpha-star-setup}
 # Cost parameters (illustrative; can be varied in sensitivity analyses)
-R_VAL    <- 10   # c_i / c_v: individual-level cost ratio (illness cost per
+R_VAL    <- 500  # c_i / c_v: individual-level cost ratio (illness cost per
                   # infected person divided by vaccination cost per person)
 C_COV    <- 0.9  # vaccine coverage proportion C (fraction of pop vaccinated
                   # within each targeted location)
