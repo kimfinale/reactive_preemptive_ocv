@@ -297,3 +297,164 @@ incidence_df |>
         caption   = "Cholera incidence rates for all ADM2 sites (2010–2014)"
     )
 ```
+
+# Vaccine Impact Scenarios
+
+## Setup
+
+Scenarios vary two parameters:
+
+- **ρ** (targeting accuracy): Spearman rank correlation between the vaccination
+  priority score and true incidence rate. ρ = 1 = oracle (rank by true rate),
+  ρ = 0 = random allocation.
+- **f** (coverage): fraction of the total population vaccinated, ranging from
+  0.1 to 0.5.
+
+A **two-dose OCV regimen** is assumed (doses = 2 × vaccinated population).
+Vaccine effectiveness (VE) = **0.65** (standard two-dose OCV estimate).
+The annual attack rate per location is derived from the 2010–2014 incidence rate.
+
+For each (ρ, f) combination:
+
+1. Generate a synthetic priority score with the target Spearman correlation to
+   the true incidence rate using a Gaussian copula.
+2. Rank locations by score (descending) and vaccinate until the cumulative
+   population reaches f × total population.
+3. Cases averted = vaccinated population × attack rate × VE.
+
+```{r vaccine-setup}
+VE        <- 0.65   # two-dose OCV vaccine effectiveness
+DOSES_PER <- 2L     # doses per vaccinated person
+
+rho_values <- seq(0, 1, by = 0.1)
+f_values   <- seq(0.1, 0.5, by = 0.1)
+
+# Use incidence rate (per person per year) as the true attack rate.
+# Locations with zero cases get attack_rate = 0.
+sim_vax <- incidence_df |>
+    mutate(attack_rate = incidence_rate / 1e5)
+
+total_pop <- sum(sim_vax$pop_sum)
+
+# Gaussian copula: generate a score with target Spearman rho to truth.
+# Converts target Spearman rho to Pearson via rho_P = 2 sin(pi * rho_S / 6),
+# then blends a rank-normalised signal with noise at that Pearson correlation.
+make_rank_score <- function(truth, target_rho, seed = 42) {
+    set.seed(seed)
+    n       <- length(truth)
+    z_truth <- qnorm(rank(truth, ties.method = "random") / (n + 1))
+    z_noise <- rnorm(n)
+    rho_p   <- 2 * sin(pi * target_rho / 6)
+    pnorm(rho_p * z_truth + sqrt(1 - rho_p^2) * z_noise)
+}
+
+# Baseline: expected annual cases with no vaccination.
+baseline_cases <- sum(sim_vax$pop_sum * sim_vax$attack_rate)
+cat(sprintf("Total population: %s\n", format(round(total_pop), big.mark = ",")))
+cat(sprintf("Baseline expected annual cases: %s\n",
+            format(round(baseline_cases), big.mark = ",")))
+```
+
+## Simulation
+
+```{r vaccine-sim}
+results <- expand_grid(rho = rho_values, f = f_values) |>
+    pmap_dfr(function(rho, f) {
+        # Generate priority score at target rho
+        score <- make_rank_score(sim_vax$attack_rate, target_rho = rho)
+
+        # Rank locations by score (highest risk first) and fill budget f*P
+        ord     <- order(score, decreasing = TRUE)
+        cum_pop <- cumsum(sim_vax$pop_sum[ord])
+        budget  <- f * total_pop
+        # Include all locations whose cumulative population fits within budget;
+        # the last location may be partially covered — use full inclusion here
+        # (conservative: no partial-location vaccination).
+        n_vax   <- sum(cum_pop <= budget)
+        vax_idx <- ord[seq_len(n_vax)]
+
+        pop_vaccinated  <- sum(sim_vax$pop_sum[vax_idx])
+        cases_averted   <- sum(sim_vax$pop_sum[vax_idx] * sim_vax$attack_rate[vax_idx]) * VE
+        doses           <- pop_vaccinated * DOSES_PER
+
+        tibble(
+            rho                    = rho,
+            f                      = f,
+            pop_vaccinated         = pop_vaccinated,
+            doses                  = doses,
+            cases_averted          = cases_averted,
+            cases_averted_per_1k_doses = cases_averted / doses * 1000,
+            doses_per_case_averted = if (cases_averted > 0) doses / cases_averted else NA_real_
+        )
+    })
+```
+
+## Results table
+
+```{r table-vaccine}
+results |>
+    mutate(
+        pop_vaccinated             = round(pop_vaccinated),
+        doses                      = round(doses),
+        cases_averted              = round(cases_averted, 1)
+    ) |>
+    knitr::kable(
+        digits    = c(1, 1, 0, 0, 1, 2, 1),
+        col.names = c("ρ", "f", "Pop vaccinated", "Doses",
+                      "Cases averted", "Cases averted\nper 1k doses",
+                      "Doses per\ncase averted"),
+        caption   = sprintf(
+            "Vaccine impact scenarios | VE = %.2f, %d-dose regimen | attack rate from 2010–2014 incidence",
+            VE, DOSES_PER)
+    )
+```
+
+## Figures
+
+```{r fig-vaccine-cases, fig.width=10, fig.height=5}
+#| fig-cap: "Cases averted (left) and doses per case averted (right) by targeting
+#|   accuracy (rho) and coverage fraction (f). ρ = 1 = oracle; ρ = 0 = random."
+
+p_cases <- ggplot(results, aes(x = rho, y = cases_averted,
+                                colour = factor(f), group = factor(f))) +
+    geom_line(linewidth = 0.9) +
+    geom_point(size = 2) +
+    scale_colour_viridis_d(option = "plasma", end = 0.85, name = "f") +
+    scale_y_continuous(labels = comma) +
+    labs(x = expression(rho ~ "(targeting accuracy)"),
+         y = "Cases averted (annual)",
+         title = "Cases averted") +
+    theme_minimal(base_size = 11)
+
+p_doses <- ggplot(results, aes(x = rho, y = doses_per_case_averted,
+                                colour = factor(f), group = factor(f))) +
+    geom_line(linewidth = 0.9) +
+    geom_point(size = 2) +
+    scale_colour_viridis_d(option = "plasma", end = 0.85, name = "f") +
+    scale_y_continuous(labels = comma) +
+    labs(x = expression(rho ~ "(targeting accuracy)"),
+         y = "Doses per case averted",
+         title = "Doses required per case averted") +
+    theme_minimal(base_size = 11)
+
+p_cases + p_doses +
+    plot_layout(guides = "collect") &
+    theme(legend.position = "bottom")
+```
+
+```{r fig-vaccine-efficiency, fig.width=8, fig.height=5}
+#| fig-cap: "Cases averted per 1,000 doses — a measure of programme efficiency.
+#|   Higher rho (better targeting) and lower f (more selective) yield greater
+#|   efficiency."
+
+ggplot(results, aes(x = rho, y = cases_averted_per_1k_doses,
+                    colour = factor(f), group = factor(f))) +
+    geom_line(linewidth = 0.9) +
+    geom_point(size = 2) +
+    scale_colour_viridis_d(option = "plasma", end = 0.85, name = "f") +
+    labs(x = expression(rho ~ "(targeting accuracy)"),
+         y = "Cases averted per 1,000 doses",
+         title = "Vaccine programme efficiency") +
+    theme_minimal(base_size = 11) +
+    theme(legend.position = "bottom")
+```
