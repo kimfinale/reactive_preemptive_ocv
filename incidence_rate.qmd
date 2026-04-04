@@ -690,13 +690,17 @@ T_PLAN   <- 3L   # planning horizon (years); matches VAX_YEARS length
 cases_fit <- cases_fit |>
     mutate(q_i = rate_obs * T_PLAN)
 
-# Reactive threshold q* = C_cov / (r * R): locations with q_i <= q* receive
-# no intervention under the reactive strategy (campaign overhead exceeds savings).
-q_star <- C_COV / (R_REACT * R_VAL)
-cat(sprintf("Reactive threshold q* = %.5f  (%.1f per 100,000 py over %d yr)\n",
-            q_star, q_star / T_PLAN * 1e5, T_PLAN))
-cat(sprintf("Locations above threshold: %d / %d\n",
-            sum(cases_fit$q_i > q_star), nrow(cases_fit)))
+# Reactive threshold: top X% of observed incidence rates (baseline X = 25).
+# Only the top-X% highest-incidence locations qualify for a reactive campaign.
+# This replaces the analytic threshold q* = C_cov / (r * R) with an empirical
+# percentile-based cutoff derived directly from the observed distribution.
+Q_THRESH_PCT <- 25   # baseline: top 25% triggers reactive campaign
+q_star <- quantile(cases_fit$q_i, 1 - Q_THRESH_PCT / 100)
+
+cat(sprintf("Reactive threshold (top %d%% of q_i): q* = %.5f  (%.1f per 100,000 py over %d yr)\n",
+            Q_THRESH_PCT, q_star, q_star / T_PLAN * 1e5, T_PLAN))
+cat(sprintf("Locations above threshold: %d / %d (%.0f%%)\n",
+            sum(cases_fit$q_i > q_star), nrow(cases_fit), Q_THRESH_PCT))
 
 # ------------------------------------------------------------------
 # Cost function: total expected cost c(alpha), normalised by c_v * N.
@@ -718,7 +722,7 @@ cat(sprintf("Locations above threshold: %d / %d\n",
 # descending order of q_i (most severe first), since reactive responds to
 # observed burden rather than a predicted score.
 # ------------------------------------------------------------------
-cost_incidence <- function(alpha, f, q, pop, score, R, r, nu = 0.9, C_cov = 0.9) {
+cost_incidence <- function(alpha, f, q, pop, score, R, r, nu = 0.9, C_cov = 0.9, q_star = NULL) {
     P         <- sum(pop)
     all_idx   <- seq_along(q)
 
@@ -739,8 +743,9 @@ cost_incidence <- function(alpha, f, q, pop, score, R, r, nu = 0.9, C_cov = 0.9)
     # ── Reactive allocation (remaining locations, threshold q*) ───────────
     rem_idx <- setdiff(all_idx, pre_idx)
 
-    # Threshold: reactive campaign only worthwhile where q_i > q*
-    q_star        <- C_cov / (r * R)
+    # Threshold: reactive campaign only triggered where q_i > q*.
+    # If q_star is not supplied, fall back to the analytic threshold C_cov/(r*R).
+    if (is.null(q_star)) q_star <- C_cov / (r * R)
     triggered_idx <- rem_idx[q[rem_idx] > q_star]
     no_action_idx <- rem_idx[q[rem_idx] <= q_star]
 
@@ -779,15 +784,16 @@ alpha_star_results <- expand_grid(f = f_grid, rho = rho_grid) |>
         # Evaluate cost across alpha grid
         costs <- sapply(alpha_grid, function(a) {
             cost_incidence(
-                alpha = a,
-                f     = f,
-                q     = cases_fit$q_i,
-                pop   = cases_fit$pop_sum,
-                score = score,
-                R     = R_VAL,
-                r     = R_REACT,
-                nu    = NU_VAL,
-                C_cov = C_COV
+                alpha  = a,
+                f      = f,
+                q      = cases_fit$q_i,
+                pop    = cases_fit$pop_sum,
+                score  = score,
+                R      = R_VAL,
+                r      = R_REACT,
+                nu     = NU_VAL,
+                C_cov  = C_COV,
+                q_star = q_star
             )
         })
 
@@ -810,8 +816,8 @@ alpha_star_results |>
         digits    = c(1, 1, 3, 4),
         col.names = c("f", "rho", "alpha*", "min cost"),
         caption   = sprintf(
-            "Optimal pre-emptive fraction alpha* | R = %g, r = %g, C = %g, nu = %g, T = %d yr",
-            R_VAL, R_REACT, C_COV, NU_VAL, T_PLAN)
+            "Optimal pre-emptive fraction alpha* | R = %g, r = %g, C = %g, nu = %g, T = %d yr | threshold = top %d%% of incidence",
+            R_VAL, R_REACT, C_COV, NU_VAL, T_PLAN, Q_THRESH_PCT)
     )
 ```
 
@@ -842,8 +848,8 @@ ggplot(cost_curves, aes(x = alpha, y = cost)) +
     labs(
         x     = expression("Pre-emptive fraction " ~ alpha),
         y     = expression("Normalised expected cost " ~ italic(c)(alpha)),
-        title = sprintf("Optimal alpha* | R = %g, r = %g, C = %g, nu = %g, T = %d yr",
-                        R_VAL, R_REACT, C_COV, NU_VAL, T_PLAN)
+        title = sprintf("Optimal alpha* | R = %g, r = %g, C = %g, nu = %g, T = %d yr | threshold = top %d%%",
+                        R_VAL, R_REACT, C_COV, NU_VAL, T_PLAN, Q_THRESH_PCT)
     ) +
     theme_minimal(base_size = 11) +
     theme(strip.text = element_text(face = "bold"))
@@ -863,9 +869,128 @@ ggplot(alpha_star_results,
     labs(
         x     = expression(rho ~ "(targeting accuracy)"),
         y     = expression("Optimal pre-emptive fraction " ~ alpha^"*"),
-        title = sprintf("alpha* vs targeting accuracy | R = %g, r = %g, C = %g, nu = %g",
+        title = sprintf("alpha* vs targeting accuracy | R = %g, r = %g, C = %g, nu = %g | threshold = top %d%%",
+                        R_VAL, R_REACT, C_COV, NU_VAL, Q_THRESH_PCT)
+    ) +
+    theme_minimal(base_size = 11) +
+    theme(legend.position = "bottom")
+```
+
+# Sensitivity to Reactive Campaign Threshold
+
+We treat $q^*$ as the empirical quantile at the $(1 - X/100)$-th percentile of
+the observed $q_i$ distribution, so exactly the top $X\%$ of locations qualify
+for a reactive campaign. The baseline is $X = 25$. Here we vary $X$ across
+$\{5, 10, 15, 20, 25, 30, 40, 50\}$ to show how $\alpha^*$ responds to a
+stricter or more permissive threshold.
+
+```{r threshold-sensitivity}
+# Threshold percentiles to sweep (X = top-X% triggers reactive campaign)
+thresh_pcts <- c(5, 10, 15, 20, 25, 30, 40, 50)
+
+thresh_results <- expand_grid(
+    thresh_pct = thresh_pcts,
+    f          = f_grid,
+    rho        = rho_grid
+) |>
+    pmap_dfr(function(thresh_pct, f, rho) {
+        q_thr  <- quantile(cases_fit$q_i, 1 - thresh_pct / 100)
+        score  <- make_rank_score(cases_fit$rate_obs, target_rho = rho)
+
+        costs <- sapply(alpha_grid, function(a) {
+            cost_incidence(
+                alpha  = a,
+                f      = f,
+                q      = cases_fit$q_i,
+                pop    = cases_fit$pop_sum,
+                score  = score,
+                R      = R_VAL,
+                r      = R_REACT,
+                nu     = NU_VAL,
+                C_cov  = C_COV,
+                q_star = q_thr
+            )
+        })
+
+        tibble(
+            thresh_pct = thresh_pct,
+            f          = f,
+            rho        = rho,
+            alpha_star = alpha_grid[which.min(costs)],
+            cost_min   = min(costs),
+            q_star_val = q_thr
+        )
+    })
+```
+
+## alpha* vs threshold percentile
+
+```{r fig-thresh-alpha, fig.width=11, fig.height=5}
+#| fig-cap: "Optimal pre-emptive fraction alpha* as a function of the reactive
+#|   campaign threshold percentile X (top X% of locations qualify for reactive
+#|   campaign). Columns: coverage fraction f. Colours: targeting accuracy rho.
+#|   Dashed vertical line marks the baseline X = 25."
+
+ggplot(thresh_results,
+       aes(x = thresh_pct, y = alpha_star,
+           colour = factor(rho), group = factor(rho))) +
+    geom_line(linewidth = 0.9) +
+    geom_point(size = 2.5) +
+    geom_vline(xintercept = 25, linetype = "dashed", colour = "grey40") +
+    facet_wrap(~ paste0("f = ", f), nrow = 1) +
+    scale_colour_viridis_d(option = "plasma", end = 0.85, name = expression(rho)) +
+    scale_x_continuous(breaks = thresh_pcts) +
+    scale_y_continuous(limits = c(0, 1)) +
+    labs(
+        x     = "Threshold percentile X  (top X% triggers reactive campaign)",
+        y     = expression("Optimal pre-emptive fraction " ~ alpha^"*"),
+        title = sprintf("Sensitivity of alpha* to reactive threshold | R = %g, r = %g, C = %g, nu = %g",
                         R_VAL, R_REACT, C_COV, NU_VAL)
     ) +
     theme_minimal(base_size = 11) +
     theme(legend.position = "bottom")
+```
+
+## Minimum cost vs threshold percentile
+
+```{r fig-thresh-cost, fig.width=11, fig.height=5}
+#| fig-cap: "Minimum normalised expected cost at alpha* as a function of the
+#|   reactive threshold percentile X. Lower is better. Columns: coverage f.
+#|   Colours: targeting accuracy rho. Dashed line marks baseline X = 25."
+
+ggplot(thresh_results,
+       aes(x = thresh_pct, y = cost_min,
+           colour = factor(rho), group = factor(rho))) +
+    geom_line(linewidth = 0.9) +
+    geom_point(size = 2.5) +
+    geom_vline(xintercept = 25, linetype = "dashed", colour = "grey40") +
+    facet_wrap(~ paste0("f = ", f), nrow = 1) +
+    scale_colour_viridis_d(option = "plasma", end = 0.85, name = expression(rho)) +
+    scale_x_continuous(breaks = thresh_pcts) +
+    labs(
+        x     = "Threshold percentile X  (top X% triggers reactive campaign)",
+        y     = expression("Minimum normalised expected cost at " ~ alpha^"*"),
+        title = sprintf("Cost sensitivity to reactive threshold | R = %g, r = %g, C = %g, nu = %g",
+                        R_VAL, R_REACT, C_COV, NU_VAL)
+    ) +
+    theme_minimal(base_size = 11) +
+    theme(legend.position = "bottom")
+```
+
+## Summary table
+
+```{r table-thresh}
+thresh_results |>
+    mutate(
+        q_star_per100k = round(q_star_val / T_PLAN * 1e5, 1)
+    ) |>
+    dplyr::select(thresh_pct, f, rho, alpha_star, cost_min, q_star_per100k) |>
+    knitr::kable(
+        digits    = c(0, 1, 1, 3, 4, 1),
+        col.names = c("Top X%", "f", "rho", "alpha*", "min cost",
+                      "q* (per 100k py)"),
+        caption   = sprintf(
+            "alpha* across threshold percentiles | R = %g, r = %g, C = %g, nu = %g, T = %d yr",
+            R_VAL, R_REACT, C_COV, NU_VAL, T_PLAN)
+    )
 ```
