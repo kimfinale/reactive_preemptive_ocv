@@ -562,28 +562,29 @@ The between-location distribution of $\lambda_i$ is modelled as
 **Gamma**$(k, k/\mu)$, the natural continuous analogue of the Beta$(1,\theta)$
 used in the outbreak-probability framework.
 
-## Two-part Gamma fit to 2010–2012 data
+## Hurdle Negative Binomial fit to 2010–2012 data
 
-A single Negative Binomial fitted to all sites (including the many zero-case
-locations) collapses toward k ≈ 0 because the model must account for the large
-spike at zero. The implied Gamma for $\lambda_i$ then places nearly all
-probability mass at rates far below anything observed, producing a degenerate
-Q-Q plot.
+A single Negative Binomial fitted to all sites collapses toward $k \approx 0$
+because it conflates structural zeros with the at-risk distribution. A two-part
+Gamma on positive sites alone still misses the tails (S-curve in the Q-Q),
+indicating the continuous part is not Gamma-shaped.
 
-We instead use a **two-part model**:
+A **hurdle Negative Binomial** model addresses both issues simultaneously:
 
 $$
-\lambda_i = \begin{cases} 0 & \text{with probability } 1-\pi, \\
-\text{Gamma}(k,\; k/\mu) & \text{with probability } \pi, \end{cases}
+P(Y_i = 0) = 1 - \pi, \qquad
+P(Y_i = y \mid Y_i > 0) = \frac{\text{NB}(y;\,\mu_i,\,k)}{1 - \text{NB}(0;\,\mu_i,\,k)}, \quad y = 1,2,\ldots
 $$
 
-where $\pi$ is estimated as the observed fraction of sites with at least one
-case, and Gamma$(k, k/\mu)$ (mean $\mu$, shape $k$) is fitted by maximum
-likelihood to the **positive-rate sites only** via `MASS::fitdistr`. This
-cleanly separates the structural zeros from the continuous at-risk distribution.
+where $\mu_i = \mu \cdot E_i$ (with $E_i = N_i T$ person-years) and $k$ is the
+NB dispersion parameter. The logistic part models the probability $\pi$ of
+observing any cases; the zero-truncated NB part models the count distribution
+at sites that do have cases, giving it a free shape that can accommodate
+heavier tails than the Gamma.
 
 ```{r gamma-poisson-fit}
 library(MASS)
+library(pscl)
 
 # Restrict to 2010-2012 (3-year horizon matching the vaccine impact section)
 FIT_YEARS <- 2010:2012
@@ -603,70 +604,95 @@ cases_fit <- cases_fit |>
         rate_obs = cases_3yr / exposure  # observed incidence rate (per py)
     )
 
-# ── Two-part model ────────────────────────────────────────────────────────────
-# Part 1: probability of a non-zero rate (Bernoulli)
-pi_hat <- mean(cases_fit$rate_obs > 0)
+# ── Hurdle NB ─────────────────────────────────────────────────────────────────
+# Logistic component: P(Y > 0) = pi
+# Zero-truncated NB component: Y | Y > 0 ~ TruncNB(mu_i = mu * E_i, size = k)
+cases_fit <- cases_fit |> mutate(cases_3yr = as.integer(cases_3yr))
 
-# Part 2: Gamma(shape = k, rate = k/mu) fitted to positive sites only.
-# MASS::fitdistr("gamma") returns shape and rate; mean = shape / rate.
-pos_rates <- cases_fit$rate_obs[cases_fit$rate_obs > 0]
-fit_gamma <- MASS::fitdistr(pos_rates, "gamma")
-k_hat     <- fit_gamma$estimate[["shape"]]
-mu_hat    <- k_hat / fit_gamma$estimate[["rate"]]  # mean rate (per py)
+fit_hurdle <- pscl::hurdle(
+    cases_3yr ~ 1 + offset(log(exposure)),
+    data      = cases_fit,
+    dist      = "negbin",
+    zero.dist = "binomial"
+)
 
-cat(sprintf("Two-part Gamma fit (2010-2012):\n"))
+pi_hat  <- plogis(coef(fit_hurdle, "zero")[["(Intercept)"]])
+mu_hat  <- exp(coef(fit_hurdle, "count")[["(Intercept)"]])  # rate per py
+k_hat   <- fit_hurdle$theta                                  # NB dispersion
+
+cat(sprintf("Hurdle NB fit (2010-2012):\n"))
 cat(sprintf("  pi (P[site has cases]) = %.3f  (%d / %d sites)\n",
             pi_hat, sum(cases_fit$rate_obs > 0), nrow(cases_fit)))
-cat(sprintf("  Gamma shape k          = %.3f\n", k_hat))
-cat(sprintf("  Gamma mean mu          = %.4e per py  (%.2f per 100k py)\n",
+cat(sprintf("  NB dispersion k        = %.3f\n", k_hat))
+cat(sprintf("  Mean rate mu           = %.4e per py  (%.2f per 100k py)\n",
             mu_hat, mu_hat * 1e5))
+
+# Helper: draw from zero-truncated NB via rejection sampling.
+# mu_vec: site-level mean COUNTS (= mu_rate * exposure_i).
+draw_trunc_nb <- function(mu_vec, size, seed = NULL) {
+    if (!is.null(seed)) set.seed(seed)
+    counts   <- rnbinom(length(mu_vec), mu = mu_vec, size = size)
+    zero_idx <- which(counts == 0)
+    while (length(zero_idx) > 0) {
+        counts[zero_idx] <- rnbinom(length(zero_idx),
+                                    mu   = mu_vec[zero_idx],
+                                    size = size)
+        zero_idx <- which(counts[zero_idx] == 0) |>
+                    (\(x) zero_idx[x])()
+    }
+    counts
+}
 ```
 
 ```{r fig-gamma-poisson, fig.width=10, fig.height=4}
-#| fig-cap: "Left: observed vs two-part Gamma fitted distribution of incidence
-#|   rates (2010–2012, positive sites only, log10 scale). Right: quantile-quantile
-#|   plot of observed vs fitted Gamma quantiles (positive sites only)."
+#| fig-cap: "Left: observed incidence rate distribution at positive sites vs
+#|   simulation-based predictive density from the hurdle NB (2010–2012, log10
+#|   scale). Right: predictive Q-Q — observed quantiles vs simulated quantiles
+#|   from the hurdle NB using site-specific exposures (positive sites only)."
 
-# Positive-rate sites only — both panels use this subset
+# Positive-rate sites only
 df_obs <- cases_fit |> filter(rate_obs > 0)
 n_pos  <- nrow(df_obs)
 
-# Fitted Gamma density on log10-rate axis
-lambda_grid <- 10^seq(log10(min(df_obs$rate_obs)) - 0.5,
-                      log10(max(df_obs$rate_obs)) + 0.5,
-                      length.out = 400)
-gamma_dens  <- dgamma(lambda_grid, shape = k_hat, rate = k_hat / mu_hat)
-# Jacobian: density on log10 scale = density * lambda * log(10)
-df_gamma <- tibble(lambda = lambda_grid,
-                   dens   = gamma_dens * lambda_grid * log(10))
+# Simulate rates from hurdle NB: draw truncated-NB counts using each site's
+# exposure, then convert to rate. Repeat 200 times and pool for a smooth
+# predictive density.
+set.seed(42)
+N_SIM_DIAG <- 200
+sim_rates_all <- replicate(N_SIM_DIAG, {
+    cnt <- draw_trunc_nb(mu_hat * df_obs$exposure, size = k_hat)
+    cnt / df_obs$exposure
+}, simplify = FALSE) |> unlist()
 
-p_hist2 <- ggplot(df_obs, aes(x = rate_obs)) +
-    geom_histogram(aes(y = after_stat(density * x * log(10))),
+df_sim <- tibble(rate = sim_rates_all)
+
+# ── Left: histogram + predictive KDE ─────────────────────────────────────────
+p_hist2 <- ggplot() +
+    geom_histogram(data = df_obs, aes(x = rate_obs, y = after_stat(density * x * log(10))),
                    bins = 35, fill = "steelblue", colour = "white", linewidth = 0.2) +
-    geom_line(data = df_gamma, aes(x = lambda, y = dens),
-              colour = "firebrick", linewidth = 1) +
+    geom_density(data = df_sim, aes(x = rate, y = after_stat(density * x * log(10))),
+                 colour = "firebrick", linewidth = 1, adjust = 1.2) +
     scale_x_log10(labels = function(x) format(x * 1e5, big.mark = ",", digits = 3)) +
     labs(x = "Incidence rate (per 100,000 py, log scale)",
          y = "Density (log10 scale)",
-         title = sprintf("Two-part model: Gamma(k=%.2f, mu=%.2e)", k_hat, mu_hat),
-         subtitle = sprintf("Red: fitted Gamma (positive sites); n = %d / %d sites with ≥1 case",
+         title = sprintf("Hurdle NB (k=%.2f, mu=%.2e, pi=%.2f)", k_hat, mu_hat, pi_hat),
+         subtitle = sprintf("Red: predictive density; n = %d / %d sites with ≥1 case",
                             n_pos, nrow(cases_fit))) +
     theme_minimal(base_size = 11)
 
-# Q-Q against fitted Gamma — positive sites only
-probs_pos <- (seq_len(n_pos) - 0.5) / n_pos
-q_obs_pos <- sort(df_obs$rate_obs)
-q_gamma   <- qgamma(probs_pos, shape = k_hat, rate = k_hat / mu_hat)
+# ── Right: predictive Q-Q (one simulation, same n as observed) ───────────────
+set.seed(99)
+sim_rates_qq <- draw_trunc_nb(mu_hat * df_obs$exposure, size = k_hat) / df_obs$exposure
 
-p_qq <- ggplot(tibble(obs = q_obs_pos, fitted = q_gamma),
-               aes(x = fitted, y = obs)) +
+p_qq <- ggplot(tibble(obs = sort(df_obs$rate_obs), sim = sort(sim_rates_qq)),
+               aes(x = sim, y = obs)) +
     geom_point(size = 1.5, alpha = 0.6, colour = "steelblue") +
     geom_abline(slope = 1, intercept = 0, colour = "firebrick") +
     scale_x_log10(labels = function(x) format(x * 1e5, digits = 2)) +
     scale_y_log10(labels = function(x) format(x * 1e5, digits = 2)) +
-    labs(x = "Fitted Gamma quantiles (per 100,000 py, log scale)",
+    labs(x = "Simulated quantiles — Hurdle NB (per 100,000 py, log scale)",
          y = "Observed quantiles (per 100,000 py, log scale)",
-         title = sprintf("Q-Q: observed vs fitted Gamma (n = %d positive sites)", n_pos)) +
+         title = sprintf("Predictive Q-Q: Hurdle NB (n = %d positive sites)", n_pos)) +
     theme_minimal(base_size = 11)
 
 p_hist2 + p_qq
@@ -889,14 +915,16 @@ ggplot(alpha_star_results,
 
 Rather than evaluating $\alpha^*$ on the single observed incidence landscape, we
 propagate distributional uncertainty by **drawing replicate landscapes from the
-fitted two-part model** and computing the optimal pre-emptive fraction for each:
+fitted hurdle NB model** and computing the optimal pre-emptive fraction for each:
 
-1. For each Monte Carlo iteration $s = 1, \ldots, S$, draw site-level rates
+1. For each Monte Carlo iteration $s = 1, \ldots, S$, draw site-level counts
+   from the hurdle NB using each site's observed exposure $E_i$:
    $$
-   \tilde\lambda_i^{(s)} \sim
-   \begin{cases} 0 & \text{w.p. } 1-\pi, \\ \text{Gamma}(k, k/\mu) & \text{w.p. } \pi, \end{cases}
+   \tilde Y_i^{(s)} \sim
+   \begin{cases} 0 & \text{w.p. } 1-\pi, \\ \text{TruncNB}(\mu \cdot E_i,\; k) & \text{w.p. } \pi, \end{cases}
    $$
-   and set $\tilde q_i^{(s)} = \tilde\lambda_i^{(s)} \cdot T$.
+   then set $\tilde\lambda_i^{(s)} = \tilde Y_i^{(s)} / E_i$ and
+   $\tilde q_i^{(s)} = \tilde\lambda_i^{(s)} \cdot T$.
 2. The reactive threshold $q^*$ is the empirical $(1-X/100)$-th quantile of
    $\tilde q_i^{(s)}$ (top $X = 25\%$ rule applied to the simulated landscape).
 3. The targeting score is regenerated from $\tilde\lambda_i^{(s)}$ via the
@@ -915,12 +943,19 @@ mc_results <- expand_grid(f = f_grid, rho = rho_grid) |>
         alpha_mc <- numeric(N_MC)
         for (s in seq_len(N_MC)) {
             set.seed(s)
-            # Draw site rates from two-part model
+            # Draw site rates from hurdle NB:
+            #   zero sites : Bernoulli(1 - pi_hat)
+            #   positive sites: zero-truncated NB count / exposure
             is_pos   <- rbinom(n_sites_fit, 1, pi_hat) == 1L
-            lambda_s <- ifelse(is_pos,
-                               rgamma(n_sites_fit, shape = k_hat, rate = k_hat / mu_hat),
-                               0)
-            q_s <- lambda_s * T_PLAN
+            counts_s <- integer(n_sites_fit)
+            if (any(is_pos)) {
+                counts_s[is_pos] <- draw_trunc_nb(
+                    mu_vec = mu_hat * cases_fit$exposure[is_pos],
+                    size   = k_hat
+                )
+            }
+            lambda_s <- counts_s / cases_fit$exposure   # rate per py
+            q_s      <- lambda_s * T_PLAN
 
             # Empirical top-X% threshold on simulated landscape
             q_thr_s <- quantile(q_s, 1 - Q_THRESH_PCT / 100)
