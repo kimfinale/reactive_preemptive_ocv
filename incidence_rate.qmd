@@ -1,5 +1,5 @@
 ---
-title: "ADM2 Cholera Incidence Rate (2010–2014)"
+title: "ADM2 Cholera Incidence Rate (2010–2019, Hurdle NB Fit)"
 author: "Jong-Hoon Kim"
 date: "`r Sys.Date()`"
 format:
@@ -17,7 +17,7 @@ editor_options:
 
 This document selects ADM2 sites from the outbreak surveillance data and
 computes the mean annual cholera incidence rate (cases per 100,000 person-years)
-for each site over the 2010–2014 period. Population is derived by summing the
+for each site over the 2010–2019 period. Population is derived by summing the
 WorldPop density raster over each ADM2 polygon.
 
 # Setup
@@ -116,12 +116,12 @@ cat("Total population:", format(round(sum(shp_admin2$pop_sum, na.rm = TRUE)),
 # ADM2 Site Selection
 
 Select ADM2 sites that have at least one recorded outbreak **starting** in the
-2010–2014 period. Sites with no outbreak record are retained as well (zero
+2010–2019 period. Sites with no outbreak record are retained as well (zero
 cases), to keep the denominator consistent across sites and allow comparison
 of high- and low-incidence areas.
 
 ```{r select-sites}
-STUDY_YEARS <- 2010:2014
+STUDY_YEARS <- 2010:2019
 
 # Collapse time-series rows to one row per outbreak event.
 # sCh: suspected cholera cases reported during each time-step.
@@ -150,17 +150,17 @@ cases_panel <- cases_annual |>
     replace_na(list(cases = 0))
 
 cat("Location-year observations:", nrow(cases_panel), "\n")
-cat("Locations with ≥1 case in 2010-2014:",
+cat("Locations with ≥1 case in 2010-2019:",
     n_distinct(cases_panel$location[cases_panel$cases > 0]), "\n")
 ```
 
 # Incidence Rate Computation
 
-Incidence rate = total cases over 2010–2014 divided by (population × 5 years),
+Incidence rate = total cases over 2010–2019 divided by (population × 10 years),
 expressed per 100,000 person-years.
 
 ```{r compute-incidence}
-# Sum cases over 2010-2014 for each location.
+# Sum cases over 2010-2019 for each location.
 cases_total <- cases_panel |>
     group_by(location) |>
     summarise(
@@ -205,7 +205,7 @@ incidence_df |>
         digits  = c(0, 0, 0, 0, 2),
         col.names = c("Location", "Total cases", "Population",
                       "Person-years", "Rate per 100k py"),
-        caption = "Top 20 ADM2 sites by mean annual cholera incidence rate (2010–2014)"
+        caption = "Top 20 ADM2 sites by mean annual cholera incidence rate (2010–2019)"
     )
 ```
 
@@ -244,7 +244,7 @@ p_hist + p_cdf
 ## Map of incidence rates
 
 ```{r fig-incidence-map, fig.width=10, fig.height=8}
-#| fig-cap: "Mean annual cholera incidence rate (2010–2014) per ADM2. Grey =
+#| fig-cap: "Mean annual cholera incidence rate (2010–2019) per ADM2. Grey =
 #|   sub-Saharan Africa country boundaries. Sites with zero cases are shown in
 #|   light grey."
 
@@ -275,7 +275,7 @@ ggplot() +
     ) +
     coord_sf(xlim = ssa_bbox[c("xmin", "xmax")],
              ylim = ssa_bbox[c("ymin", "ymax")]) +
-    labs(title    = "Cholera incidence rate 2010–2014 (ADM2)",
+    labs(title    = "Cholera incidence rate 2010–2019 (ADM2)",
          subtitle = "Cases attributed to year_start; population from WorldPop 2017 raster") +
     theme_minimal(base_size = 11) +
     theme(panel.grid  = element_blank(),
@@ -292,9 +292,9 @@ incidence_df |>
     mutate(pop_sum        = round(pop_sum),
            incidence_rate = round(incidence_rate, 2)) |>
     DT::datatable(
-        colnames  = c("Location", "Total cases (2010–2014)",
+        colnames  = c("Location", "Total cases (2010–2019)",
                       "Population", "Rate per 100k py"),
-        caption   = "Cholera incidence rates for all ADM2 sites (2010–2014)",
+        caption   = "Cholera incidence rates for all ADM2 sites (2010–2019)",
         rownames  = FALSE,
         filter    = "top",
         options   = list(pageLength = 25, scrollX = TRUE)
@@ -562,7 +562,7 @@ The between-location distribution of $\lambda_i$ is modelled as
 **Gamma**$(k, k/\mu)$, the natural continuous analogue of the Beta$(1,\theta)$
 used in the outbreak-probability framework.
 
-## Hurdle Negative Binomial fit to 2010–2012 data
+## Hurdle Negative Binomial fit to 2010–2019 data
 
 A single Negative Binomial fitted to all sites collapses toward $k \approx 0$
 because it conflates structural zeros with the at-risk distribution. A two-part
@@ -586,46 +586,53 @@ heavier tails than the Gamma.
 library(MASS)
 library(pscl)
 
-# Restrict to 2010-2012 (3-year horizon matching the vaccine impact section)
-FIT_YEARS <- 2010:2012
+# Use 2010-2019 (10-year horizon) to substantially reduce structural zeros.
+FIT_YEARS <- 2010:2019
 T_HORIZON <- length(FIT_YEARS)
 
 cases_fit <- cases_panel |>
     filter(year %in% FIT_YEARS) |>
     group_by(location) |>
-    summarise(cases_3yr = sum(cases), .groups = "drop") |>
+    summarise(cases_10yr = sum(cases), .groups = "drop") |>
     left_join(pop_lookup, by = "location") |>
     filter(!is.na(pop_sum), pop_sum > 0)
 
 # Exposure in person-years for each location
 cases_fit <- cases_fit |>
     mutate(
-        exposure = pop_sum * T_HORIZON,  # person-years
-        rate_obs = cases_3yr / exposure  # observed incidence rate (per py)
+        exposure  = pop_sum * T_HORIZON,   # person-years
+        rate_obs  = cases_10yr / exposure, # observed incidence rate (per py)
+        cases_int = as.integer(cases_10yr)
     )
 
 # ── Hurdle NB ─────────────────────────────────────────────────────────────────
 # Logistic component: P(Y > 0) = pi
 # Zero-truncated NB component: Y | Y > 0 ~ TruncNB(mu_i = mu * E_i, size = k)
-cases_fit <- cases_fit |> mutate(cases_3yr = as.integer(cases_3yr))
-
 fit_hurdle <- pscl::hurdle(
-    cases_3yr ~ 1 + offset(log(exposure)),
+    cases_int ~ 1 + offset(log(exposure)),
     data      = cases_fit,
     dist      = "negbin",
     zero.dist = "binomial"
 )
 
-pi_hat  <- plogis(coef(fit_hurdle, "zero")[["(Intercept)"]])
 mu_hat  <- exp(coef(fit_hurdle, "count")[["(Intercept)"]])  # rate per py
 k_hat   <- fit_hurdle$theta                                  # NB dispersion
 
-cat(sprintf("Hurdle NB fit (2010-2012):\n"))
-cat(sprintf("  pi (P[site has cases]) = %.3f  (%d / %d sites)\n",
+# pi = P(Y > 0) taken from the empirical proportion. The hurdle's logistic
+# component collapses numerically when zeros are rare (~4%): the count model
+# absorbs all variation and the binomial intercept diverges to -Inf.
+# With 620/646 observed positives the empirical MLE is reliable.
+pi_hat  <- mean(cases_fit$rate_obs > 0)
+
+cat(sprintf("Hurdle NB fit (2010-2019):\n"))
+cat(sprintf("  pi (P[site has cases]) = %.3f  (%d / %d sites, empirical)\n",
             pi_hat, sum(cases_fit$rate_obs > 0), nrow(cases_fit)))
 cat(sprintf("  NB dispersion k        = %.3f\n", k_hat))
 cat(sprintf("  Mean rate mu           = %.4e per py  (%.2f per 100k py)\n",
             mu_hat, mu_hat * 1e5))
+
+# Cache cases_fit for standalone diagnostic scripts
+saveRDS(cases_fit, "data/cases_fit_cache.rds")
 
 # Helper: draw from zero-truncated NB via rejection sampling.
 # mu_vec: site-level mean COUNTS (= mu_rate * exposure_i).
@@ -646,7 +653,7 @@ draw_trunc_nb <- function(mu_vec, size, seed = NULL) {
 
 ```{r fig-gamma-poisson, fig.width=10, fig.height=4}
 #| fig-cap: "Left: observed incidence rate distribution at positive sites vs
-#|   simulation-based predictive density from the hurdle NB (2010–2012, log10
+#|   simulation-based predictive density from the hurdle NB (2010–2019, log10
 #|   scale). Right: predictive Q-Q — observed quantiles vs simulated quantiles
 #|   from the hurdle NB using site-specific exposures (positive sites only)."
 
