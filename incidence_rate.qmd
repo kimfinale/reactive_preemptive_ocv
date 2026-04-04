@@ -562,17 +562,25 @@ The between-location distribution of $\lambda_i$ is modelled as
 **Gamma**$(k, k/\mu)$, the natural continuous analogue of the Beta$(1,\theta)$
 used in the outbreak-probability framework.
 
-## Gamma-Poisson fit to 2010–2012 data
+## Two-part Gamma fit to 2010–2012 data
 
-We model the 3-year case count at each location as:
+A single Negative Binomial fitted to all sites (including the many zero-case
+locations) collapses toward k ≈ 0 because the model must account for the large
+spike at zero. The implied Gamma for $\lambda_i$ then places nearly all
+probability mass at rates far below anything observed, producing a degenerate
+Q-Q plot.
+
+We instead use a **two-part model**:
 
 $$
-Y_i \sim \text{Poisson}(\lambda_i \cdot E_i), \qquad \lambda_i \sim \text{Gamma}(k,\, k/\mu),
+\lambda_i = \begin{cases} 0 & \text{with probability } 1-\pi, \\
+\text{Gamma}(k,\; k/\mu) & \text{with probability } \pi, \end{cases}
 $$
 
-where $E_i = N_i \cdot 3$ is the person-years exposure. Marginalising over
-$\lambda_i$ gives the **Negative Binomial** distribution with mean $\mu \cdot E_i$
-and size (overdispersion) parameter $k$. We fit $\mu$ and $k$ by maximum likelihood.
+where $\pi$ is estimated as the observed fraction of sites with at least one
+case, and Gamma$(k, k/\mu)$ (mean $\mu$, shape $k$) is fitted by maximum
+likelihood to the **positive-rate sites only** via `MASS::fitdistr`. This
+cleanly separates the structural zeros from the continuous at-risk distribution.
 
 ```{r gamma-poisson-fit}
 library(MASS)
@@ -591,42 +599,44 @@ cases_fit <- cases_panel |>
 # Exposure in person-years for each location
 cases_fit <- cases_fit |>
     mutate(
-        exposure  = pop_sum * T_HORIZON,   # person-years
-        # Naive incidence rate (cases / person-years)
-        rate_obs  = cases_3yr / exposure
+        exposure = pop_sum * T_HORIZON,  # person-years
+        rate_obs = cases_3yr / exposure  # observed incidence rate (per py)
     )
 
-# Fit Negative Binomial via MASS::glm.nb (log link, log(exposure) as offset).
-# glm.nb estimates mu (mean rate) and theta (= size = shape k of the
-# Gamma mixing distribution). Larger theta → less overdispersion.
-nb_fit <- MASS::glm.nb(
-    cases_3yr ~ 1 + offset(log(exposure)),
-    data = cases_fit
-)
+# ── Two-part model ────────────────────────────────────────────────────────────
+# Part 1: probability of a non-zero rate (Bernoulli)
+pi_hat <- mean(cases_fit$rate_obs > 0)
 
-k_hat  <- nb_fit$theta                          # Gamma shape parameter
-mu_hat <- exp(coef(nb_fit)[["(Intercept)"]])    # mean incidence rate (per py)
+# Part 2: Gamma(shape = k, rate = k/mu) fitted to positive sites only.
+# MASS::fitdistr("gamma") returns shape and rate; mean = shape / rate.
+pos_rates <- cases_fit$rate_obs[cases_fit$rate_obs > 0]
+fit_gamma <- MASS::fitdistr(pos_rates, "gamma")
+k_hat     <- fit_gamma$estimate[["shape"]]
+mu_hat    <- k_hat / fit_gamma$estimate[["rate"]]  # mean rate (per py)
 
-cat(sprintf("Gamma-Poisson fit (2010-2012):\n"))
-cat(sprintf("  Mean rate mu  = %.4e cases/person-year\n", mu_hat))
-cat(sprintf("  Shape k       = %.3f\n", k_hat))
-cat(sprintf("  Mean rate * 1e5 = %.2f per 100,000 py\n", mu_hat * 1e5))
+cat(sprintf("Two-part Gamma fit (2010-2012):\n"))
+cat(sprintf("  pi (P[site has cases]) = %.3f  (%d / %d sites)\n",
+            pi_hat, sum(cases_fit$rate_obs > 0), nrow(cases_fit)))
+cat(sprintf("  Gamma shape k          = %.3f\n", k_hat))
+cat(sprintf("  Gamma mean mu          = %.4e per py  (%.2f per 100k py)\n",
+            mu_hat, mu_hat * 1e5))
 ```
 
 ```{r fig-gamma-poisson, fig.width=10, fig.height=4}
-#| fig-cap: "Left: observed vs Gamma-Poisson fitted distribution of incidence
-#|   rates (2010–2012, log10 scale). Right: quantile-quantile plot of observed
-#|   vs NB-predicted quantiles."
+#| fig-cap: "Left: observed vs two-part Gamma fitted distribution of incidence
+#|   rates (2010–2012, positive sites only, log10 scale). Right: quantile-quantile
+#|   plot of observed vs fitted Gamma quantiles (positive sites only)."
 
-# Observed distribution
-df_obs <- cases_fit |> filter(cases_3yr > 0)
+# Positive-rate sites only — both panels use this subset
+df_obs <- cases_fit |> filter(rate_obs > 0)
+n_pos  <- nrow(df_obs)
 
-# Fitted Gamma density for lambda (rate per person-year) on log10 scale
-lambda_grid <- 10^seq(-8, -1, length.out = 400)
-gamma_dens  <- dgamma(lambda_grid,
-                      shape = k_hat,
-                      rate  = k_hat / mu_hat)
-# Convert density to log10-rate axis: d(log10 lambda) = lambda * log(10) * d(lambda)
+# Fitted Gamma density on log10-rate axis
+lambda_grid <- 10^seq(log10(min(df_obs$rate_obs)) - 0.5,
+                      log10(max(df_obs$rate_obs)) + 0.5,
+                      length.out = 400)
+gamma_dens  <- dgamma(lambda_grid, shape = k_hat, rate = k_hat / mu_hat)
+# Jacobian: density on log10 scale = density * lambda * log(10)
 df_gamma <- tibble(lambda = lambda_grid,
                    dens   = gamma_dens * lambda_grid * log(10))
 
@@ -638,26 +648,25 @@ p_hist2 <- ggplot(df_obs, aes(x = rate_obs)) +
     scale_x_log10(labels = function(x) format(x * 1e5, big.mark = ",", digits = 3)) +
     labs(x = "Incidence rate (per 100,000 py, log scale)",
          y = "Density (log10 scale)",
-         title = sprintf("Gamma(%0.2f, %0.4e) fit", k_hat, k_hat / mu_hat),
-         subtitle = sprintf("Red: fitted Gamma; n = %d sites with ≥1 case",
-                            nrow(df_obs))) +
+         title = sprintf("Two-part model: Gamma(k=%.2f, mu=%.2e)", k_hat, mu_hat),
+         subtitle = sprintf("Red: fitted Gamma (positive sites); n = %d / %d sites with ≥1 case",
+                            n_pos, nrow(cases_fit))) +
     theme_minimal(base_size = 11)
 
-# Q-Q against fitted Gamma
-n_sites  <- nrow(cases_fit)
-probs    <- (seq_len(n_sites) - 0.5) / n_sites
-q_obs    <- sort(cases_fit$rate_obs)
-q_gamma  <- qgamma(probs, shape = k_hat, rate = k_hat / mu_hat)
+# Q-Q against fitted Gamma — positive sites only
+probs_pos <- (seq_len(n_pos) - 0.5) / n_pos
+q_obs_pos <- sort(df_obs$rate_obs)
+q_gamma   <- qgamma(probs_pos, shape = k_hat, rate = k_hat / mu_hat)
 
-p_qq <- ggplot(tibble(obs = q_obs, fitted = q_gamma),
+p_qq <- ggplot(tibble(obs = q_obs_pos, fitted = q_gamma),
                aes(x = fitted, y = obs)) +
-    geom_point(size = 1, alpha = 0.5, colour = "steelblue") +
+    geom_point(size = 1.5, alpha = 0.6, colour = "steelblue") +
     geom_abline(slope = 1, intercept = 0, colour = "firebrick") +
     scale_x_log10(labels = function(x) format(x * 1e5, digits = 2)) +
     scale_y_log10(labels = function(x) format(x * 1e5, digits = 2)) +
-    labs(x = "Gamma quantiles (per 100,000 py, log scale)",
+    labs(x = "Fitted Gamma quantiles (per 100,000 py, log scale)",
          y = "Observed quantiles (per 100,000 py, log scale)",
-         title = "Q-Q: observed vs fitted Gamma") +
+         title = sprintf("Q-Q: observed vs fitted Gamma (n = %d positive sites)", n_pos)) +
     theme_minimal(base_size = 11)
 
 p_hist2 + p_qq
@@ -871,6 +880,170 @@ ggplot(alpha_star_results,
         y     = expression("Optimal pre-emptive fraction " ~ alpha^"*"),
         title = sprintf("alpha* vs targeting accuracy | R = %g, r = %g, C = %g, nu = %g | threshold = top %d%%",
                         R_VAL, R_REACT, C_COV, NU_VAL, Q_THRESH_PCT)
+    ) +
+    theme_minimal(base_size = 11) +
+    theme(legend.position = "bottom")
+```
+
+# Monte Carlo $\alpha^*$ from Two-Part Gamma Model
+
+Rather than evaluating $\alpha^*$ on the single observed incidence landscape, we
+propagate distributional uncertainty by **drawing replicate landscapes from the
+fitted two-part model** and computing the optimal pre-emptive fraction for each:
+
+1. For each Monte Carlo iteration $s = 1, \ldots, S$, draw site-level rates
+   $$
+   \tilde\lambda_i^{(s)} \sim
+   \begin{cases} 0 & \text{w.p. } 1-\pi, \\ \text{Gamma}(k, k/\mu) & \text{w.p. } \pi, \end{cases}
+   $$
+   and set $\tilde q_i^{(s)} = \tilde\lambda_i^{(s)} \cdot T$.
+2. The reactive threshold $q^*$ is the empirical $(1-X/100)$-th quantile of
+   $\tilde q_i^{(s)}$ (top $X = 25\%$ rule applied to the simulated landscape).
+3. The targeting score is regenerated from $\tilde\lambda_i^{(s)}$ via the
+   Gaussian copula at the target $\rho$, reflecting that the decision-maker's
+   information is correlated with the realised landscape.
+4. $\alpha^*$ is the minimiser of $c(\alpha)$ over a grid $[0,1]$.
+
+The output is a distribution over $\alpha^*$ across $S = 500$ replications.
+
+```{r mc-alpha-star}
+N_MC <- 500
+n_sites_fit <- nrow(cases_fit)
+
+mc_results <- expand_grid(f = f_grid, rho = rho_grid) |>
+    pmap_dfr(function(f, rho) {
+        alpha_mc <- numeric(N_MC)
+        for (s in seq_len(N_MC)) {
+            set.seed(s)
+            # Draw site rates from two-part model
+            is_pos   <- rbinom(n_sites_fit, 1, pi_hat) == 1L
+            lambda_s <- ifelse(is_pos,
+                               rgamma(n_sites_fit, shape = k_hat, rate = k_hat / mu_hat),
+                               0)
+            q_s <- lambda_s * T_PLAN
+
+            # Empirical top-X% threshold on simulated landscape
+            q_thr_s <- quantile(q_s, 1 - Q_THRESH_PCT / 100)
+
+            # Targeting score correlated with simulated rates at target rho
+            score_s <- make_rank_score(lambda_s, target_rho = rho)
+
+            costs_s <- sapply(alpha_grid, function(a) {
+                cost_incidence(
+                    alpha  = a,
+                    f      = f,
+                    q      = q_s,
+                    pop    = cases_fit$pop_sum,
+                    score  = score_s,
+                    R      = R_VAL,
+                    r      = R_REACT,
+                    nu     = NU_VAL,
+                    C_cov  = C_COV,
+                    q_star = q_thr_s
+                )
+            })
+            alpha_mc[s] <- alpha_grid[which.min(costs_s)]
+        }
+
+        tibble(
+            f              = f,
+            rho            = rho,
+            alpha_mean     = mean(alpha_mc),
+            alpha_median   = median(alpha_mc),
+            alpha_lo       = quantile(alpha_mc, 0.025),
+            alpha_hi       = quantile(alpha_mc, 0.975),
+            draws          = list(alpha_mc)
+        )
+    })
+
+mc_results |>
+    dplyr::select(f, rho, alpha_mean, alpha_median, alpha_lo, alpha_hi) |>
+    knitr::kable(
+        digits    = c(1, 1, 3, 3, 3, 3),
+        col.names = c("f", "rho", "mean alpha*", "median alpha*",
+                      "2.5%", "97.5%"),
+        caption   = sprintf(
+            "MC alpha* distribution (S = %d) | R = %g, r = %g, C = %g, nu = %g, T = %d yr | threshold = top %d%%",
+            N_MC, R_VAL, R_REACT, C_COV, NU_VAL, T_PLAN, Q_THRESH_PCT)
+    )
+```
+
+## Distribution of $\alpha^*$ across MC replications
+
+```{r fig-mc-alpha-dist, fig.width=11, fig.height=7}
+#| fig-cap: "Distribution of optimal pre-emptive fraction alpha* across 500 Monte
+#|   Carlo draws from the two-part Gamma model. Each panel is one (f, rho)
+#|   combination. The vertical dashed line is the observed-data alpha* from the
+#|   grid search above; the red dot and bar show the MC median and 95% interval."
+
+# Observed alpha* for comparison
+obs_alpha <- alpha_star_results |>
+    dplyr::select(f, rho, alpha_star_obs = alpha_star)
+
+mc_long <- mc_results |>
+    dplyr::select(f, rho, draws) |>
+    unnest(draws) |>
+    rename(alpha_star = draws)
+
+mc_summary <- mc_results |>
+    dplyr::select(f, rho, alpha_median, alpha_lo, alpha_hi) |>
+    left_join(obs_alpha, by = c("f", "rho"))
+
+ggplot(mc_long, aes(x = alpha_star)) +
+    geom_histogram(bins = 30, fill = "steelblue", colour = "white",
+                   linewidth = 0.2, aes(y = after_stat(density))) +
+    geom_vline(data = mc_summary,
+               aes(xintercept = alpha_star_obs),
+               linetype = "dashed", colour = "grey30", linewidth = 0.8) +
+    geom_point(data = mc_summary,
+               aes(x = alpha_median, y = 0),
+               colour = "firebrick", size = 3) +
+    geom_errorbarh(data = mc_summary,
+                   aes(xmin = alpha_lo, xmax = alpha_hi, x = alpha_median, y = 0),
+                   colour = "firebrick", height = 0.3, linewidth = 0.9) +
+    facet_grid(
+        rows = vars(paste0("rho = ", rho)),
+        cols = vars(paste0("f = ", f))
+    ) +
+    scale_x_continuous(limits = c(0, 1)) +
+    labs(
+        x     = expression("Optimal pre-emptive fraction " ~ alpha^"*"),
+        y     = "Density",
+        title = sprintf("MC distribution of alpha* | R = %g, r = %g, C = %g, nu = %g | S = %d",
+                        R_VAL, R_REACT, C_COV, NU_VAL, N_MC),
+        subtitle = "Dashed = observed-data alpha*; red point + bar = MC median [95% CI]"
+    ) +
+    theme_minimal(base_size = 11) +
+    theme(strip.text = element_text(face = "bold"))
+```
+
+## MC $\alpha^*$ summary: mean ± 95% CI
+
+```{r fig-mc-alpha-summary, fig.width=8, fig.height=4}
+#| fig-cap: "MC mean alpha* with 95% interval vs targeting accuracy rho, for each
+#|   coverage fraction f. Points are means; ribbons are 2.5–97.5 percentiles.
+#|   Dashed lines show observed-data alpha* for comparison."
+
+mc_plot <- mc_results |>
+    left_join(obs_alpha, by = c("f", "rho"))
+
+ggplot(mc_plot, aes(x = rho, colour = factor(f), fill = factor(f),
+                     group = factor(f))) +
+    geom_ribbon(aes(ymin = alpha_lo, ymax = alpha_hi), alpha = 0.15,
+                colour = NA) +
+    geom_line(aes(y = alpha_mean), linewidth = 0.9) +
+    geom_point(aes(y = alpha_mean), size = 3) +
+    geom_line(aes(y = alpha_star_obs), linetype = "dashed", linewidth = 0.6) +
+    scale_colour_viridis_d(option = "plasma", end = 0.85, name = "f") +
+    scale_fill_viridis_d(option = "plasma", end = 0.85, name = "f") +
+    scale_x_continuous(breaks = rho_grid) +
+    scale_y_continuous(limits = c(0, 1)) +
+    labs(
+        x        = expression(rho ~ "(targeting accuracy)"),
+        y        = expression("alpha*"),
+        title    = sprintf("MC alpha* (mean ± 95%% CI) | R = %g, r = %g, C = %g, nu = %g | threshold = top %d%%",
+                           R_VAL, R_REACT, C_COV, NU_VAL, Q_THRESH_PCT),
+        subtitle = "Solid = MC mean; ribbon = 95%% interval; dashed = observed-data alpha*"
     ) +
     theme_minimal(base_size = 11) +
     theme(legend.position = "bottom")
