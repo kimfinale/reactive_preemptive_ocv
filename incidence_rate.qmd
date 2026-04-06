@@ -528,6 +528,151 @@ ggplot() +
           legend.position = "right")
 ```
 
+## Large-Outbreak Probability (cases > S)
+
+We ask: in how many of the 10 study years did a site experience a **large**
+outbreak (total cases $> S$)?  This is a more policy-relevant threshold than
+"any case" because reactive vaccination is typically triggered only by outbreaks
+large enough to be detected and reported.
+
+We fit $k_i^{(S)} \sim \text{Binomial}(10,\, p_S)$ to the number of large-outbreak
+years per site, and report the MLE $\hat p_S$ together with a dispersion check.
+
+```{r large-outbreak-prob}
+S_THRESH <- 200L   # baseline threshold (cases per year per site)
+
+large_prob <- cases_panel |>
+    filter(year %in% 2010:2019) |>
+    group_by(location) |>
+    summarise(
+        n_years_large = sum(cases > S_THRESH),
+        prob_large    = sum(cases > S_THRESH) / n_distinct(year),
+        .groups = "drop"
+    )
+
+# Join with incidence rate
+prob_inc_large <- incidence_df |>
+    dplyr::select(location, incidence_rate) |>
+    left_join(large_prob, by = "location") |>
+    replace_na(list(n_years_large = 0L, prob_large = 0))
+
+N_TRIALS_L <- 10L
+k_large    <- prob_inc_large$n_years_large
+p_large    <- mean(k_large) / N_TRIALS_L
+var_obs_l  <- var(k_large)
+var_bin_l  <- N_TRIALS_L * p_large * (1 - p_large)
+
+cat(sprintf("Threshold S = %d cases/year:\n", S_THRESH))
+cat(sprintf("  Sites with ≥1 large-outbreak year: %d / %d (%.1f%%)\n",
+            sum(k_large > 0), length(k_large), 100 * mean(k_large > 0)))
+cat(sprintf("  Mean annual large-outbreak prob p_hat: %.4f\n", p_large))
+
+cat(sprintf("\nDistribution of k (years with cases > %d):\n", S_THRESH))
+print(table(k_large))
+
+cat(sprintf("\nBinomial(n=%d, p=%.4f):\n", N_TRIALS_L, p_large))
+cat(sprintf("  Observed variance of k : %.4f\n", var_obs_l))
+cat(sprintf("  Binomial variance n*p*(1-p): %.4f\n", var_bin_l))
+cat(sprintf("  Dispersion ratio (obs/bin)  : %.4f\n", var_obs_l / var_bin_l))
+cat(sprintf("  => %s\n",
+    ifelse(var_obs_l < var_bin_l,
+           "UNDER-dispersed: beta-binomial not appropriate.",
+           "Over-dispersed: beta-binomial may be appropriate.")))
+```
+
+```{r fig-large-outbreak-binom, fig.width=8, fig.height=4}
+#| fig-cap: !expr sprintf("Observed vs Binomial(10, p_hat) expected frequency of
+#|   large-outbreak-year counts k (S = %d cases). Red bars show the Binomial
+#|   fit; blue bars show observed frequencies.", S_THRESH)
+
+k_vals_l   <- 0:N_TRIALS_L
+obs_freq_l <- table(factor(k_large, levels = k_vals_l)) |> as.numeric()
+bin_freq_l <- dbinom(k_vals_l, N_TRIALS_L, p_large) * length(k_large)
+
+df_large <- tibble(
+    k    = rep(k_vals_l, 2),
+    freq = c(obs_freq_l, bin_freq_l),
+    type = rep(c("Observed",
+                 sprintf("Binomial(10, p=%.3f)", p_large)),
+               each = length(k_vals_l))
+)
+
+ggplot(df_large, aes(x = k, y = freq, fill = type)) +
+    geom_col(position = "dodge", width = 0.7, alpha = 0.85) +
+    scale_fill_manual(values = c("Observed" = "steelblue",
+                                 setNames("firebrick",
+                                          sprintf("Binomial(10, p=%.3f)", p_large))),
+                      name = NULL) +
+    scale_x_continuous(breaks = k_vals_l) +
+    annotate("text", x = max(k_vals_l) * 0.55, y = max(obs_freq_l) * 0.9,
+             label = sprintf("Obs var = %.2f\nBin var = %.2f\nRatio = %.2f",
+                             var_obs_l, var_bin_l, var_obs_l / var_bin_l),
+             hjust = 0, size = 3.5) +
+    labs(x = sprintf("Years with cases > %d (out of 10)", S_THRESH),
+         y = "Number of ADM2 sites",
+         title = sprintf("Large-outbreak probability  S = %d  —  p_hat = %.3f  (n = %d sites)",
+                         S_THRESH, p_large, length(k_large))) +
+    theme_minimal(base_size = 11) +
+    theme(legend.position = "bottom")
+```
+
+## Sensitivity to threshold S
+
+```{r fig-large-prob-sensitivity, fig.width=9, fig.height=4}
+#| fig-cap: "Sensitivity of large-outbreak probability estimates to the threshold
+#|   S. Left: mean annual probability p_hat as a function of S. Right:
+#|   distribution of site-level large-outbreak probabilities for four values of S."
+
+S_vals <- c(50L, 100L, 200L, 500L)
+
+sens_list <- lapply(S_vals, function(S) {
+    cases_panel |>
+        filter(year %in% 2010:2019) |>
+        group_by(location) |>
+        summarise(prob_large = sum(cases > S) / n_distinct(year),
+                  .groups = "drop") |>
+        mutate(S = S)
+})
+sens_df <- bind_rows(sens_list)
+
+# Summary table
+sens_sum <- sens_df |>
+    group_by(S) |>
+    summarise(
+        p_hat       = mean(prob_large),
+        pct_nonzero = 100 * mean(prob_large > 0),
+        median_prob = median(prob_large[prob_large > 0]),
+        .groups = "drop"
+    )
+
+knitr::kable(sens_sum,
+    digits  = 3,
+    col.names = c("Threshold S", "Mean p_hat",
+                  "% sites ≥1 large yr", "Median p (positive sites)"),
+    caption = "Large-outbreak probability estimates by threshold S")
+```
+
+```{r fig-large-prob-dist, fig.width=10, fig.height=4}
+#| fig-cap: "Distribution of site-level annual large-outbreak probabilities for
+#|   four values of the threshold S. Only sites with at least one large-outbreak
+#|   year are shown (right y-axis counts vary by S)."
+
+ggplot(sens_df |> filter(prob_large > 0),
+       aes(x = prob_large, fill = factor(S))) +
+    geom_histogram(binwidth = 0.1, boundary = 0,
+                   colour = "white", linewidth = 0.2, alpha = 0.8,
+                   position = "identity") +
+    facet_wrap(~factor(S, labels = paste0("S = ", S_vals)),
+               nrow = 1, scales = "free_y") +
+    scale_fill_brewer(palette = "Set2", guide = "none") +
+    scale_x_continuous(breaks = seq(0, 1, 0.2)) +
+    labs(x = "Annual large-outbreak probability",
+         y = "Number of ADM2 sites",
+         title = "Distribution of large-outbreak probability by threshold S") +
+    theme_minimal(base_size = 11) +
+    theme(panel.spacing = unit(0.8, "lines"))
+```
+
 # Vaccine Impact Scenarios
 
 ## Setup
