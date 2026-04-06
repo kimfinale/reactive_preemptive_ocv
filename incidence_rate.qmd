@@ -642,7 +642,7 @@ df_lnorm    <- tibble(lambda = lambda_grid,
 
 # ── Left: histogram + fitted density ─────────────────────────────────────────
 p_hist2 <- ggplot(df_obs, aes(x = rate_obs)) +
-    geom_histogram(aes(y = after_stat(density * x * log(10))),
+    geom_histogram(aes(y = after_stat(density)),
                    bins = 35, fill = "steelblue", colour = "white", linewidth = 0.2) +
     geom_line(data = df_lnorm, aes(x = lambda, y = dens),
               colour = "firebrick", linewidth = 1) +
