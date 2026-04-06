@@ -351,6 +351,72 @@ prob_inc |>
     )
 ```
 
+## Binomial fit and dispersion check
+
+Each site's annual case record is treated as a Bernoulli trial (outbreak /
+no outbreak), contributing $k_i \sim \text{Binomial}(10,\, p_i)$ over
+$n = 10$ years. Before fitting a Beta-Binomial we check whether extra-Binomial
+variation is actually present by comparing the observed variance of $k$ to the
+Binomial expectation.
+
+```{r betabinom-fit}
+N_TRIALS <- 10L   # years of observation
+k_obs    <- prob_inc$n_years_with_cases
+
+p_hat    <- mean(k_obs) / N_TRIALS       # MLE under Binomial
+var_obs  <- var(k_obs)                   # observed variance of k
+var_bin  <- N_TRIALS * p_hat * (1 - p_hat)   # Binomial variance
+
+cat(sprintf("Outbreak count distribution (k out of %d years):\n", N_TRIALS))
+print(table(k_obs))
+
+cat(sprintf("\nBinomial(n=%d, p=%.4f):\n", N_TRIALS, p_hat))
+cat(sprintf("  Observed variance of k : %.4f\n", var_obs))
+cat(sprintf("  Binomial variance n*p*(1-p): %.4f\n", var_bin))
+cat(sprintf("  Dispersion ratio (obs/bin)  : %.4f\n", var_obs / var_bin))
+cat(sprintf("  => %s\n",
+    ifelse(var_obs < var_bin,
+           "UNDER-dispersed: beta-binomial (which adds overdispersion) will not improve fit.",
+           "Over-dispersed: beta-binomial may be appropriate.")))
+```
+
+```{r fig-betabinom-fit, fig.width=8, fig.height=4}
+#| fig-cap: "Observed vs Binomial(10, p_hat) expected frequency of outbreak-year
+#|   counts k. The data is under-dispersed: more sites at k=1 and fewer at k=0
+#|   than Binomial predicts, so a Beta-Binomial (which adds overdispersion) is
+#|   not appropriate. The mean annual outbreak probability p_hat = mean(k)/10."
+
+k_vals   <- 0:N_TRIALS
+obs_freq <- table(factor(k_obs, levels = k_vals)) |> as.numeric()
+bin_freq <- dbinom(k_vals, N_TRIALS, p_hat) * length(k_obs)
+
+df_counts <- tibble(
+    k    = rep(k_vals, 2),
+    freq = c(obs_freq, bin_freq),
+    type = rep(c("Observed", sprintf("Binomial(10, p=%.3f)", p_hat)),
+               each = length(k_vals))
+)
+
+ggplot(df_counts, aes(x = k, y = freq, fill = type)) +
+    geom_col(position = "dodge", width = 0.7, alpha = 0.85) +
+    scale_fill_manual(values = c("Observed" = "steelblue",
+                                 setNames("firebrick",
+                                          sprintf("Binomial(10, p=%.3f)", p_hat))),
+                      name = NULL) +
+    scale_x_continuous(breaks = k_vals) +
+    annotate("text", x = 6, y = max(obs_freq) * 0.9,
+             label = sprintf("Obs var = %.2f\nBin var = %.2f\nRatio = %.2f",
+                             var_obs, var_bin, var_obs / var_bin),
+             hjust = 0, size = 3.5) +
+    labs(x = "Years with ≥1 case (out of 10)",
+         y = "Number of ADM2 sites",
+         title = sprintf("Observed vs Binomial(10, p=%.3f)  —  n = %d sites",
+                         p_hat, length(k_obs)),
+         subtitle = "Under-dispersed data: beta-binomial not appropriate") +
+    theme_minimal(base_size = 11) +
+    theme(legend.position = "bottom")
+```
+
 ## Distribution of outbreak probability
 
 ```{r fig-outbreak-dist, fig.width=10, fig.height=4}
