@@ -301,6 +301,167 @@ incidence_df |>
     )
 ```
 
+# Outbreak Probability (2010–2019)
+
+For each ADM2 site we estimate the **annual outbreak probability** as the
+fraction of years (out of 10) in which at least one case was recorded:
+
+$$
+\hat p_i = \frac{\text{(years with} \geq 1 \text{ case)}}{10}.
+$$
+
+We then ask how strongly $\hat p_i$ correlates with the mean annual incidence
+rate $\lambda_i$ — i.e. whether knowing that a location ever experiences
+cholera is redundant with knowing how badly it is affected on average.
+
+## Compute outbreak probability
+
+```{r outbreak-prob}
+outbreak_prob <- cases_panel |>
+    filter(year %in% 2010:2019) |>
+    group_by(location) |>
+    summarise(
+        n_years_with_cases   = sum(cases > 0),
+        prob_outbreak_yr     = sum(cases > 0) / n_distinct(year),
+        any_outbreak_10yr    = as.integer(sum(cases) > 0),
+        .groups = "drop"
+    )
+
+# Join with incidence rate
+prob_inc <- incidence_df |>
+    dplyr::select(location, incidence_rate) |>
+    left_join(outbreak_prob, by = "location") |>
+    replace_na(list(n_years_with_cases = 0L,
+                    prob_outbreak_yr   = 0,
+                    any_outbreak_10yr  = 0L))
+
+cat(sprintf("Sites with ≥1 outbreak year:  %d / %d\n",
+            sum(prob_inc$any_outbreak_10yr), nrow(prob_inc)))
+cat(sprintf("Mean annual outbreak prob:    %.3f\n",
+            mean(prob_inc$prob_outbreak_yr)))
+cat(sprintf("Median annual outbreak prob:  %.3f\n",
+            median(prob_inc$prob_outbreak_yr)))
+
+prob_inc |>
+    count(n_years_with_cases, name = "n_sites") |>
+    mutate(prob = n_years_with_cases / 10) |>
+    knitr::kable(
+        col.names = c("Years with cases (out of 10)", "N sites", "Annual prob"),
+        caption   = "Distribution of annual outbreak probability across ADM2 sites (2010–2019)"
+    )
+```
+
+## Distribution of outbreak probability
+
+```{r fig-outbreak-dist, fig.width=10, fig.height=4}
+#| fig-cap: "Left: histogram of annual outbreak probability across all ADM2 sites
+#|   (including zeros). Right: empirical CDF restricted to sites with ≥1 outbreak
+#|   year."
+
+p_ob_hist <- ggplot(prob_inc, aes(x = prob_outbreak_yr)) +
+    geom_histogram(binwidth = 0.1, boundary = 0,
+                   fill = "steelblue", colour = "white", linewidth = 0.2) +
+    scale_x_continuous(breaks = seq(0, 1, 0.1),
+                       labels = function(x) sprintf("%.1f", x)) +
+    labs(x = "Annual outbreak probability",
+         y = "Number of ADM2 sites",
+         title = sprintf("Outbreak probability distribution (n = %d sites)",
+                         nrow(prob_inc))) +
+    theme_minimal(base_size = 11)
+
+p_ob_cdf <- prob_inc |>
+    filter(prob_outbreak_yr > 0) |>
+    arrange(prob_outbreak_yr) |>
+    mutate(ecdf = seq_len(n()) / n()) |>
+    ggplot(aes(x = prob_outbreak_yr, y = ecdf)) +
+    geom_line(colour = "steelblue", linewidth = 0.9) +
+    geom_point(size = 1, alpha = 0.4, colour = "steelblue") +
+    scale_x_continuous(breaks = seq(0, 1, 0.1)) +
+    labs(x = "Annual outbreak probability",
+         y = "Cumulative proportion of sites",
+         title = sprintf("ECDF (n = %d sites with ≥1 outbreak year)",
+                         sum(prob_inc$prob_outbreak_yr > 0))) +
+    theme_minimal(base_size = 11)
+
+p_ob_hist + p_ob_cdf
+```
+
+## Incidence rate vs outbreak probability
+
+```{r fig-rate-vs-prob, fig.width=10, fig.height=5}
+#| fig-cap: "Scatter plot of mean annual incidence rate vs annual outbreak
+#|   probability across ADM2 sites. Left: all sites (zero-probability sites
+#|   shown at the bottom). Right: sites with ≥1 outbreak year only, log10
+#|   incidence scale. Spearman correlation annotated on each panel."
+
+df_all <- prob_inc
+df_pos <- prob_inc |> filter(prob_outbreak_yr > 0, incidence_rate > 0)
+
+rho_all <- cor(df_all$incidence_rate, df_all$prob_outbreak_yr,
+               method = "spearman", use = "complete.obs")
+rho_pos <- cor(df_pos$incidence_rate, df_pos$prob_outbreak_yr,
+               method = "spearman", use = "complete.obs")
+
+p_left <- ggplot(df_all, aes(x = prob_outbreak_yr, y = incidence_rate)) +
+    geom_point(alpha = 0.4, size = 1.5, colour = "steelblue") +
+    geom_smooth(method = "lm", se = TRUE, colour = "firebrick",
+                linewidth = 0.8) +
+    annotate("text", x = 0.05, y = max(df_all$incidence_rate, na.rm = TRUE) * 0.9,
+             label = sprintf("Spearman rho = %.3f", rho_all),
+             hjust = 0, size = 3.5) +
+    labs(x = "Annual outbreak probability",
+         y = "Incidence rate (per 100,000 py)",
+         title = sprintf("All sites (n = %d)", nrow(df_all))) +
+    theme_minimal(base_size = 11)
+
+p_right <- ggplot(df_pos, aes(x = prob_outbreak_yr, y = incidence_rate)) +
+    geom_point(alpha = 0.4, size = 1.5, colour = "steelblue") +
+    geom_smooth(method = "lm", se = TRUE, colour = "firebrick",
+                linewidth = 0.8) +
+    scale_y_log10(labels = scales::comma) +
+    annotate("text", x = 0.05,
+             y = 10^(log10(max(df_pos$incidence_rate, na.rm = TRUE)) * 0.95),
+             label = sprintf("Spearman rho = %.3f", rho_pos),
+             hjust = 0, size = 3.5) +
+    labs(x = "Annual outbreak probability",
+         y = "Incidence rate (per 100,000 py, log scale)",
+         title = sprintf("Sites with ≥1 outbreak year (n = %d)", nrow(df_pos))) +
+    theme_minimal(base_size = 11)
+
+p_left + p_right
+```
+
+## Map of outbreak probability
+
+```{r fig-outbreak-map, fig.width=10, fig.height=8}
+#| fig-cap: "Annual outbreak probability (2010–2019) per ADM2 site. Sites with
+#|   zero outbreak years are shown in light grey."
+
+shp_prob <- shp_admin2 |>
+    left_join(prob_inc |> dplyr::select(location, prob_outbreak_yr),
+              by = "location") |>
+    replace_na(list(prob_outbreak_yr = 0))
+
+ggplot() +
+    geom_sf(data = ssa_sf,   fill = "grey85", colour = "grey60", linewidth = 0.2) +
+    geom_sf(data = shp_prob, aes(fill = prob_outbreak_yr), colour = NA) +
+    scale_fill_viridis_c(
+        option  = "plasma", direction = -1,
+        limits  = c(0, 1),
+        breaks  = seq(0, 1, 0.2),
+        name    = "Annual\noutbreak\nprob."
+    ) +
+    coord_sf(xlim = ssa_bbox[c("xmin", "xmax")],
+             ylim = ssa_bbox[c("ymin", "ymax")]) +
+    labs(title    = "Annual outbreak probability 2010–2019 (ADM2)",
+         subtitle = "Fraction of years with ≥1 case recorded") +
+    theme_minimal(base_size = 11) +
+    theme(panel.grid      = element_blank(),
+          axis.text       = element_blank(),
+          axis.ticks      = element_blank(),
+          legend.position = "right")
+```
+
 # Vaccine Impact Scenarios
 
 ## Setup
