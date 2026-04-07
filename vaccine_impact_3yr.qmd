@@ -384,24 +384,24 @@ illness burden per person.
 
 ```{r cost-curves}
 c_no_vax_by_R <- setNames(
-    sapply(R_VALS, function(R) R * weighted.mean(sim_df$q_i, sim_df$pop_sum)),
+    sapply(R_VALS, function(Rv) Rv * weighted.mean(sim_df$q_i, sim_df$pop_sum)),
     R_VALS)
 cat("No-vaccination cost (per capita, in C_V units):\n")
-for (R in R_VALS)
-    cat(sprintf("  R = %4d:  c0 = %.4f\n", R, c_no_vax_by_R[as.character(R)]))
+for (Rv in R_VALS)
+    cat(sprintf("  R = %4d:  c0 = %.4f\n", Rv, c_no_vax_by_R[as.character(Rv)]))
 
-# Sweep alpha for all (rho, R) combinations
+# Sweep alpha for all (rho, R) combinations.
+# Use distinct argument names (rho_val, R_val) to avoid closure-capture of the
+# for-loop variable R that leaked into the chunk environment.
 cost_df <- expand_grid(rho = RHO_VALS, R = R_VALS) |>
     pmap_dfr(function(rho, R) {
-        score <- make_rank_score(sim_df$q_i, target_rho = rho)
-        tibble(
-            rho   = rho,
-            R     = R,
-            alpha = ALPHA_GRID,
-            cost  = sapply(ALPHA_GRID, function(a)
-                cost_incidence(a, F_VAX, sim_df$q_i, sim_df$pop_sum,
-                               score, R, R_REACT, NU_VAL, C_COV, Q_THRESH))
-        )
+        rho_val <- rho; R_val <- R   # explicit local copies — no closure ambiguity
+        score <- make_rank_score(sim_df$q_i, target_rho = rho_val)
+        cost_vec <- vapply(ALPHA_GRID, function(a)
+            cost_incidence(a, F_VAX, sim_df$q_i, sim_df$pop_sum,
+                           score, R_val, R_REACT, NU_VAL, C_COV, Q_THRESH),
+            FUN.VALUE = numeric(1))
+        tibble(rho = rho_val, R = R_val, alpha = ALPHA_GRID, cost = cost_vec)
     })
 
 opt_df <- cost_df |>
@@ -488,25 +488,26 @@ ggplot(opt_df, aes(x = rho, y = alpha_star,
 ```{r cases-averted}
 ca_df <- expand_grid(rho = RHO_VALS, R = R_VALS) |>
     pmap_dfr(function(rho, R) {
-        score <- make_rank_score(sim_df$q_i, target_rho = rho)
-        a_star <- opt_df$alpha_star[opt_df$rho == rho & opt_df$R == R]
+        rho_val <- rho; R_val <- R
+        score  <- make_rank_score(sim_df$q_i, target_rho = rho_val)
+        a_star <- opt_df$alpha_star[opt_df$rho == rho_val & opt_df$R == R_val]
 
         # At optimal alpha
         ca_opt <- cases_averted_breakdown(a_star, F_VAX, sim_df$q_i,
-                                          sim_df$pop_sum, score, R, R_REACT,
+                                          sim_df$pop_sum, score, R_val, R_REACT,
                                           NU_VAL, C_COV, Q_THRESH)
         # At pure reactive (alpha=0)
         ca_rx  <- cases_averted_breakdown(0, F_VAX, sim_df$q_i,
-                                          sim_df$pop_sum, score, R, R_REACT,
+                                          sim_df$pop_sum, score, R_val, R_REACT,
                                           NU_VAL, C_COV, Q_THRESH)
         # At pure pre-emptive (alpha=1)
         ca_pre <- cases_averted_breakdown(1, F_VAX, sim_df$q_i,
-                                          sim_df$pop_sum, score, R, R_REACT,
+                                          sim_df$pop_sum, score, R_val, R_REACT,
                                           NU_VAL, C_COV, Q_THRESH)
 
         tibble(
-            rho       = rho,
-            R         = R,
+            rho       = rho_val,
+            R         = R_val,
             alpha_star = a_star,
             cases_no_vax      = round(ca_opt$total_cases_no_vax),
             cases_averted_opt = round(ca_opt$cases_averted),
