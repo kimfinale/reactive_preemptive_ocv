@@ -64,7 +64,7 @@ R_REACT  <- 0.40   # reactive VE
 C_COV    <- 1.00   # within-location vaccine coverage (fraction of pop in site)
 Q_THRESH <- 0      # reactive threshold: vaccinate all outbreak sites (q* = 0)
 
-R_VALS   <- c(100, 500)        # cost ratios to analyse
+R_VALS   <- c(100, 500, 1000)  # cost ratios to analyse
 R_BASE   <- 100                 # baseline R for primary figures
 RHO_VALS <- c(0, 0.3, 1.0)    # targeting accuracy levels
 ALPHA_GRID <- seq(0, 1, length.out = 201)
