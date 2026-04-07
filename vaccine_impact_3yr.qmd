@@ -60,7 +60,7 @@ T_WIN     <- length(WIN_YEARS)   # 3 years
 
 F_VAX    <- 0.60   # vaccination capacity (fraction of total population)
 NU_VAL   <- 1.00   # pre-emptive VE
-R_REACT  <- 0.40   # reactive VE
+R_REACT  <- 0.60   # reactive VE
 C_COV    <- 1.00   # within-location vaccine coverage (fraction of pop in site)
 Q_THRESH <- 0      # reactive threshold: vaccinate all outbreak sites (q* = 0)
 
