@@ -133,10 +133,22 @@ sim_df <- cases_fit |>
     # Burden per person over the 3-year window
     mutate(q_i = cases_win / pop_sum)
 
-# First-year cases: cases in the first outbreak year within WIN_YEARS.
-# Reactive vaccination is triggered by the first observed outbreak at a site.
-# r = 40% of first-year cases are averted; vaccine-induced immunity prevents
-# any subsequent outbreak years in the window.
+# First-outbreak date and first-year cases per site within WIN_YEARS.
+#
+# Reactive deployment follows outbreak chronology: the vaccine stockpile is
+# allocated in order of outbreak start date (earliest-triggered sites first),
+# until doses run out.  At each vaccinated site:
+#   - r = 40% of first-year cases are averted (vaccine arrives mid-outbreak)
+#   - vaccine-induced immunity prevents any subsequent outbreak years in the window
+#
+# date_first : exact start date of the first outbreak at each site within WIN_YEARS
+#              (used to order reactive deployment chronologically)
+# cases_first: case count in that first outbreak year (used to compute residual illness)
+date_first_df <- ts2 |>
+    filter(year(TL) %in% WIN_YEARS) |>
+    group_by(location) |>
+    summarise(date_first = min(TL), .groups = "drop")
+
 cases_first_df <- cases_panel |>
     filter(year %in% WIN_YEARS, cases > 0) |>
     group_by(location) |>
@@ -146,8 +158,13 @@ cases_first_df <- cases_panel |>
 
 sim_df <- sim_df |>
     left_join(cases_first_df, by = "location") |>
+    left_join(date_first_df,  by = "location") |>
     replace_na(list(cases_first = 0L)) |>
-    mutate(cases_subsequent = cases_win - cases_first)
+    # Sites with no outbreak get a sentinel far-future date so they sort last
+    mutate(
+        date_first        = if_else(is.na(date_first), as.Date("9999-12-31"), date_first),
+        cases_subsequent  = cases_win - cases_first
+    )
 
 P_TOTAL  <- sum(sim_df$pop_sum)
 N_SITES  <- nrow(sim_df)
@@ -306,7 +323,7 @@ make_rank_score <- function(truth, target_rho, seed = 42) {
 # Reactive model: vaccination arrives during the first outbreak year at each site.
 # It averts r of that year's cases and confers immunity preventing any subsequent
 # outbreak years in the window. Vaccination cost = pop_i × C_V per reactive site.
-cost_incidence <- function(alpha, f, q, cases_first, pop, score, R, r,
+cost_incidence <- function(alpha, f, q, cases_first, date_first, pop, score, R, r,
                             nu = 1, C_cov = 1, q_star = 0) {
     P       <- sum(pop)
     all_idx <- seq_along(q)
@@ -319,10 +336,9 @@ cost_incidence <- function(alpha, f, q, cases_first, pop, score, R, r,
 
     q_bar_pre  <- if (length(pre_idx) > 0) weighted.mean(q[pre_idx], pop[pre_idx]) else 0
     f_pre_used <- sum(pop[pre_idx]) / P
-    # Vaccination cost (pop_i × C_cov) + residual illness (0 when nu = 1)
-    c_pre <- f_pre_used * (C_cov + q_bar_pre * (1 - nu) * R)
+    c_pre      <- f_pre_used * (C_cov + q_bar_pre * (1 - nu) * R)
 
-    # Reactive: remaining sites trigger if q > q_star
+    # Reactive: remaining sites that have outbreaks (q > q_star)
     rem_idx       <- setdiff(all_idx, pre_idx)
     triggered_idx <- rem_idx[q[rem_idx] > q_star]
     no_action_idx <- rem_idx[q[rem_idx] <= q_star]
@@ -331,13 +347,14 @@ cost_incidence <- function(alpha, f, q, cases_first, pop, score, R, r,
 
     f_react_cap <- (1 - alpha) * f * P
     if (length(triggered_idx) > 0) {
-        ord_react  <- triggered_idx[order(q[triggered_idx], decreasing = TRUE)]
+        # Deploy reactively in chronological order of first outbreak start date
+        ord_react  <- triggered_idx[order(date_first[triggered_idx])]
         n_react    <- sum(cumsum(pop[ord_react]) <= f_react_cap)
         react_idx  <- ord_react[seq_len(max(n_react, 0L))]
         missed_idx <- setdiff(ord_react, react_idx)
 
-        # Vaccination cost: pop_i × C_cov (full regional population vaccinated)
-        # Illness cost: (1-r) × cases_first only; subsequent years fully prevented
+        # Vaccination cost: pop_i × C_cov per vaccinated site
+        # Residual illness: (1-r) × first-year cases; subsequent years fully prevented
         c_react  <- C_cov * sum(pop[react_idx]) / P +
                     R * (1 - r) * sum(cases_first[react_idx]) / P
         c_missed <- R * sum(q[missed_idx] * pop[missed_idx]) / P
@@ -352,7 +369,7 @@ cost_incidence <- function(alpha, f, q, cases_first, pop, score, R, r,
 # Cases averted breakdown for a given allocation.
 # Uses same reactive model as cost_incidence(): r reduces first-year cases;
 # subsequent outbreak years at each reactive site are fully prevented.
-cases_averted_breakdown <- function(alpha, f, q, cases_first, pop, score, R, r,
+cases_averted_breakdown <- function(alpha, f, q, cases_first, date_first, pop, score, R, r,
                                      nu = 1, C_cov = 1, q_star = 0) {
     P       <- sum(pop)
     all_idx <- seq_along(q)
@@ -367,7 +384,8 @@ cases_averted_breakdown <- function(alpha, f, q, cases_first, pop, score, R, r,
 
     f_react_cap <- (1 - alpha) * f * P
     if (length(triggered_idx) > 0) {
-        ord_react  <- triggered_idx[order(q[triggered_idx], decreasing = TRUE)]
+        # Deploy in chronological order of first outbreak start date
+        ord_react  <- triggered_idx[order(date_first[triggered_idx])]
         n_react    <- sum(cumsum(pop[ord_react]) <= f_react_cap)
         react_idx  <- ord_react[seq_len(max(n_react, 0L))]
         missed_idx <- setdiff(ord_react, react_idx)
@@ -376,12 +394,10 @@ cases_averted_breakdown <- function(alpha, f, q, cases_first, pop, score, R, r,
         missed_idx <- integer(0)
     }
 
-    cases_win     <- q * pop                            # observed total cases
+    cases_win     <- q * pop
     total_cases   <- sum(cases_win)
-    # Pre-emptive: nu = 1 → all cases averted
     cases_pre     <- sum(cases_win[pre_idx])
-    # Reactive: r of first-year cases + all subsequent-year cases averted
-    cases_rx_1st  <- r       * sum(cases_first[react_idx])
+    cases_rx_1st  <- r * sum(cases_first[react_idx])
     cases_rx_sub  <- sum(cases_win[react_idx]) - sum(cases_first[react_idx])
     cases_rx      <- cases_rx_1st + cases_rx_sub
     cases_averted <- cases_pre + cases_rx
@@ -436,8 +452,8 @@ cost_df <- expand_grid(rho = RHO_VALS, R = R_VALS) |>
         rho_val <- rho; R_val <- R
         score    <- make_rank_score(sim_df$q_i, target_rho = rho_val)
         cost_vec <- vapply(ALPHA_GRID, function(a)
-            cost_incidence(a, F_VAX, sim_df$q_i, sim_df$cases_first, sim_df$pop_sum,
-                           score, R_val, R_REACT, NU_VAL, C_COV, Q_THRESH),
+            cost_incidence(a, F_VAX, sim_df$q_i, sim_df$cases_first, sim_df$date_first,
+                           sim_df$pop_sum, score, R_val, R_REACT, NU_VAL, C_COV, Q_THRESH),
             FUN.VALUE = numeric(1))
         tibble(rho = rho_val, R = R_val, alpha = ALPHA_GRID, cost = cost_vec)
     })
@@ -532,16 +548,19 @@ ca_df <- expand_grid(rho = RHO_VALS, R = R_VALS) |>
 
         # At optimal alpha
         ca_opt <- cases_averted_breakdown(a_star, F_VAX, sim_df$q_i,
-                                          sim_df$cases_first, sim_df$pop_sum,
-                                          score, R_val, R_REACT, NU_VAL, C_COV, Q_THRESH)
+                                          sim_df$cases_first, sim_df$date_first,
+                                          sim_df$pop_sum, score, R_val, R_REACT,
+                                          NU_VAL, C_COV, Q_THRESH)
         # At pure reactive (alpha=0)
         ca_rx  <- cases_averted_breakdown(0, F_VAX, sim_df$q_i,
-                                          sim_df$cases_first, sim_df$pop_sum,
-                                          score, R_val, R_REACT, NU_VAL, C_COV, Q_THRESH)
+                                          sim_df$cases_first, sim_df$date_first,
+                                          sim_df$pop_sum, score, R_val, R_REACT,
+                                          NU_VAL, C_COV, Q_THRESH)
         # At pure pre-emptive (alpha=1)
         ca_pre <- cases_averted_breakdown(1, F_VAX, sim_df$q_i,
-                                          sim_df$cases_first, sim_df$pop_sum,
-                                          score, R_val, R_REACT, NU_VAL, C_COV, Q_THRESH)
+                                          sim_df$cases_first, sim_df$date_first,
+                                          sim_df$pop_sum, score, R_val, R_REACT,
+                                          NU_VAL, C_COV, Q_THRESH)
 
         tibble(
             rho       = rho_val,
@@ -591,8 +610,8 @@ averted_df <- expand_grid(rho = RHO_VALS, alpha = ALPHA_GRID) |>
     mutate(
         pct_averted = mapply(function(rho, a) {
             ca <- cases_averted_breakdown(
-                a, F_VAX, sim_df$q_i, sim_df$cases_first, sim_df$pop_sum,
-                score_list[[as.character(rho)]], R_BASE, R_REACT,
+                a, F_VAX, sim_df$q_i, sim_df$cases_first, sim_df$date_first,
+                sim_df$pop_sum, score_list[[as.character(rho)]], R_BASE, R_REACT,
                 NU_VAL, C_COV, Q_THRESH)
             ca$pct_averted
         }, rho, alpha)
