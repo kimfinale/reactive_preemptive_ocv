@@ -416,88 +416,109 @@ ggplot(df_counts, aes(x = k, y = freq, fill = type)) +
     theme(legend.position = "bottom")
 ```
 
-## Two-part Beta fit to site-level outbreak probabilities
+## Beta-Binomial fit to site-level outbreak probabilities
 
-The Binomial null treats every site as having the same $p$.  A more realistic
-model acknowledges that sites differ in their underlying outbreak probability
-$p_i$.  We model this heterogeneity with a **two-part distribution**:
+The Binomial null assumes every site shares the same $p$. A richer model places
+a Beta prior on site-specific probabilities $p_i \sim \text{Beta}(\alpha, \beta)$
+and marginalises to give the **Beta-Binomial**:
 
 $$
-p_i \sim \begin{cases}
-0 & \text{with probability } \pi_0 \\
-\text{Beta}(\alpha, \beta) & \text{with probability } 1 - \pi_0
-\end{cases}
+k_i \sim \text{BetaBin}(n,\,\alpha,\,\beta), \quad
+P(k_i = k) = \binom{n}{k}\frac{B(k+\alpha,\;n-k+\beta)}{B(\alpha,\beta)}.
 $$
 
-where $\pi_0$ is estimated empirically as the fraction of sites with $k_i = 0$,
-and $\text{Beta}(\alpha, \beta)$ is fitted by MLE to the positive
-$\hat{p}_i = k_i / 10$ values.
+This uses **all** sites including zeros — observed zeros are treated as sampling
+zeros from sites with low (but non-zero) $p_i$, not as structural zeros.
+MLE maximises $\sum_i \log P(k_i \mid \alpha, \beta)$.
 
-```{r twopart-beta-fit}
-p_i     <- k_obs / N_TRIALS            # site-level estimates
-pi0_hat <- mean(p_i == 0)              # zero-mass fraction
+```{r betabinom-fit-bb}
+# Beta-Binomial log-likelihood (shared helper for both thresholds)
+ll_bb <- function(par, k, n) {
+    a <- exp(par[1]); b <- exp(par[2])
+    sum(lchoose(n, k) + lbeta(k + a, n - k + b) - lbeta(a, b))
+}
 
-p_pos   <- p_i[p_i > 0]               # positive sites only
+fit_betabinom <- function(k, n) {
+    starts <- expand.grid(log_a = seq(-2, 2, by = 0.5),
+                          log_b = seq(-1, 3, by = 0.5))
+    results <- lapply(seq_len(nrow(starts)), function(i) {
+        tryCatch(
+            optim(c(starts$log_a[i], starts$log_b[i]), fn = ll_bb,
+                  k = k, n = n, method = "Nelder-Mead",
+                  control = list(fnscale = -1, maxit = 5000)),
+            error = function(e) list(value = -Inf)
+        )
+    })
+    best <- results[[which.max(sapply(results, `[[`, "value"))]]
+    a <- exp(best$par[1]); b <- exp(best$par[2])
+    list(a = a, b = b, loglik = best$value,
+         converged = best$convergence == 0,
+         degenerate = (a + b) > 1e6)
+}
 
-# MLE Beta fit; values at exactly 1 get a tiny nudge to keep inside (0,1)
-p_pos_fit <- pmin(p_pos, 1 - 1e-6)
-fit_beta  <- MASS::fitdistr(p_pos_fit, "beta",
-                             start = list(shape1 = 1, shape2 = 3))
-a_hat <- fit_beta$estimate[["shape1"]]
-b_hat <- fit_beta$estimate[["shape2"]]
+bb       <- fit_betabinom(k_obs, N_TRIALS)
+a_bb     <- bb$a;  b_bb <- bb$b
+p_bb     <- a_bb / (a_bb + b_bb)          # BB mean
+rho_bb   <- 1 / (a_bb + b_bb + 1)         # overdispersion parameter
 
-cat(sprintf("Two-part Beta fit (annual outbreak probability):\n"))
-cat(sprintf("  pi_0 (zero sites)   = %.3f  (%d / %d sites)\n",
-            pi0_hat, sum(p_i == 0), length(p_i)))
-cat(sprintf("  Positive sites (n)  = %d\n", length(p_pos)))
-cat(sprintf("  Beta: alpha = %.3f,  beta = %.3f\n", a_hat, b_hat))
-cat(sprintf("  Beta mean           = %.4f\n",  a_hat / (a_hat + b_hat)))
-cat(sprintf("  Beta SD             = %.4f\n",
-            sqrt(a_hat * b_hat / ((a_hat + b_hat)^2 * (a_hat + b_hat + 1)))))
-cat(sprintf("  Overall mean p_i    = %.4f  (incl. zeros)\n", mean(p_i)))
+# Dispersion relative to Binomial(N, p_hat)
+p_hat_bin <- mean(k_obs) / N_TRIALS
+var_obs   <- var(k_obs)
+var_bin   <- N_TRIALS * p_hat_bin * (1 - p_hat_bin)
+
+cat(sprintf("Beta-Binomial fit (any outbreak, n = %d sites):\n", length(k_obs)))
+cat(sprintf("  Dispersion ratio (obs var / Bin var): %.3f  =>  %s\n",
+            var_obs / var_bin,
+            ifelse(var_obs < var_bin, "UNDER-dispersed", "Over-dispersed")))
+if (bb$degenerate) {
+    cat("  MLE degenerate (a+b > 1e6): BB collapses to Binomial.\n")
+    cat(sprintf("  Binomial MLE: p = %.4f\n", p_hat_bin))
+} else {
+    cat(sprintf("  BB converged: a = %.4f,  b = %.4f\n", a_bb, b_bb))
+    cat(sprintf("  BB mean p          = %.4f\n", p_bb))
+    cat(sprintf("  BB rho (overdisp.) = %.4f\n", rho_bb))
+}
 ```
 
-```{r fig-twopart-beta, fig.width=9, fig.height=4}
-#| fig-cap: "Two-part Beta fit to site-level annual outbreak probabilities.
-#|   Left: histogram of p_hat_i = k_i/10 for positive sites overlaid with the
-#|   fitted Beta density. Right: Q-Q plot of observed vs Beta quantiles."
+```{r fig-betabinom-bb, fig.width=7, fig.height=4}
+#| fig-cap: "Observed vs Beta-Binomial (or Binomial if degenerate) expected
+#|   frequency of outbreak-year counts k. Dispersion ratio annotated."
 
-p_grid  <- seq(1e-4, 1 - 1e-4, length.out = 400)
-df_beta <- tibble(p = p_grid,
-                  dens = dbeta(p_grid, a_hat, b_hat))
+k_vals_bb  <- 0:N_TRIALS
+obs_freq_bb <- table(factor(k_obs, levels = k_vals_bb)) |> as.numeric()
 
-p_hist <- ggplot(tibble(p = p_pos), aes(x = p)) +
-    geom_histogram(aes(y = after_stat(density)),
-                   binwidth = 0.1, boundary = 0,
-                   fill = "steelblue", colour = "white", linewidth = 0.2) +
-    geom_line(data = df_beta, aes(x = p, y = dens),
-              colour = "firebrick", linewidth = 1) +
-    scale_x_continuous(breaks = seq(0, 1, 0.2)) +
-    labs(x = expression(hat(p)[i] == k[i] / 10),
-         y = "Density",
-         title = sprintf("Beta(%.2f, %.2f)  —  n = %d positive sites",
-                         a_hat, b_hat, length(p_pos)),
-         subtitle = sprintf("pi_0 = %.3f (%d zero sites excluded)",
-                            pi0_hat, sum(p_i == 0))) +
-    theme_minimal(base_size = 11)
+if (bb$degenerate) {
+    fit_freq_bb <- dbinom(k_vals_bb, N_TRIALS, p_hat_bin) * length(k_obs)
+    fit_label   <- sprintf("Binomial(10, p=%.3f)", p_hat_bin)
+} else {
+    fit_freq_bb <- sapply(k_vals_bb, function(k)
+        exp(lchoose(N_TRIALS, k) + lbeta(k + a_bb, N_TRIALS - k + b_bb) -
+            lbeta(a_bb, b_bb))) * length(k_obs)
+    fit_label   <- sprintf("BetaBin(a=%.2f, b=%.2f)", a_bb, b_bb)
+}
 
-n_pos_b  <- length(p_pos)
-probs_b  <- (seq_len(n_pos_b) - 0.5) / n_pos_b
-q_obs_b  <- sort(p_pos)
-q_beta   <- qbeta(probs_b, a_hat, b_hat)
+df_bb <- tibble(
+    k    = rep(k_vals_bb, 2),
+    freq = c(obs_freq_bb, fit_freq_bb),
+    type = rep(c("Observed", fit_label), each = length(k_vals_bb))
+)
 
-p_qq <- ggplot(tibble(obs = q_obs_b, fitted = q_beta),
-               aes(x = fitted, y = obs)) +
-    geom_point(size = 1.5, alpha = 0.6, colour = "steelblue") +
-    geom_abline(colour = "firebrick") +
-    labs(x = "Beta quantiles",
-         y = "Observed quantiles",
-         title = sprintf("Q-Q: Beta(%.2f, %.2f)  Spearman rho = %.3f",
-                         a_hat, b_hat,
-                         cor(q_obs_b, q_beta, method = "spearman"))) +
-    theme_minimal(base_size = 11)
-
-p_hist + p_qq
+ggplot(df_bb, aes(x = k, y = freq, fill = type)) +
+    geom_col(position = "dodge", width = 0.7, alpha = 0.85) +
+    scale_fill_manual(values = c("Observed" = "steelblue",
+                                 setNames("firebrick", fit_label)),
+                      name = NULL) +
+    scale_x_continuous(breaks = k_vals_bb) +
+    annotate("text", x = 6, y = max(obs_freq_bb) * 0.9,
+             label = sprintf("Obs var = %.2f\nBin var = %.2f\nRatio = %.2f",
+                             var_obs, var_bin, var_obs / var_bin),
+             hjust = 0, size = 3.5) +
+    labs(x = "Years with ≥1 case (out of 10)",
+         y = "Number of ADM2 sites",
+         title = sprintf("Beta-Binomial fit (any outbreak)  —  n = %d sites",
+                         length(k_obs))) +
+    theme_minimal(base_size = 11) +
+    theme(legend.position = "bottom")
 ```
 
 ## Distribution of outbreak probability
@@ -699,72 +720,72 @@ ggplot(df_large, aes(x = k, y = freq, fill = type)) +
     theme(legend.position = "bottom")
 ```
 
-## Two-part Beta fit (large-outbreak probability)
+## Beta-Binomial fit (large-outbreak probability)
 
-As above, we fit a two-part model to the site-level estimates
-$\hat{p}_i^{(S)} = k_i^{(S)} / 10$.
+```{r betabinom-large}
+bb_l      <- fit_betabinom(k_large, N_TRIALS_L)
+a_bb_l    <- bb_l$a;  b_bb_l <- bb_l$b
+p_bb_l    <- a_bb_l / (a_bb_l + b_bb_l)
+rho_bb_l  <- 1 / (a_bb_l + b_bb_l + 1)
 
-```{r twopart-beta-large}
-p_i_l    <- k_large / N_TRIALS_L
-pi0_l    <- mean(p_i_l == 0)
-p_pos_l  <- p_i_l[p_i_l > 0]
+p_hat_l   <- mean(k_large) / N_TRIALS_L
+var_obs_l <- var(k_large)
+var_bin_l <- N_TRIALS_L * p_hat_l * (1 - p_hat_l)
 
-p_pos_l_fit <- pmin(p_pos_l, 1 - 1e-6)
-fit_beta_l  <- MASS::fitdistr(p_pos_l_fit, "beta",
-                               start = list(shape1 = 0.5, shape2 = 3))
-a_l <- fit_beta_l$estimate[["shape1"]]
-b_l <- fit_beta_l$estimate[["shape2"]]
-
-cat(sprintf("Two-part Beta fit (large-outbreak prob, S = %d):\n", S_THRESH))
-cat(sprintf("  pi_0 (zero sites)   = %.3f  (%d / %d sites)\n",
-            pi0_l, sum(p_i_l == 0), length(p_i_l)))
-cat(sprintf("  Positive sites (n)  = %d\n", length(p_pos_l)))
-cat(sprintf("  Beta: alpha = %.3f,  beta = %.3f\n", a_l, b_l))
-cat(sprintf("  Beta mean           = %.4f\n", a_l / (a_l + b_l)))
-cat(sprintf("  Beta SD             = %.4f\n",
-            sqrt(a_l * b_l / ((a_l + b_l)^2 * (a_l + b_l + 1)))))
-cat(sprintf("  Overall mean p_i    = %.4f  (incl. zeros)\n", mean(p_i_l)))
+cat(sprintf("Beta-Binomial fit (large outbreak S=%d, n=%d sites):\n",
+            S_THRESH, length(k_large)))
+cat(sprintf("  Dispersion ratio (obs var / Bin var): %.3f  =>  %s\n",
+            var_obs_l / var_bin_l,
+            ifelse(var_obs_l < var_bin_l, "UNDER-dispersed", "Over-dispersed")))
+if (bb_l$degenerate) {
+    cat("  MLE degenerate (a+b > 1e6): BB collapses to Binomial.\n")
+    cat(sprintf("  Binomial MLE: p = %.4f\n", p_hat_l))
+} else {
+    cat(sprintf("  BB converged: a = %.4f,  b = %.4f\n", a_bb_l, b_bb_l))
+    cat(sprintf("  BB mean p          = %.4f\n", p_bb_l))
+    cat(sprintf("  BB rho (overdisp.) = %.4f\n", rho_bb_l))
+}
 ```
 
-```{r fig-twopart-beta-large, fig.width=9, fig.height=4}
-#| fig-cap: "Two-part Beta fit to site-level large-outbreak probabilities. Left: histogram of positive p_hat_i with fitted Beta density. Right: Q-Q plot."
+```{r fig-betabinom-large, fig.width=7, fig.height=4}
+#| fig-cap: "Observed vs Beta-Binomial (or Binomial if degenerate) expected
+#|   frequency of large-outbreak-year counts k (S = 200 cases)."
 
-p_grid_l  <- seq(1e-4, 1 - 1e-4, length.out = 400)
-df_beta_l <- tibble(p = p_grid_l,
-                    dens = dbeta(p_grid_l, a_l, b_l))
+k_vals_l   <- 0:N_TRIALS_L
+obs_freq_l <- table(factor(k_large, levels = k_vals_l)) |> as.numeric()
 
-ph_l <- ggplot(tibble(p = p_pos_l), aes(x = p)) +
-    geom_histogram(aes(y = after_stat(density)),
-                   binwidth = 0.1, boundary = 0,
-                   fill = "steelblue", colour = "white", linewidth = 0.2) +
-    geom_line(data = df_beta_l, aes(x = p, y = dens),
-              colour = "firebrick", linewidth = 1) +
-    scale_x_continuous(breaks = seq(0, 1, 0.2)) +
-    labs(x = expression(hat(p)[i]^{(S)} == k[i]^{(S)} / 10),
-         y = "Density",
-         title = sprintf("Beta(%.2f, %.2f)  —  n = %d positive sites",
-                         a_l, b_l, length(p_pos_l)),
-         subtitle = sprintf("pi_0 = %.3f (%d zero sites excluded)",
-                            pi0_l, sum(p_i_l == 0))) +
-    theme_minimal(base_size = 11)
+if (bb_l$degenerate) {
+    fit_freq_l <- dbinom(k_vals_l, N_TRIALS_L, p_hat_l) * length(k_large)
+    fit_lbl_l  <- sprintf("Binomial(10, p=%.3f)", p_hat_l)
+} else {
+    fit_freq_l <- sapply(k_vals_l, function(k)
+        exp(lchoose(N_TRIALS_L, k) + lbeta(k + a_bb_l, N_TRIALS_L - k + b_bb_l) -
+            lbeta(a_bb_l, b_bb_l))) * length(k_large)
+    fit_lbl_l  <- sprintf("BetaBin(a=%.2f, b=%.2f)", a_bb_l, b_bb_l)
+}
 
-n_pos_l  <- length(p_pos_l)
-probs_l  <- (seq_len(n_pos_l) - 0.5) / n_pos_l
-q_obs_l  <- sort(p_pos_l)
-q_beta_l <- qbeta(probs_l, a_l, b_l)
+df_bbl <- tibble(
+    k    = rep(k_vals_l, 2),
+    freq = c(obs_freq_l, fit_freq_l),
+    type = rep(c("Observed", fit_lbl_l), each = length(k_vals_l))
+)
 
-pq_l <- ggplot(tibble(obs = q_obs_l, fitted = q_beta_l),
-               aes(x = fitted, y = obs)) +
-    geom_point(size = 1.5, alpha = 0.6, colour = "steelblue") +
-    geom_abline(colour = "firebrick") +
-    labs(x = "Beta quantiles",
-         y = "Observed quantiles",
-         title = sprintf("Q-Q: Beta(%.2f, %.2f)  Spearman rho = %.3f",
-                         a_l, b_l,
-                         cor(q_obs_l, q_beta_l, method = "spearman"))) +
-    theme_minimal(base_size = 11)
-
-ph_l + pq_l
+ggplot(df_bbl, aes(x = k, y = freq, fill = type)) +
+    geom_col(position = "dodge", width = 0.7, alpha = 0.85) +
+    scale_fill_manual(values = c("Observed" = "steelblue",
+                                 setNames("firebrick", fit_lbl_l)),
+                      name = NULL) +
+    scale_x_continuous(breaks = k_vals_l) +
+    annotate("text", x = max(k_vals_l) * 0.55, y = max(obs_freq_l) * 0.9,
+             label = sprintf("Obs var = %.2f\nBin var = %.2f\nRatio = %.2f",
+                             var_obs_l, var_bin_l, var_obs_l / var_bin_l),
+             hjust = 0, size = 3.5) +
+    labs(x = sprintf("Years with cases > %d (out of 10)", S_THRESH),
+         y = "Number of ADM2 sites",
+         title = sprintf("Beta-Binomial fit (S = %d)  —  n = %d sites",
+                         S_THRESH, length(k_large))) +
+    theme_minimal(base_size = 11) +
+    theme(legend.position = "bottom")
 ```
 
 ## Sensitivity to threshold S
