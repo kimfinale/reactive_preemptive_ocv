@@ -484,11 +484,16 @@ opt_df |>
 #| fig-cap: "Expected cost c(alpha) as a function of the pre-emptive fraction
 #|   alpha, for each combination of targeting accuracy rho (rows) and cost ratio
 #|   R (columns). The blue curve is the cost with vaccination; the red dashed
-#|   vertical line marks the optimal alpha*; the grey dashed horizontal line is
-#|   the no-vaccination baseline c0."
+#|   vertical line marks the empirical optimal alpha*; the orange dotted vertical
+#|   line marks the theoretical alpha* under the homogeneous equal-risk model;
+#|   the grey dashed horizontal line is the no-vaccination baseline c0."
 
 no_vax_df <- tibble(R = R_VALS,
                     c_no_vax = unname(c_no_vax_by_R))
+
+# Theoretical alpha* (homogeneous model) — same for all rho, expand for faceting
+theory_vline_df <- expand_grid(rho = RHO_VALS, R = R_VALS) |>
+    left_join(theory_tbl |> dplyr::select(R, alpha_star_theory), by = "R")
 
 ggplot(cost_df, aes(x = alpha, y = cost)) +
     geom_hline(data = no_vax_df, aes(yintercept = c_no_vax),
@@ -496,6 +501,8 @@ ggplot(cost_df, aes(x = alpha, y = cost)) +
     geom_line(colour = "steelblue", linewidth = 0.9) +
     geom_vline(data = opt_df, aes(xintercept = alpha_star),
                linetype = "dashed", colour = "firebrick", linewidth = 0.8) +
+    geom_vline(data = theory_vline_df, aes(xintercept = alpha_star_theory),
+               linetype = "dotted", colour = "darkorange", linewidth = 0.9) +
     geom_point(data = opt_df, aes(x = alpha_star, y = cost_min),
                colour = "firebrick", size = 2.5) +
     facet_grid(
@@ -506,7 +513,7 @@ ggplot(cost_df, aes(x = alpha, y = cost)) +
          y = expression("Normalised cost " ~ italic(c)(alpha)),
          title = sprintf("Cost curves  |  f = %.2f, nu = %.1f, r = %.1f",
                          F_VAX, NU_VAL, R_REACT),
-         subtitle = "Grey dashed: no-vaccination cost  |  Red dashed: optimal alpha*") +
+         subtitle = "Grey dashed: no-vax cost  |  Red dashed: empirical alpha*  |  Orange dotted: theoretical alpha* (homogeneous)") +
     theme_minimal(base_size = 11) +
     theme(strip.text = element_text(face = "bold"))
 ```
