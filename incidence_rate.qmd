@@ -353,11 +353,10 @@ prob_inc |>
 
 ## Binomial fit and dispersion check
 
-Each site's annual case record is treated as a Bernoulli trial (outbreak /
-no outbreak), contributing $k_i \sim \text{Binomial}(10,\, p_i)$ over
-$n = 10$ years. Before fitting a Beta-Binomial we check whether extra-Binomial
-variation is actually present by comparing the observed variance of $k$ to the
-Binomial expectation.
+Each site contributes $k_i \sim \text{Binomial}(10,\, p_i)$ outbreak years.
+As a **pooled null model** (no site-level heterogeneity), we estimate a single
+$\hat{p} = \bar{k}/10$ and compare the observed variance of $k$ to the Binomial
+expectation — a necessary step before considering richer models.
 
 ```{r betabinom-fit}
 N_TRIALS <- 10L   # years of observation
@@ -415,6 +414,90 @@ ggplot(df_counts, aes(x = k, y = freq, fill = type)) +
          subtitle = "Under-dispersed data: beta-binomial not appropriate") +
     theme_minimal(base_size = 11) +
     theme(legend.position = "bottom")
+```
+
+## Two-part Beta fit to site-level outbreak probabilities
+
+The Binomial null treats every site as having the same $p$.  A more realistic
+model acknowledges that sites differ in their underlying outbreak probability
+$p_i$.  We model this heterogeneity with a **two-part distribution**:
+
+$$
+p_i \sim \begin{cases}
+0 & \text{with probability } \pi_0 \\
+\text{Beta}(\alpha, \beta) & \text{with probability } 1 - \pi_0
+\end{cases}
+$$
+
+where $\pi_0$ is estimated empirically as the fraction of sites with $k_i = 0$,
+and $\text{Beta}(\alpha, \beta)$ is fitted by MLE to the positive
+$\hat{p}_i = k_i / 10$ values.
+
+```{r twopart-beta-fit}
+p_i     <- k_obs / N_TRIALS            # site-level estimates
+pi0_hat <- mean(p_i == 0)              # zero-mass fraction
+
+p_pos   <- p_i[p_i > 0]               # positive sites only
+
+# MLE Beta fit; values at exactly 1 get a tiny nudge to keep inside (0,1)
+p_pos_fit <- pmin(p_pos, 1 - 1e-6)
+fit_beta  <- MASS::fitdistr(p_pos_fit, "beta",
+                             start = list(shape1 = 1, shape2 = 3))
+a_hat <- fit_beta$estimate[["shape1"]]
+b_hat <- fit_beta$estimate[["shape2"]]
+
+cat(sprintf("Two-part Beta fit (annual outbreak probability):\n"))
+cat(sprintf("  pi_0 (zero sites)   = %.3f  (%d / %d sites)\n",
+            pi0_hat, sum(p_i == 0), length(p_i)))
+cat(sprintf("  Positive sites (n)  = %d\n", length(p_pos)))
+cat(sprintf("  Beta: alpha = %.3f,  beta = %.3f\n", a_hat, b_hat))
+cat(sprintf("  Beta mean           = %.4f\n",  a_hat / (a_hat + b_hat)))
+cat(sprintf("  Beta SD             = %.4f\n",
+            sqrt(a_hat * b_hat / ((a_hat + b_hat)^2 * (a_hat + b_hat + 1)))))
+cat(sprintf("  Overall mean p_i    = %.4f  (incl. zeros)\n", mean(p_i)))
+```
+
+```{r fig-twopart-beta, fig.width=9, fig.height=4}
+#| fig-cap: "Two-part Beta fit to site-level annual outbreak probabilities.
+#|   Left: histogram of p_hat_i = k_i/10 for positive sites overlaid with the
+#|   fitted Beta density. Right: Q-Q plot of observed vs Beta quantiles."
+
+p_grid  <- seq(1e-4, 1 - 1e-4, length.out = 400)
+df_beta <- tibble(p = p_grid,
+                  dens = dbeta(p_grid, a_hat, b_hat))
+
+p_hist <- ggplot(tibble(p = p_pos), aes(x = p)) +
+    geom_histogram(aes(y = after_stat(density)),
+                   binwidth = 0.1, boundary = 0,
+                   fill = "steelblue", colour = "white", linewidth = 0.2) +
+    geom_line(data = df_beta, aes(x = p, y = dens),
+              colour = "firebrick", linewidth = 1) +
+    scale_x_continuous(breaks = seq(0, 1, 0.2)) +
+    labs(x = expression(hat(p)[i] == k[i] / 10),
+         y = "Density",
+         title = sprintf("Beta(%.2f, %.2f)  —  n = %d positive sites",
+                         a_hat, b_hat, length(p_pos)),
+         subtitle = sprintf("pi_0 = %.3f (%d zero sites excluded)",
+                            pi0_hat, sum(p_i == 0))) +
+    theme_minimal(base_size = 11)
+
+n_pos_b  <- length(p_pos)
+probs_b  <- (seq_len(n_pos_b) - 0.5) / n_pos_b
+q_obs_b  <- sort(p_pos)
+q_beta   <- qbeta(probs_b, a_hat, b_hat)
+
+p_qq <- ggplot(tibble(obs = q_obs_b, fitted = q_beta),
+               aes(x = fitted, y = obs)) +
+    geom_point(size = 1.5, alpha = 0.6, colour = "steelblue") +
+    geom_abline(colour = "firebrick") +
+    labs(x = "Beta quantiles",
+         y = "Observed quantiles",
+         title = sprintf("Q-Q: Beta(%.2f, %.2f)  Spearman rho = %.3f",
+                         a_hat, b_hat,
+                         cor(q_obs_b, q_beta, method = "spearman"))) +
+    theme_minimal(base_size = 11)
+
+p_hist + p_qq
 ```
 
 ## Distribution of outbreak probability
@@ -614,6 +697,74 @@ ggplot(df_large, aes(x = k, y = freq, fill = type)) +
                          S_THRESH, p_large, length(k_large))) +
     theme_minimal(base_size = 11) +
     theme(legend.position = "bottom")
+```
+
+## Two-part Beta fit (large-outbreak probability)
+
+As above, we fit a two-part model to the site-level estimates
+$\hat{p}_i^{(S)} = k_i^{(S)} / 10$.
+
+```{r twopart-beta-large}
+p_i_l    <- k_large / N_TRIALS_L
+pi0_l    <- mean(p_i_l == 0)
+p_pos_l  <- p_i_l[p_i_l > 0]
+
+p_pos_l_fit <- pmin(p_pos_l, 1 - 1e-6)
+fit_beta_l  <- MASS::fitdistr(p_pos_l_fit, "beta",
+                               start = list(shape1 = 0.5, shape2 = 3))
+a_l <- fit_beta_l$estimate[["shape1"]]
+b_l <- fit_beta_l$estimate[["shape2"]]
+
+cat(sprintf("Two-part Beta fit (large-outbreak prob, S = %d):\n", S_THRESH))
+cat(sprintf("  pi_0 (zero sites)   = %.3f  (%d / %d sites)\n",
+            pi0_l, sum(p_i_l == 0), length(p_i_l)))
+cat(sprintf("  Positive sites (n)  = %d\n", length(p_pos_l)))
+cat(sprintf("  Beta: alpha = %.3f,  beta = %.3f\n", a_l, b_l))
+cat(sprintf("  Beta mean           = %.4f\n", a_l / (a_l + b_l)))
+cat(sprintf("  Beta SD             = %.4f\n",
+            sqrt(a_l * b_l / ((a_l + b_l)^2 * (a_l + b_l + 1)))))
+cat(sprintf("  Overall mean p_i    = %.4f  (incl. zeros)\n", mean(p_i_l)))
+```
+
+```{r fig-twopart-beta-large, fig.width=9, fig.height=4}
+#| fig-cap: "Two-part Beta fit to site-level large-outbreak probabilities. Left: histogram of positive p_hat_i with fitted Beta density. Right: Q-Q plot."
+
+p_grid_l  <- seq(1e-4, 1 - 1e-4, length.out = 400)
+df_beta_l <- tibble(p = p_grid_l,
+                    dens = dbeta(p_grid_l, a_l, b_l))
+
+ph_l <- ggplot(tibble(p = p_pos_l), aes(x = p)) +
+    geom_histogram(aes(y = after_stat(density)),
+                   binwidth = 0.1, boundary = 0,
+                   fill = "steelblue", colour = "white", linewidth = 0.2) +
+    geom_line(data = df_beta_l, aes(x = p, y = dens),
+              colour = "firebrick", linewidth = 1) +
+    scale_x_continuous(breaks = seq(0, 1, 0.2)) +
+    labs(x = expression(hat(p)[i]^{(S)} == k[i]^{(S)} / 10),
+         y = "Density",
+         title = sprintf("Beta(%.2f, %.2f)  —  n = %d positive sites",
+                         a_l, b_l, length(p_pos_l)),
+         subtitle = sprintf("pi_0 = %.3f (%d zero sites excluded)",
+                            pi0_l, sum(p_i_l == 0))) +
+    theme_minimal(base_size = 11)
+
+n_pos_l  <- length(p_pos_l)
+probs_l  <- (seq_len(n_pos_l) - 0.5) / n_pos_l
+q_obs_l  <- sort(p_pos_l)
+q_beta_l <- qbeta(probs_l, a_l, b_l)
+
+pq_l <- ggplot(tibble(obs = q_obs_l, fitted = q_beta_l),
+               aes(x = fitted, y = obs)) +
+    geom_point(size = 1.5, alpha = 0.6, colour = "steelblue") +
+    geom_abline(colour = "firebrick") +
+    labs(x = "Beta quantiles",
+         y = "Observed quantiles",
+         title = sprintf("Q-Q: Beta(%.2f, %.2f)  Spearman rho = %.3f",
+                         a_l, b_l,
+                         cor(q_obs_l, q_beta_l, method = "spearman"))) +
+    theme_minimal(base_size = 11)
+
+ph_l + pq_l
 ```
 
 ## Sensitivity to threshold S
