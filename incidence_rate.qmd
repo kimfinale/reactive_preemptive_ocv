@@ -521,6 +521,105 @@ ggplot(df_bb, aes(x = k, y = freq, fill = type)) +
     theme(legend.position = "bottom")
 ```
 
+## Beta-Binomial fit: 3-year window
+
+With a 10-year window most at-risk sites accumulate at least one case year,
+compressing $k$ toward low positive values and producing under-dispersion
+relative to Binomial. A **3-year window** is shorter than the typical
+inter-epidemic interval for many sites, so more sites remain at $k = 0$,
+restoring genuine spread and making Beta-Binomial appropriate.
+
+We use three non-overlapping 3-year windows (2010–2012, 2013–2015, 2016–2018)
+and treat each window × site as an independent observation.
+
+```{r betabinom-3yr}
+WIN_LEN <- 3L
+windows_3yr <- list(2010:2012, 2013:2015, 2016:2018)
+
+k3_list <- lapply(windows_3yr, function(yrs) {
+    cases_panel |>
+        filter(year %in% yrs) |>
+        group_by(location) |>
+        summarise(k = sum(cases > 0), .groups = "drop") |>
+        mutate(window = paste(min(yrs), max(yrs), sep = "-"))
+})
+k3_df <- bind_rows(k3_list)
+
+k3_obs <- k3_df$k    # pooled across windows and sites
+
+p_hat3   <- mean(k3_obs) / WIN_LEN
+var_obs3 <- var(k3_obs)
+var_bin3 <- WIN_LEN * p_hat3 * (1 - p_hat3)
+
+cat(sprintf("3-year window (n = %d site-window obs):\n", length(k3_obs)))
+cat(sprintf("  Mean k: %.3f,  Var(k): %.4f\n", mean(k3_obs), var_obs3))
+cat(sprintf("  Binomial(3, p=%.4f) variance: %.4f\n", p_hat3, var_bin3))
+cat(sprintf("  Dispersion ratio (obs/bin): %.3f  =>  %s\n",
+            var_obs3 / var_bin3,
+            ifelse(var_obs3 < var_bin3, "UNDER-dispersed", "Over-dispersed")))
+
+cat(sprintf("\nDistribution of k (years with cases out of %d):\n", WIN_LEN))
+print(table(k3_obs))
+
+bb3 <- fit_betabinom(k3_obs, WIN_LEN)
+a3  <- bb3$a;  b3 <- bb3$b
+
+if (bb3$degenerate) {
+    cat("\nMLE degenerate: BB collapses to Binomial.\n")
+    cat(sprintf("Binomial MLE: p = %.4f\n", p_hat3))
+} else {
+    cat(sprintf("\nBeta-Binomial MLE (converged = %s):\n",
+                ifelse(bb3$converged, "yes", "no")))
+    cat(sprintf("  a = %.4f,  b = %.4f\n", a3, b3))
+    cat(sprintf("  BB mean p          = %.4f\n", a3 / (a3 + b3)))
+    cat(sprintf("  BB rho (overdisp.) = %.4f\n", 1 / (a3 + b3 + 1)))
+}
+```
+
+```{r fig-betabinom-3yr, fig.width=7, fig.height=4}
+#| fig-cap: "Observed vs Beta-Binomial expected frequency of outbreak-year counts
+#|   k over a 3-year window (pooled across three non-overlapping windows
+#|   2010–2012, 2013–2015, 2016–2018). The shorter window restores over-dispersion
+#|   relative to Binomial, making Beta-Binomial appropriate."
+
+k_vals3   <- 0:WIN_LEN
+obs_freq3 <- table(factor(k3_obs, levels = k_vals3)) |> as.numeric()
+
+if (bb3$degenerate) {
+    fit_freq3 <- dbinom(k_vals3, WIN_LEN, p_hat3) * length(k3_obs)
+    fit_lbl3  <- sprintf("Binomial(3, p=%.3f)", p_hat3)
+} else {
+    fit_freq3 <- sapply(k_vals3, function(k)
+        exp(lchoose(WIN_LEN, k) + lbeta(k + a3, WIN_LEN - k + b3) -
+            lbeta(a3, b3))) * length(k3_obs)
+    fit_lbl3  <- sprintf("BetaBin(a=%.2f, b=%.2f)", a3, b3)
+}
+
+df_bb3 <- tibble(
+    k    = rep(k_vals3, 2),
+    freq = c(obs_freq3, fit_freq3),
+    type = rep(c("Observed", fit_lbl3), each = length(k_vals3))
+)
+
+ggplot(df_bb3, aes(x = k, y = freq, fill = type)) +
+    geom_col(position = "dodge", width = 0.5, alpha = 0.85) +
+    scale_fill_manual(values = c("Observed" = "steelblue",
+                                 setNames("firebrick", fit_lbl3)),
+                      name = NULL) +
+    scale_x_continuous(breaks = k_vals3) +
+    annotate("text", x = 1.8, y = max(obs_freq3) * 0.9,
+             label = sprintf("Obs var = %.3f\nBin var = %.3f\nRatio = %.2f",
+                             var_obs3, var_bin3, var_obs3 / var_bin3),
+             hjust = 0, size = 3.5) +
+    labs(x = "Years with ≥1 case (out of 3)",
+         y = "Number of site-window observations",
+         title = sprintf("Beta-Binomial fit (3-yr window)  —  n = %d obs",
+                         length(k3_obs)),
+         subtitle = "Pooled: 2010-2012, 2013-2015, 2016-2018") +
+    theme_minimal(base_size = 11) +
+    theme(legend.position = "bottom")
+```
+
 ## Distribution of outbreak probability
 
 ```{r fig-outbreak-dist, fig.width=10, fig.height=4}
