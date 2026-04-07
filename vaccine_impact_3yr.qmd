@@ -58,7 +58,7 @@ source("R/analytic_utils.R")
 WIN_YEARS <- 2010:2012   # evaluation window
 T_WIN     <- length(WIN_YEARS)   # 3 years
 
-F_VAX    <- 0.30   # vaccination capacity (fraction of total population)
+F_VAX    <- 0.60   # vaccination capacity (fraction of total population)
 NU_VAL   <- 1.00   # pre-emptive VE
 R_REACT  <- 0.40   # reactive VE
 C_COV    <- 1.00   # within-location vaccine coverage (fraction of pop in site)
