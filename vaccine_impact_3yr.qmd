@@ -683,7 +683,7 @@ site_df <- bind_rows(site_alloc)
 ```{r fig-site-burden, fig.width=11, fig.height=5}
 #| fig-cap: "Per-site illness burden q_i (cases per 100,000 persons in 2010–2012)
 #|   coloured by vaccination status at the optimal alpha* for R = 100. Both axes
-#|   are on log scale. Sites are sorted by q_i within each panel. Pre-emptive
+#|   Sites are sorted by q_i within each panel. Pre-emptive
 #|   vaccination concentrates on high-burden sites; reactive coverage fills in
 #|   additional outbreak sites."
 
@@ -694,14 +694,13 @@ site_df |>
     mutate(rank = row_number()) |>
     ggplot(aes(x = rank, y = q_i * 1e5, colour = status)) +
     geom_point(size = 0.8, alpha = 0.7) +
-    scale_x_log10(labels = scales::comma) +
     scale_y_log10(labels = scales::comma) +
     scale_colour_manual(
         values = c("Pre-emptive" = "firebrick", "Reactive" = "steelblue",
                    "No vaccination" = "grey70"),
         name = "Vaccination status") +
     facet_wrap(~rho_label, nrow = 1) +
-    labs(x = "Site rank (by burden, log scale)",
+    labs(x = "Site rank (by burden)",
          y = "Cases per 100,000 (log scale)",
          title = sprintf("Site-level vaccination assignment at optimal alpha* | R = %d", R_BASE)) +
     theme_minimal(base_size = 11) +
