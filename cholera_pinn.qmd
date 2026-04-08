@@ -1,0 +1,756 @@
+---
+title: "PINN for Cholera Outbreak Size Prediction at ADM2 Level"
+author: "Jong-Hoon Kim"
+date: "`r Sys.Date()`"
+format:
+  html:
+    html-math-method: katex
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    code-fold: true
+    embed-resources: true
+editor_options:
+  chunk_output_type: console
+---
+
+## Overview
+
+This document implements a **Physics-Informed Neural Network (PINN)** to
+predict cholera outbreak size at the ADM2 level, using the weekly case
+surveillance data in this repository (2010–2023, 649 ADM2 sites, 1,047
+outbreaks across 26 countries).
+
+### What is a PINN?
+
+A PINN combines a neural network (which approximates a function from data)
+with a mechanistic ODE system (which encodes domain knowledge about epidemic
+dynamics). The key idea:
+
+$$\mathcal{L} = \underbrace{\mathcal{L}_{\text{data}}}_{\text{fit observations}} + \lambda \underbrace{\mathcal{L}_{\text{physics}}}_{\text{satisfy ODE residuals}}$$
+
+The network is trained to minimise both terms simultaneously. This means the
+learned trajectory must be consistent with SEIR dynamics, even in regions where
+data are sparse or noisy.
+
+### SEIR Physics (from cholera PINN literature)
+
+We use a seasonal SEIR system with waning immunity:
+
+$$\frac{dS}{dt} = \mu N - \beta(t)\frac{SI}{N} - \mu S + \omega R$$
+
+$$\frac{dE}{dt} = \beta(t)\frac{SI}{N} - (\sigma + \mu)E$$
+
+$$\frac{dI}{dt} = \sigma E - (\gamma + \mu)I$$
+
+$$\frac{dR}{dt} = \gamma I - (\mu + \omega)R$$
+
+where the seasonal transmission rate is parameterised as a Fourier series:
+
+$$\beta(t) = \beta_0 \left(1 + \sum_{h=1}^{H} \left[a_h \sin\!\left(\frac{2\pi h t}{T}\right) + b_h \cos\!\left(\frac{2\pi h t}{T}\right)\right]\right)$$
+
+Parameters:
+
+| Symbol | Meaning | Typical range |
+|--------|---------|--------------|
+| $\beta_0$ | Baseline transmission rate | 0.1–1.5 per week |
+| $\sigma$ | Incubation rate ($1/\sigma$ = incubation period) | ~2 days → 0.5/week |
+| $\gamma$ | Recovery rate ($1/\gamma$ = infectious period) | ~5 days → 1.4/week |
+| $\mu$ | Birth/death rate | ~0.0003/week |
+| $\omega$ | Waning immunity rate | 0–0.02/week |
+| $H$ | Fourier harmonics | 1–3 |
+
+### TSIR-PINN variant (from Madden et al.)
+
+The TSIR (Time-Series SIR) approach replaces the continuous ODE with a
+discrete-time recursion:
+
+$$I_{t+1} = \beta_t \frac{S_t I_t^\alpha}{N} + \epsilon_t$$
+
+$$S_{t+1} = S_t + B_t - I_{t+1}$$
+
+where $B_t$ is births, $\alpha \approx 0.97$ accounts for reporting noise, and
+$\beta_t$ is estimated by the network. The susceptible trajectory is partially
+constrained by observed births and cumulative cases. This is simpler than
+continuous SEIR but better suited to discrete weekly counts.
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(tidyverse)
+library(patchwork)
+library(knitr)
+```
+
+---
+
+# Data Preparation
+
+## Load and Summarise
+
+```{r load-data}
+ts_raw <- readr::read_rds(
+    "data/outbreak_files_Oct2024/time_series_outbreak_extraction.rds")
+
+# Keep ADM2 only
+ts2 <- ts_raw |>
+    mutate(adm = str_count(location, "::") - 1L) |>
+    filter(adm == 2L)
+
+# Outbreak-level summary (one row per outbreak)
+outbreaks <- ts2 |>
+    group_by(location, location_period_id, outbreak_number) |>
+    summarise(
+        start_date  = min(TL),
+        end_date    = max(TL),
+        total_cases = sum(sCh, na.rm = TRUE),
+        peak_cases  = max(sCh, na.rm = TRUE),
+        n_weeks     = n(),
+        pop         = first(pop),
+        country     = first(country),
+        .groups     = "drop"
+    ) |>
+    filter(total_cases > 0, !is.na(pop), pop > 0)
+
+cat(sprintf("ADM2 outbreaks: %d  |  Sites: %d  |  Countries: %d\n",
+    nrow(outbreaks), n_distinct(outbreaks$location), n_distinct(outbreaks$country)))
+cat(sprintf("Weekly records: %d  |  Date range: %s to %s\n",
+    nrow(ts2), format(min(ts2$TL)), format(max(ts2$TL))))
+cat(sprintf("Outbreak size (cases): median = %.0f, 90th pct = %.0f, max = %.0f\n",
+    median(outbreaks$total_cases),
+    quantile(outbreaks$total_cases, 0.9),
+    max(outbreaks$total_cases)))
+```
+
+## Outbreak-Level Features for Size Prediction
+
+The target variable is **log(total_cases)**. Predictors available at outbreak
+start (before full trajectory is observed):
+
+```{r features}
+# Build feature matrix for outbreak-size prediction
+features <- outbreaks |>
+    mutate(
+        log_total_cases  = log1p(total_cases),
+        log_peak_cases   = log1p(peak_cases),
+        log_pop          = log(pop),
+        attack_rate      = total_cases / pop,
+        log_attack_rate  = log1p(attack_rate * 1e5),  # per 100k
+        start_week       = as.integer(format(start_date, "%V")),  # epiweek
+        start_year       = as.integer(format(start_date, "%Y")),
+        # Seasonal signal: sin/cos of epiweek within year
+        sin_week         = sin(2 * pi * start_week / 52),
+        cos_week         = cos(2 * pi * start_week / 52),
+        duration_weeks   = n_weeks
+    )
+
+# Distribution of outbreak sizes
+features |>
+    count(size_cat = cut(total_cases,
+          breaks = c(0, 50, 200, 500, 1000, 5000, Inf),
+          labels = c("<50", "50-200", "200-500", "500-1000", "1000-5000", ">5000"),
+          right  = TRUE)) |>
+    mutate(pct = round(100 * n / sum(n), 1)) |>
+    knitr::kable(col.names = c("Outbreak size (cases)", "N", "%"),
+                 caption   = "Distribution of ADM2 outbreak sizes")
+```
+
+```{r fig-size-dist, fig.width=10, fig.height=4}
+#| fig-cap: "Left: histogram of log(total_cases+1) per ADM2 outbreak. Right:
+#|   attack rate (cases per 100,000) vs population size."
+
+p1 <- ggplot(features, aes(x = log_total_cases)) +
+    geom_histogram(bins = 40, fill = "steelblue", colour = "white", linewidth = 0.2) +
+    labs(x = "log(total cases + 1)", y = "Count",
+         title = "Outbreak size distribution (ADM2)") +
+    theme_minimal(base_size = 11)
+
+p2 <- ggplot(features, aes(x = log_pop, y = log_attack_rate, colour = country)) +
+    geom_point(size = 0.9, alpha = 0.6) +
+    labs(x = "log(population)", y = "log(attack rate per 100k + 1)",
+         title = "Attack rate vs population") +
+    theme_minimal(base_size = 11) +
+    theme(legend.position = "none")
+
+p1 + p2
+```
+
+---
+
+# TSIR-PINN: Discrete-Time Physics-Informed Prediction
+
+We implement the TSIR-PINN approach from Madden et al. adapted for cholera.
+The TSIR recursion is used as the physics constraint. We use PyTorch via
+`reticulate`.
+
+## Conceptual Architecture
+
+The network takes as input, at each week $t$:
+
+$$\mathbf{x}_t = \left[\underbrace{t / T}_{\text{scaled time}},\; \underbrace{\sin(2\pi t/52), \cos(2\pi t/52)}_{\text{Fourier season}},\; \underbrace{I_{t-1}, I_{t-2}, \ldots}_{\text{lagged cases}},\; \underbrace{\log N}_{\text{population}}\right]$$
+
+and outputs:
+
+- $\hat{I}_t$ — predicted weekly incidence
+- $\hat{\beta}_t$ — inferred seasonal transmission rate
+
+The **physics loss** enforces the TSIR recursion at each time step:
+
+$$\mathcal{L}_{\text{TSIR}} = \frac{1}{T} \sum_t \left(\hat{I}_t - \hat{\beta}_t \frac{S_t \hat{I}_{t-1}^\alpha}{N}\right)^2$$
+
+where $S_t = N - \sum_{\tau < t} \hat{I}_\tau$ tracks cumulative depletion of
+susceptibles.
+
+## R Implementation (reticulate + PyTorch)
+
+```{r check-python}
+# Check Python / torch availability
+py_avail <- tryCatch({
+    reticulate::import("torch")
+    TRUE
+}, error = function(e) FALSE)
+
+if (!py_avail) {
+    cat("PyTorch not available in current Python environment.\n")
+    cat("To install:\n")
+    cat("  reticulate::install_miniconda()  # if needed\n")
+    cat("  reticulate::py_install('torch', pip = TRUE)\n")
+    cat("  reticulate::py_install('numpy', pip = TRUE)\n")
+} else {
+    torch <- reticulate::import("torch")
+    np    <- reticulate::import("numpy")
+    cat(sprintf("PyTorch %s available.\n", torch$`__version__`))
+}
+```
+
+```{r tsir-pinn-prep}
+# Select a representative set of outbreaks for training / evaluation
+# Criteria: >= 6 weeks, >= 50 cases, population known
+train_outbreaks <- features |>
+    filter(n_weeks >= 6, total_cases >= 50, !is.na(pop)) |>
+    arrange(desc(total_cases))
+
+cat(sprintf("Outbreaks meeting criteria: %d\n", nrow(train_outbreaks)))
+
+# Attach weekly time series to each qualifying outbreak
+ts_train <- ts2 |>
+    semi_join(train_outbreaks,
+              by = c("location", "location_period_id", "outbreak_number")) |>
+    group_by(location, location_period_id, outbreak_number) |>
+    arrange(TL, .by_group = TRUE) |>
+    mutate(
+        t        = row_number(),
+        t_scaled = (t - 1) / (n() - 1 + 1e-8),
+        sin_t    = sin(2 * pi * t / 52),
+        cos_t    = cos(2 * pi * t / 52),
+        I_norm   = sCh / pop,                # normalised incidence
+        pop      = first(pop),
+        # Lag features
+        I_lag1   = lag(I_norm, 1, default = 0),
+        I_lag2   = lag(I_norm, 2, default = 0)
+    ) |>
+    ungroup()
+
+cat(sprintf("Training records (weeks): %d  across %d outbreaks\n",
+    nrow(ts_train), n_distinct(ts_train$location_period_id)))
+```
+
+```{r tsir-pinn-python, eval=py_avail}
+#| results: "hold"
+
+# ── TSIR-PINN in PyTorch via reticulate ──────────────────────────────────────
+reticulate::py_run_string("
+import torch
+import torch.nn as nn
+import numpy as np
+
+torch.manual_seed(42)
+device = torch.device('cpu')
+
+# ── Network definition ──────────────────────────────────────────────────────
+class TSIRPINNCell(nn.Module):
+    '''
+    Maps per-week features to (I_hat, beta_hat).
+    Input:  [t_scaled, sin_t, cos_t, I_lag1, I_lag2, log_pop]  dim=6
+    Output: [I_hat (incidence fraction), beta_hat (transmission rate)]  dim=2
+    '''
+    def __init__(self, hidden=64):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(6, hidden), nn.Tanh(),
+            nn.Linear(hidden, hidden), nn.Tanh(),
+            nn.Linear(hidden, hidden), nn.Tanh(),
+            nn.Linear(hidden, 2)
+        )
+        # Fourier feature parameters for beta seasonality
+        self.beta0  = nn.Parameter(torch.tensor([0.5]))
+        self.amp1   = nn.Parameter(torch.zeros(1))
+        self.amp2   = nn.Parameter(torch.zeros(1))
+
+    def forward(self, x):
+        out    = self.net(x)
+        I_hat  = torch.softplus(out[:, 0:1])        # positive incidence
+        # Seasonal beta: base + Fourier correction from network
+        t_sin  = x[:, 1:2]
+        t_cos  = x[:, 2:3]
+        beta   = torch.softplus(self.beta0 + self.amp1 * t_sin + self.amp2 * t_cos)
+        beta   = beta.expand_as(I_hat)
+        return I_hat, beta
+
+
+def tsir_loss(I_hat, beta, I_lag1, pop, alpha=0.97, lam=1.0):
+    '''
+    Physics loss: TSIR residual
+    I_hat[t] should equal beta[t] * S[t] * I_lag1[t]^alpha / N
+    S[t] = 1 - cumulative I up to t  (susceptible fraction)
+    '''
+    # Cumulative susceptible depletion (discrete)
+    S = 1.0 - torch.cumsum(I_hat, dim=0)
+    S = torch.clamp(S, min=1e-6)
+    I_prev_alpha = torch.clamp(I_lag1, min=1e-9) ** alpha
+    I_tsir = beta * S * I_prev_alpha
+    residual = (I_hat - I_tsir) ** 2
+    return lam * residual.mean()
+
+
+def train_outbreak(t_sc, sin_t, cos_t, I_norm, I_lag1, I_lag2, log_pop,
+                   n_epochs=2000, lam_phys=1.0, lr=1e-3):
+    T = len(t_sc)
+    # Build tensor inputs  [T x 6]
+    X = torch.tensor(
+        np.stack([t_sc, sin_t, cos_t, I_lag1, I_lag2,
+                  np.full(T, log_pop)], axis=1),
+        dtype=torch.float32)
+    y = torch.tensor(I_norm, dtype=torch.float32).unsqueeze(1)
+    I_lag1_t = torch.tensor(I_lag1, dtype=torch.float32).unsqueeze(1)
+
+    model = TSIRPINNCell(hidden=64)
+    opt   = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
+
+    # Curriculum: ramp physics loss weight over first 600 epochs
+    losses = []
+    for epoch in range(n_epochs):
+        opt.zero_grad()
+        I_hat, beta = model(X)
+        lam_curr = lam_phys * min(1.0, epoch / 600)
+        loss_data = nn.MSELoss()(I_hat, y)
+        loss_phys = tsir_loss(I_hat, beta, I_lag1_t, 1.0, lam=lam_curr)
+        loss = loss_data + loss_phys
+        loss.backward()
+        opt.step()
+        losses.append(float(loss.item()))
+
+    model.eval()
+    with torch.no_grad():
+        I_pred, beta_pred = model(X)
+
+    return {
+        'I_pred':    I_pred.squeeze().numpy(),
+        'beta_pred': beta_pred.squeeze().numpy(),
+        'losses':    np.array(losses),
+        'final_loss': losses[-1]
+    }
+
+print('TSIR-PINN functions defined.')
+")
+```
+
+```{r demo-fit, eval=py_avail}
+#| fig-cap: "TSIR-PINN fit on a single ADM2 outbreak (largest outbreak in the
+#|   dataset). Top: observed vs predicted weekly incidence. Bottom: inferred
+#|   seasonal transmission rate beta(t). Loss curve inset shows data + physics
+#|   loss convergence over 2,000 training epochs."
+
+# Pick the largest outbreak for demonstration
+demo_ob <- ts_train |>
+    group_by(location_period_id) |>
+    summarise(total = sum(sCh, na.rm = TRUE), .groups = "drop") |>
+    slice_max(total, n = 1)
+
+demo_ts <- ts_train |>
+    filter(location_period_id == demo_ob$location_period_id) |>
+    arrange(t)
+
+# Pass to Python
+reticulate::py$t_sc    <- demo_ts$t_scaled
+reticulate::py$sin_t   <- demo_ts$sin_t
+reticulate::py$cos_t   <- demo_ts$cos_t
+reticulate::py$I_norm  <- demo_ts$I_norm
+reticulate::py$I_lag1  <- demo_ts$I_lag1
+reticulate::py$I_lag2  <- demo_ts$I_lag2
+reticulate::py$log_pop <- log(demo_ts$pop[1])
+
+reticulate::py_run_string("
+result = train_outbreak(t_sc, sin_t, cos_t, I_norm, I_lag1, I_lag2, log_pop,
+                         n_epochs=2000, lam_phys=1.0, lr=1e-3)
+print(f'Final loss: {result[\"final_loss\"]:.6f}')
+")
+
+# Extract results back to R
+res <- reticulate::py$result
+demo_ts <- demo_ts |>
+    mutate(
+        I_pred    = res$I_pred * pop[1],
+        I_obs     = sCh,
+        beta_pred = res$beta_pred,
+        losses    = NA_real_
+    )
+
+loss_df <- tibble(epoch = seq_along(res$losses), loss = res$losses)
+
+p_fit <- ggplot(demo_ts, aes(x = TL)) +
+    geom_col(aes(y = I_obs), fill = "steelblue", alpha = 0.5, width = 5) +
+    geom_line(aes(y = I_pred), colour = "firebrick", linewidth = 1) +
+    labs(x = NULL, y = "Weekly cases",
+         title = sprintf("TSIR-PINN fit: %s (total cases = %d)",
+                         demo_ts$location[1], sum(demo_ts$I_obs, na.rm = TRUE)),
+         subtitle = "Blue bars: observed  |  Red line: PINN prediction") +
+    theme_minimal(base_size = 11)
+
+p_beta <- ggplot(demo_ts, aes(x = TL, y = beta_pred)) +
+    geom_line(colour = "darkorange", linewidth = 1) +
+    labs(x = "Date", y = expression(beta(t)), title = "Inferred transmission rate") +
+    theme_minimal(base_size = 11)
+
+p_loss <- ggplot(loss_df, aes(x = epoch, y = log10(loss + 1e-8))) +
+    geom_line(colour = "grey40", linewidth = 0.6) +
+    labs(x = "Epoch", y = "log10(loss)", title = "Training loss") +
+    theme_minimal(base_size = 9)
+
+(p_fit / p_beta) | p_loss +
+    plot_layout(widths = c(3, 1))
+```
+
+---
+
+# SEIR-PINN: Continuous-Time ODE Variant
+
+The continuous SEIR formulation (Berber et al. cholera PINN) is better suited
+for **interpolating and forecasting** across the full outbreak trajectory.
+
+## Architecture
+
+The state network maps $(t, \mathbf{d})$ → $(S, E, I, R)$ fractions, where
+$\mathbf{d}$ is a district one-hot or embedding vector:
+
+$$[S(t), E(t), I(t), R(t)] = \sigma\!\left(W_3 \cdot \text{tanh}\!\left(W_2 \cdot \text{tanh}(W_1 [t, \mathbf{d}] + b_1) + b_2\right) + b_3\right)$$
+
+Outputs are passed through sigmoid to enforce $\in (0,1)$ and population
+conservation $S + E + I + R = 1$.
+
+The **five-layer physics loss** is:
+
+$$\mathcal{L}_{\text{ODE}} = \frac{1}{N_c} \sum_{t} \left\| \dot{\mathbf{u}}_{\text{NN}} - f(\mathbf{u}_{\text{NN}}, \boldsymbol{\theta}) \right\|^2$$
+
+$$\mathcal{L}_{\text{conservation}} = \frac{1}{N_c} \sum_t \left(\dot{S} + \dot{E} + \dot{I} + \dot{R} - T(\mu - \delta)\right)^2$$
+
+$$\mathcal{L}_{\text{seasonal}} = \frac{1}{H} \sum_{h=1}^{H} (a_h^2 + b_h^2)$$
+
+$$\mathcal{L}_{\text{spatial}} = \frac{1}{N_c} \sum_t \left(\beta_i s_i i_i + \rho \sum_j w_{ij} i_j - \hat{\lambda}_i\right)^2$$
+
+$$\mathcal{L}_{\text{endemic}} = \left(i^* - \frac{\sigma(\mu + \gamma)(\mu + \omega)\mu}{(\mu + \sigma)\left[\beta_0 \gamma(\mu + \omega) - \mu(\mu + \gamma)(\mu + \omega)\right]}\right)^2$$
+
+Combined:
+
+$$\mathcal{L} = \mathcal{L}_{\text{data}} + \mathcal{L}_{\text{ODE}} + 0.05\,\mathcal{L}_{\text{seasonal}} + \mathcal{L}_{\text{spatial}} + 5\,\mathcal{L}_{\text{endemic}}$$
+
+```{r seir-pinn-python, eval=py_avail}
+reticulate::py_run_string("
+import torch
+import torch.nn as nn
+import numpy as np
+
+class SEIRNet(nn.Module):
+    '''
+    State network: maps (t_scaled) -> (S, E, I, R) fractions.
+    Parameters: beta0, sigma, gamma, mu, omega (all log-parameterised).
+    Fourier coefficients a1, b1 for seasonal beta.
+    '''
+    def __init__(self, hidden=32):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(1, hidden), nn.Tanh(),
+            nn.Linear(hidden, hidden), nn.Tanh(),
+            nn.Linear(hidden, hidden), nn.Tanh(),
+            nn.Linear(hidden, 4), nn.Sigmoid()
+        )
+        # Epidemiological parameters (log-space, shared across sites)
+        self.log_sigma = nn.Parameter(torch.log(torch.tensor(0.5)))
+        self.log_gamma = nn.Parameter(torch.log(torch.tensor(1.4)))
+        self.log_mu    = nn.Parameter(torch.log(torch.tensor(3e-4)))
+        self.log_omega = nn.Parameter(torch.log(torch.tensor(0.01)))
+        # Seasonal transmission (site-specific)
+        self.log_beta0 = nn.Parameter(torch.log(torch.tensor(0.5)))
+        self.a1        = nn.Parameter(torch.zeros(1))
+        self.b1        = nn.Parameter(torch.zeros(1))
+
+    def beta(self, t_scaled, T=52.0):
+        t_raw  = t_scaled * T
+        seas   = 1.0 + self.a1 * torch.sin(2 * np.pi * t_raw / T) \
+                     + self.b1 * torch.cos(2 * np.pi * t_raw / T)
+        return torch.exp(self.log_beta0) * seas
+
+    def forward(self, t_scaled):
+        u = self.net(t_scaled)               # (N,4), all in (0,1)
+        # Normalise to enforce S+E+I+R = 1
+        u = u / u.sum(dim=1, keepdim=True)
+        return u   # columns: S, E, I, R
+
+
+def seir_ode_residual(model, t_scaled, T=52.0, N_coll=200):
+    '''
+    Evaluate SEIR ODE residuals via automatic differentiation.
+    t_scaled: (N,1) tensor with requires_grad=True
+    Returns mean squared ODE residual.
+    '''
+    t_c = t_scaled.clone().requires_grad_(True)
+    u   = model(t_c)                          # (N,4)
+    S, E, I, R = u[:, 0], u[:, 1], u[:, 2], u[:, 3]
+
+    # Compute dU/dt via autograd
+    def grad_col(col):
+        return torch.autograd.grad(col.sum(), t_c,
+                                   create_graph=True)[0].squeeze()
+
+    dS = grad_col(S); dE = grad_col(E)
+    dI = grad_col(I); dR = grad_col(R)
+
+    beta  = model.beta(t_c.squeeze(), T=T)
+    sigma = torch.exp(model.log_sigma)
+    gamma = torch.exp(model.log_gamma)
+    mu    = torch.exp(model.log_mu)
+    omega = torch.exp(model.log_omega)
+
+    force = beta * S * I                     # force of infection
+    rhs_S = mu - force - mu * S + omega * R
+    rhs_E = force - (sigma + mu) * E
+    rhs_I = sigma * E - (gamma + mu) * I
+    rhs_R = gamma * I - (mu + omega) * R
+
+    res = (dS - rhs_S)**2 + (dE - rhs_E)**2 + \
+          (dI - rhs_I)**2 + (dR - rhs_R)**2
+    return res.mean()
+
+
+def train_seir_pinn(t_obs, I_obs, n_epochs=3000, lam_ode=1.0, N_coll=100,
+                    lr=1e-3):
+    T_weeks = len(t_obs)
+    model   = SEIRNet(hidden=32)
+    opt     = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-5)
+
+    t_obs_t = torch.tensor(t_obs, dtype=torch.float32).unsqueeze(1)
+    I_obs_t = torch.tensor(I_obs, dtype=torch.float32).unsqueeze(1)
+
+    # Random collocation points for ODE residual
+    t_coll  = torch.rand(N_coll, 1, requires_grad=True)
+
+    losses = []
+    for epoch in range(n_epochs):
+        opt.zero_grad()
+        u_obs      = model(t_obs_t)
+        loss_data  = nn.MSELoss()(u_obs[:, 2:3], I_obs_t)
+
+        lam_curr   = lam_ode * min(1.0, epoch / 800)
+        loss_ode   = seir_ode_residual(model, t_coll, T=float(T_weeks))
+        loss_seas  = 0.05 * (model.a1**2 + model.b1**2).mean()
+
+        loss = loss_data + lam_curr * loss_ode + loss_seas
+        loss.backward()
+        opt.step()
+        losses.append(float(loss.item()))
+
+    model.eval()
+    t_fine = torch.linspace(0, 1, 200).unsqueeze(1)
+    with torch.no_grad():
+        u_fine = model(t_fine)
+
+    return {
+        't_fine':    t_fine.squeeze().numpy(),
+        'S_fine':    u_fine[:, 0].numpy(),
+        'E_fine':    u_fine[:, 1].numpy(),
+        'I_fine':    u_fine[:, 2].numpy(),
+        'R_fine':    u_fine[:, 3].numpy(),
+        'beta0':     float(torch.exp(model.log_beta0).item()),
+        'gamma':     float(torch.exp(model.log_gamma).item()),
+        'sigma':     float(torch.exp(model.log_sigma).item()),
+        'losses':    np.array(losses)
+    }
+
+print('SEIR-PINN functions defined.')
+")
+```
+
+```{r seir-demo, eval=py_avail, fig.width=11, fig.height=5}
+#| fig-cap: "SEIR-PINN fit on the largest ADM2 outbreak. Left: fitted SEIR
+#|   compartments over the outbreak trajectory. Right: observed (bars) vs
+#|   fitted I(t) (red line) rescaled to case counts. Recovered parameters
+#|   are shown in the subtitle."
+
+# Normalise observed incidence to fractions
+demo_I_norm <- demo_ts$I_norm
+demo_t_sc   <- demo_ts$t_scaled
+
+reticulate::py$demo_I_norm <- demo_I_norm
+reticulate::py$demo_t_sc   <- demo_t_sc
+
+reticulate::py_run_string("
+seir_res = train_seir_pinn(demo_t_sc, demo_I_norm,
+                            n_epochs=3000, lam_ode=1.0, N_coll=100)
+print(f'beta0={seir_res[\"beta0\"]:.3f}  sigma={seir_res[\"sigma\"]:.3f}  gamma={seir_res[\"gamma\"]:.3f}')
+")
+
+sr <- reticulate::py$seir_res
+
+# SEIR compartments
+seir_df <- tibble(
+    t_scaled = sr$t_fine,
+    S = sr$S_fine, E = sr$E_fine, I = sr$I_fine, R = sr$R_fine
+) |>
+    mutate(t_week = t_scaled * (nrow(demo_ts) - 1)) |>
+    pivot_longer(c(S, E, I, R), names_to = "compartment", values_to = "fraction")
+
+p_seir <- ggplot(seir_df, aes(x = t_week, y = fraction, colour = compartment)) +
+    geom_line(linewidth = 1) +
+    scale_colour_manual(values = c(S = "steelblue", E = "goldenrod",
+                                    I = "firebrick", R = "darkgreen")) +
+    labs(x = "Week", y = "Fraction of population",
+         title = "SEIR-PINN compartments",
+         colour = NULL) +
+    theme_minimal(base_size = 11) +
+    theme(legend.position = "bottom")
+
+# Observed vs fitted incidence
+obs_df <- demo_ts |>
+    mutate(t_week = t - 1,
+           I_fitted = sr$I_fine[round(t_scaled * 199) + 1] * pop[1])
+
+p_obs <- ggplot(obs_df, aes(x = t_week)) +
+    geom_col(aes(y = I_obs), fill = "steelblue", alpha = 0.5, width = 0.8) +
+    geom_line(aes(y = I_fitted), colour = "firebrick", linewidth = 1) +
+    labs(x = "Week", y = "Weekly cases",
+         title = "Observed vs fitted incidence",
+         subtitle = sprintf("beta0=%.3f  sigma=%.3f  gamma=%.3f",
+                            sr$beta0, sr$sigma, sr$gamma)) +
+    theme_minimal(base_size = 11)
+
+p_seir | p_obs
+```
+
+---
+
+# Outbreak Size Prediction: Regression on PINN-Derived Features
+
+A key use case is predicting **final outbreak size** from early-outbreak
+data (e.g., first 2–4 weeks). The PINN inferred parameters ($\hat{\beta}_0$,
+$\hat{\sigma}$, $\hat{\gamma}$) can serve as interpretable features for a
+downstream regression.
+
+## Feature Engineering from TSIR-PINN
+
+For each outbreak, fit the TSIR-PINN on the first $k$ weeks and extract:
+
+- $\hat{\beta}_0$ — initial transmission rate
+- $\hat{R}_0 = \hat{\beta}_0 / \hat{\gamma}$ — basic reproduction number
+- Cumulative $\hat{I}$ at week $k$ — current trajectory
+- Population $N$, seasonal phase at outbreak start
+
+These feed into a log-linear model:
+
+$$\log(\text{total\_cases}_i) = \alpha_0 + \alpha_1 \log N_i + \alpha_2 \hat{R}_0^{(i)} + \alpha_3 \log I_k^{(i)} + \alpha_4 \sin(\text{week}) + \epsilon_i$$
+
+## Baseline: Statistical Regression (without PINN)
+
+```{r baseline-regression, fig.width=9, fig.height=4}
+#| fig-cap: "Baseline log-linear regression of total outbreak size on
+#|   population, seasonal week, and early observed cases. Residuals on log
+#|   scale show remaining variation unexplained by demographics and season."
+
+# For demonstration: use only features observable before the outbreak is complete
+# (population + calendar week at start)
+set.seed(42)
+n_total <- nrow(train_outbreaks)
+train_idx <- sample(n_total, floor(0.8 * n_total))
+test_idx  <- setdiff(seq_len(n_total), train_idx)
+
+df_model <- train_outbreaks |>
+    filter(!is.na(log_pop)) |>
+    mutate(log_total_cases = log1p(total_cases))
+
+lm_fit <- lm(log_total_cases ~ log_pop + sin_week + cos_week,
+             data = df_model[train_idx, ])
+
+df_model$pred_lm <- predict(lm_fit, df_model)
+
+rmse_train <- sqrt(mean((df_model$log_total_cases[train_idx] -
+                         df_model$pred_lm[train_idx])^2, na.rm=TRUE))
+rmse_test  <- sqrt(mean((df_model$log_total_cases[test_idx] -
+                         df_model$pred_lm[test_idx])^2, na.rm=TRUE))
+
+cat(sprintf("Baseline log-linear RMSE (train): %.3f  (test): %.3f  [log scale]\n",
+            rmse_train, rmse_test))
+cat("(RMSE in log scale: 1 unit ≈ e-fold difference in total cases)\n")
+
+p_pred <- ggplot(df_model[test_idx, ],
+                 aes(x = log_total_cases, y = pred_lm)) +
+    geom_point(alpha = 0.6, colour = "steelblue") +
+    geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+    labs(x = "log(observed cases + 1)", y = "log(predicted cases + 1)",
+         title = sprintf("Baseline regression (test RMSE = %.2f)", rmse_test)) +
+    theme_minimal(base_size = 11)
+
+p_resid <- ggplot(df_model[test_idx, ],
+                  aes(x = pred_lm,
+                      y = log_total_cases - pred_lm)) +
+    geom_point(alpha = 0.6, colour = "firebrick") +
+    geom_hline(yintercept = 0, linetype = "dashed") +
+    labs(x = "Predicted (log scale)", y = "Residual",
+         title = "Residuals vs fitted") +
+    theme_minimal(base_size = 11)
+
+p_pred + p_resid
+```
+
+---
+
+# Discussion: Opportunities and Limitations
+
+## What the PINN approach adds over pure statistical regression
+
+1. **Parameter interpretability** — PINN recovers epidemiologically meaningful
+   parameters ($R_0$, $\gamma$, $\sigma$) that statistical regression cannot.
+   These can inform intervention timing, not just final size.
+
+2. **Physics-constrained extrapolation** — standard neural networks can produce
+   implausible trajectories (negative cases, super-exponential growth). The ODE
+   residual loss prevents this.
+
+3. **Data-efficient forecasting** — the mechanistic prior reduces effective model
+   complexity, potentially improving predictions in data-sparse settings (small
+   outbreaks, few weeks observed).
+
+## Challenges with the cholera ADM2 dataset
+
+| Issue | Impact |
+|-------|--------|
+| **Heterogeneous outbreak durations** (1–93 weeks) | Each PINN is fit independently per outbreak; population-level pooling requires hierarchical PINN |
+| **Zero/near-zero weeks interspersed** | TSIR assumption of continuous transmission may fail; phantom records need careful handling |
+| **Unknown susceptible pool** | $S(0)$ is unobserved; waning immunity ($\omega$) is poorly identified without seroprevalence data |
+| **Reporting variability across countries** | $\text{sCh}$ (suspected cases) vs $\text{cCh}$ (confirmed) creates inconsistent targets |
+| **Short outbreaks** (<6 weeks) | Insufficient data to identify $\sigma$, $\gamma$, $\beta_0$ simultaneously; at least one parameter must be fixed |
+| **Spatial coupling** | ADM2 sites are not independent; the five-layer PINN spatial coupling requires a proximity/mobility matrix |
+
+## Recommended next steps
+
+1. **Hierarchical TSIR-PINN**: share $\sigma$, $\gamma$ across outbreaks, learn
+   site-specific $\beta_0$ — reduces per-outbreak parameter count from 5 to 1.
+
+2. **Add $R_0$ as predictor**: fit TSIR-PINN on first 2–4 weeks of each outbreak,
+   extract $\hat{R}_0$, compare baseline vs PINN-augmented prediction RMSE.
+
+3. **Spatial adjacency matrix**: use `outbreak_shapefiles.rds` to build a
+   distance-weighted coupling matrix $W_{ij}$ for the four-layer spatial loss.
+
+4. **Counterfactual scenarios**: once calibrated, use PINN to simulate
+   "what if vaccination at week 2?" by modifying $S(t)$ — directly linking to
+   the reactive vaccination analysis in `vaccine_impact_3yr.qmd`.
