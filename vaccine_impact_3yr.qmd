@@ -716,6 +716,184 @@ site_df |>
 
 ---
 
+# Sensitivity Analysis
+
+The purpose of this section is to map empirical α\* across the full parameter
+space and to overlay the **theoretical guidelines** derived from the homogeneous
+equal-risk model, exposing where the theory holds and where heterogeneity causes
+it to break down.
+
+**Theoretical boundaries shown on each plot:**
+
+| Line | Condition | Meaning |
+|------|-----------|---------|
+| Orange dashed | $r = p \cdot \nu$ | Reactive VE equals expected pre-emptive benefit; theory predicts α\* jumps from 1 (below) to 0 or interior (above) |
+| Blue dashed | $f = p$ | Vaccination capacity equals outbreak probability; separates *scarce* ($f \leq p$, every dose is precious) from *abundant* ($f > p$) regime |
+| Red curve | $R = R_{\text{crit}} = \frac{1-p}{p(\nu - r)}$ | Cost ratio above which an interior solution $\alpha_c = \frac{f-p}{f(1-p)}$ is preferred over pure reactive (only relevant in the abundant regime when $r > p\nu$) |
+| White contours | Theoretical α\* = 0.1, 0.5, 0.9 | Boundaries between the three theoretical regions (pure reactive / interior / pure pre-emptive) |
+
+```{r sens-compute, cache=TRUE, cache.extra=list(p_3yr, F_VAX, NU_VAL, sim_df$q_i)}
+ALPHA_SENS <- seq(0, 1, length.out = 101)
+
+# Pre-compute scores (only depend on rho, not on f or r)
+score_sens <- setNames(
+    lapply(RHO_VALS, function(rho)
+        make_rank_score(sim_df$q_i, target_rho = rho)),
+    as.character(RHO_VALS))
+
+# ── Grid 1: f × r  (faceted by R and rho) ──────────────────────────────────
+F_GRID <- seq(0.05, 0.80, by = 0.05)
+R_GRID <- seq(0.10, 0.90, by = 0.05)
+
+sens_fr <- expand_grid(f = F_GRID, r = R_GRID, R = R_VALS, rho = RHO_VALS) |>
+    mutate(
+        alpha_star_emp = pmap_dbl(list(f, r, R, rho), function(f, r, R, rho) {
+            fv <- f; rv <- r; Rv <- R; rhov <- rho
+            score    <- score_sens[[as.character(rhov)]]
+            cost_vec <- vapply(ALPHA_SENS, function(a)
+                cost_incidence(a, fv, sim_df$q_i, sim_df$cases_first, sim_df$date_first,
+                               sim_df$pop_sum, score, Rv, rv, NU_VAL, C_COV, Q_THRESH),
+                numeric(1))
+            ALPHA_SENS[which.min(cost_vec)]
+        }),
+        alpha_star_theory = pmap_dbl(list(f, r, R), function(f, r, R)
+            alpha_star_equalrisk(p = p_3yr, R = R, r = r, f = f, nu = NU_VAL))
+    ) |>
+    # Replace NA (exact boundary) with midpoint for contouring
+    mutate(alpha_star_theory = replace_na(alpha_star_theory, 0.5))
+
+# ── Grid 2: R × r  (faceted by rho, fixed f = F_VAX) ──────────────────────
+R_FINE  <- seq(50, 1500, length.out = 30)
+R_GRID2 <- seq(0.10, 0.90, by = 0.05)
+
+sens_Rr <- expand_grid(R = R_FINE, r = R_GRID2, rho = RHO_VALS) |>
+    mutate(
+        alpha_star_emp = pmap_dbl(list(R, r, rho), function(R, r, rho) {
+            Rv <- R; rv <- r; rhov <- rho
+            score    <- score_sens[[as.character(rhov)]]
+            cost_vec <- vapply(ALPHA_SENS, function(a)
+                cost_incidence(a, F_VAX, sim_df$q_i, sim_df$cases_first, sim_df$date_first,
+                               sim_df$pop_sum, score, Rv, rv, NU_VAL, C_COV, Q_THRESH),
+                numeric(1))
+            ALPHA_SENS[which.min(cost_vec)]
+        }),
+        alpha_star_theory = pmap_dbl(list(R, r), function(R, r)
+            alpha_star_equalrisk(p = p_3yr, R = R, r = r, f = F_VAX, nu = NU_VAL))
+    ) |>
+    mutate(alpha_star_theory = replace_na(alpha_star_theory, 0.5))
+
+# R_crit curve: R = (1-p) / (p*(nu-r)) for p*nu < r < nu; only meaningful
+# in the abundant regime (f > p). Stays within plot range.
+R_crit_df <- tibble(r = seq(p_3yr * NU_VAL + 0.005, NU_VAL - 0.005, by = 0.005)) |>
+    mutate(R_crit = (1 - p_3yr) / (p_3yr * (NU_VAL - r))) |>
+    filter(R_crit >= 50, R_crit <= 1500)
+
+cat(sprintf("Grids computed: sens_fr (%d rows), sens_Rr (%d rows)\n",
+            nrow(sens_fr), nrow(sens_Rr)))
+```
+
+## Heat map: $f$ vs $r$
+
+```{r fig-sens-fr, fig.width=13, fig.height=10}
+#| fig-cap: "Empirical alpha* (fill) across vaccination capacity f and reactive
+#|   VE r, faceted by R (columns) and targeting accuracy rho (rows). White
+#|   contours show theoretical alpha* = 0.1, 0.5, 0.9. Orange dashed: r = p·nu
+#|   (VE threshold). Blue dashed: f = p (capacity regime boundary)."
+
+# Build label data frames (placed once per facet combo)
+label_df_fr <- expand_grid(R = R_VALS, rho = RHO_VALS)
+
+ggplot(sens_fr, aes(x = r, y = f)) +
+    geom_tile(aes(fill = alpha_star_emp)) +
+    geom_contour(aes(z = alpha_star_theory),
+                 breaks = c(0.1, 0.5, 0.9),
+                 colour = "white", linewidth = 0.55, linetype = "solid") +
+    # r = p*nu boundary (orange dashed vertical)
+    geom_vline(xintercept = p_3yr * NU_VAL,
+               linetype = "dashed", colour = "darkorange", linewidth = 0.8) +
+    # f = p boundary (blue dashed horizontal)
+    geom_hline(yintercept = p_3yr,
+               linetype = "dashed", colour = "dodgerblue", linewidth = 0.8) +
+    # Mark current analysis point
+    geom_point(data = label_df_fr,
+               aes(x = R_REACT, y = F_VAX),
+               shape = 4, size = 3, colour = "white", stroke = 1.2) +
+    scale_fill_viridis_c(
+        name   = expression(alpha^"*"),
+        limits = c(0, 1), option = "plasma") +
+    scale_x_continuous(breaks = seq(0.1, 0.9, by = 0.2)) +
+    scale_y_continuous(breaks = seq(0.1, 0.8, by = 0.2)) +
+    facet_grid(
+        rows = vars(sprintf("rho = %.1f", rho)),
+        cols = vars(sprintf("R = %d",    R))) +
+    labs(
+        x        = expression("Reactive VE " ~ italic(r)),
+        y        = expression("Vaccination capacity " ~ italic(f)),
+        title    = "Empirical optimal pre-emptive fraction across f and r",
+        subtitle = paste0(
+            "Orange dashed: r = p\u00b7\u03bd = ", round(p_3yr * NU_VAL, 3),
+            "  |  Blue dashed: f = p = ", round(p_3yr, 3),
+            "  |  White contours: theoretical \u03b1* = 0.1, 0.5, 0.9",
+            "  |  \u2715 = current analysis point")) +
+    theme_minimal(base_size = 11) +
+    theme(strip.text         = element_text(face = "bold"),
+          legend.position    = "right",
+          panel.grid.major   = element_blank(),
+          panel.grid.minor   = element_blank())
+```
+
+## Heat map: $R$ vs $r$
+
+```{r fig-sens-Rr, fig.width=11, fig.height=5}
+#| fig-cap: "Empirical alpha* (fill) across cost ratio R and reactive VE r at
+#|   fixed f = F_VAX, faceted by targeting accuracy rho. White contours show
+#|   theoretical alpha* = 0.1, 0.5, 0.9. Orange dashed: r = p·nu. Red curve:
+#|   R = R_crit (above this line interior solution alpha_c is theoretically
+#|   optimal; below, pure reactive). Cross marks current analysis point."
+
+label_df_Rr <- tibble(rho = RHO_VALS)
+
+ggplot(sens_Rr, aes(x = r, y = R)) +
+    geom_tile(aes(fill = alpha_star_emp)) +
+    geom_contour(aes(z = alpha_star_theory),
+                 breaks = c(0.1, 0.5, 0.9),
+                 colour = "white", linewidth = 0.55) +
+    # r = p*nu boundary
+    geom_vline(xintercept = p_3yr * NU_VAL,
+               linetype = "dashed", colour = "darkorange", linewidth = 0.8) +
+    # R_crit curve (only exists for r > p*nu)
+    geom_line(data = R_crit_df, aes(x = r, y = R_crit),
+              linetype = "dashed", colour = "firebrick", linewidth = 0.9,
+              inherit.aes = FALSE) +
+    # Current analysis point
+    geom_point(data = label_df_Rr,
+               aes(x = R_REACT, y = R_BASE),
+               shape = 4, size = 3.5, colour = "white", stroke = 1.2,
+               inherit.aes = FALSE) +
+    scale_fill_viridis_c(
+        name   = expression(alpha^"*"),
+        limits = c(0, 1), option = "plasma") +
+    scale_x_continuous(breaks = seq(0.1, 0.9, by = 0.2)) +
+    scale_y_continuous(labels = scales::comma) +
+    facet_wrap(~sprintf("rho = %.1f", rho), nrow = 1) +
+    labs(
+        x        = expression("Reactive VE " ~ italic(r)),
+        y        = expression("Cost ratio " ~ italic(R)),
+        title    = sprintf("Empirical optimal pre-emptive fraction across R and r  |  f = %.2f", F_VAX),
+        subtitle = paste0(
+            "Orange dashed: r = p\u00b7\u03bd = ", round(p_3yr * NU_VAL, 3),
+            "  |  Red dashed curve: R = R_crit",
+            "  |  White contours: theoretical \u03b1* = 0.1, 0.5, 0.9",
+            "  |  \u2715 = current analysis point")) +
+    theme_minimal(base_size = 11) +
+    theme(strip.text         = element_text(face = "bold"),
+          legend.position    = "right",
+          panel.grid.major   = element_blank(),
+          panel.grid.minor   = element_blank())
+```
+
+---
+
 # Summary and Interpretation
 
 ```{r summary-table}
