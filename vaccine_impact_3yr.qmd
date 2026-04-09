@@ -30,12 +30,15 @@ response when outbreaks are detected?
 
 | Parameter | Symbol | Value |
 |-----------|--------|-------|
-| Vaccination capacity (fraction of population) | $f$ | 0.30 |
+| Vaccination capacity (fraction of population) | $f$ | 0.60 |
+| Pre-emptive doses per person | — | 2 (full 3-yr immunity) |
+| Reactive doses per person | — | 1 (ongoing outbreak only) |
 | Pre-emptive vaccine effectiveness | $\nu$ | 1.00 |
-| Reactive vaccine effectiveness | $r$ | 0.40 |
-| Cost ratio (illness cost / vaccine cost per person) | $R$ | 100, 500 |
+| Reactive vaccine effectiveness (first year) | $r$ | 0.40 |
+| Cost ratio (illness cost / vaccine cost per dose) | $R$ | 100, 1000, 5000 |
 | Targeting accuracy (Spearman $\rho$) | $\rho$ | 0, 0.3, 1 |
 | Pre-emptive fraction | $\alpha$ | 0 → 1 |
+| Unused vaccine penalty | — | 0.5 × $C_V$ per unused dose |
 
 The targeting accuracy $\rho$ measures how well the pre-vaccination prioritisation
 ranks sites by true future burden: $\rho = 0$ means random allocation,
@@ -59,13 +62,18 @@ WIN_YEARS <- 2010:2012   # evaluation window
 T_WIN     <- length(WIN_YEARS)   # 3 years
 
 F_VAX    <- 0.60   # vaccination capacity (fraction of total population)
-NU_VAL   <- 1.00   # pre-emptive VE
-R_REACT  <- 0.60   # reactive VE
-C_COV    <- 1.00   # within-location vaccine coverage (fraction of pop in site)
-Q_THRESH <- 0      # reactive threshold: vaccinate all outbreak sites (q* = 0)
+NU_VAL   <- 1.00   # pre-emptive VE (2 doses, 3-yr immunity)
+R_REACT  <- 0.40   # reactive VE: fraction of first-year cases averted
+Q_THRESH <- 0      # reactive threshold: vaccinate any site with cases (q* = 0)
 
-R_VALS   <- c(100, 500, 1000)  # cost ratios to analyse
-R_BASE   <- 100                 # baseline R for primary figures
+# Pre-emptive uses 2 doses per person; reactive uses 1 dose.
+# Unused reactive reserves cost 0.5 × C_V per person-dose at end of window.
+DOSE_PRE   <- 2L   # doses per pre-emptive person
+DOSE_REACT <- 1L   # doses per reactive person
+DOSE_WASTE <- 0.5  # cost fraction for unexpired unused reactive doses
+
+R_VALS   <- c(100, 1000, 5000)  # cost ratios to analyse
+R_BASE   <- 1000                 # baseline R for primary figures
 RHO_VALS <- c(0, 0.3, 1.0)    # targeting accuracy levels
 ALPHA_GRID <- seq(0, 1, length.out = 201)
 
@@ -137,13 +145,15 @@ sim_df <- cases_fit |>
 #
 # Reactive deployment follows outbreak chronology: the vaccine stockpile is
 # allocated in order of outbreak start date (earliest-triggered sites first),
-# until doses run out.  At each vaccinated site:
-#   - r = 40% of first-year cases are averted (vaccine arrives mid-outbreak)
-#   - vaccine-induced immunity prevents any subsequent outbreak years in the window
+# until doses run out.  At each reactively vaccinated site:
+#   - r = 40% of first-year cases are averted (1 dose; vaccine arrives mid-outbreak)
+#   - subsequent outbreak years in the window are NOT prevented (no lasting immunity)
+# Unused reactive doses expire at window end, incurring 0.5 × C_V per dose.
 #
 # date_first : exact start date of the first outbreak at each site within WIN_YEARS
 #              (used to order reactive deployment chronologically)
-# cases_first: case count in that first outbreak year (used to compute residual illness)
+# cases_first: case count in that first outbreak year
+# cases_subsequent: case count in all subsequent outbreak years within WIN_YEARS
 date_first_df <- ts2 |>
     filter(year(TL) %in% WIN_YEARS) |>
     group_by(location) |>
@@ -245,21 +255,48 @@ p_hist + p_cdf
 In the **homogeneous** model every location is assumed to have the same outbreak
 probability $p$. Under this simplification the optimal pre-emptive fraction has a closed-form solution.
 
-**Intuition.** Vaccines deployed pre-emptively are certain to be used and avert
-nearly all illness at the targeted site ($\nu = 1$). Reactive vaccines are
-deployed only when an outbreak is already under way; they avert fraction $r$
-of illness but are wasted if no outbreak occurs where they are stockpiled.
+**Revised cost model.** Pre-emptive vaccination costs **2 doses** per person and
+maintains full immunity for the 3-year window. Reactive vaccination costs **1 dose**
+per person and averts fraction $r$ of first-year cases only; subsequent outbreak
+years are not prevented. Unused reactive doses expire at window end, incurring
+$0.5 \times C_V$ per dose.
 
-- If $f > p$ (capacity exceeds outbreak probability — "abundant" regime): both
-  pre-emptive and reactive can cover all outbreaks, but the trade-off depends
-  on $r$ vs $\nu$.
-- If $f \leq p$ (capacity is scarce): the marginal deployed dose competes
-  between preventing a nearly-certain outbreak pre-emptively vs covering a
-  realised outbreak reactively.
+Under homogeneous equal-risk, let $\bar{q}$ be the population-weighted mean
+per-person burden and $\phi = \text{cases\_first} / \text{cases\_win}$ be the
+fraction of burden concentrated in the first outbreak year.
+
+**Abundant regime** ($f > p$): the expected cost per capita is *linear* in $\alpha$
+with slope $f \cdot (1.5 - 0.5p - R\bar{q}(1 - r\phi))$. Therefore:
+
+$$\alpha^* = \begin{cases}1 & R > R^*_{\text{crit}} = \dfrac{1.5 - 0.5p}{\bar{q}(1 - r\phi)} \\[6pt] 0 & R < R^*_{\text{crit}} \end{cases}$$
+
+**Scarce regime** ($f \leq p$): compare pure pre-emptive vs pure reactive:
+
+$$\alpha^* = \begin{cases}1 & R > R^{\dagger}_{\text{crit}} = \dfrac{p}{\bar{q}(1 - r\phi)} \\[6pt] 0 & R < R^{\dagger}_{\text{crit}} \end{cases}$$
+
+Note $R^{\dagger}_{\text{crit}} < R^*_{\text{crit}}$ for $p < 1$, so pre-emptive
+becomes cost-effective at a lower $R$ in the scarce regime.
 
 ```{r alpha-star-theory}
-# alpha_star_equalrisk is from R/analytic_utils.R
-# Returns the optimal alpha under the homogeneous equal-risk case.
+# Compute phi = fraction of 3-yr burden in first outbreak year
+phi_val <- sum(sim_df$cases_first) / max(sum(sim_df$cases_win), 1)
+q_bar   <- weighted.mean(sim_df$q_i, sim_df$pop_sum)
+
+cat(sprintf("phi (first-year burden fraction): %.3f\n", phi_val))
+cat(sprintf("q_bar (pop-weighted mean burden): %.6f  (%.1f per 100k)\n",
+            q_bar, q_bar * 1e5))
+
+# alpha_star_revised: optimal alpha under the revised cost model
+# (2-dose pre-emptive, 1-dose reactive, unused penalty, no subsequent prevention)
+alpha_star_revised <- function(p, R, r, f, q_mean, phi, nu = 1) {
+    Q_rx <- q_mean * (1 - r * phi)   # effective reactive illness burden/person
+    if (f > p) {
+        R_crit <- (1.5 - 0.5 * p) / Q_rx
+    } else {
+        R_crit <- p / Q_rx
+    }
+    ifelse(R > R_crit, 1, 0)
+}
 
 theory_tbl <- expand_grid(R = R_VALS) |>
     mutate(
@@ -267,27 +304,34 @@ theory_tbl <- expand_grid(R = R_VALS) |>
         f        = F_VAX,
         r        = R_REACT,
         nu       = NU_VAL,
+        phi      = phi_val,
+        q_mean   = q_bar,
+        Q_rx     = q_bar * (1 - R_REACT * phi_val),
+        R_crit   = if_else(F_VAX > p_3yr,
+                           (1.5 - 0.5 * p_3yr) / (q_bar * (1 - R_REACT * phi_val)),
+                           p_3yr / (q_bar * (1 - R_REACT * phi_val))),
         regime   = ifelse(f > p, "Abundant (f > p)", "Scarce (f ≤ p)"),
-        alpha_star_theory = mapply(alpha_star_equalrisk,
-                                   p = p, R = R, r = r, f = f, nu = nu)
+        alpha_star_theory = mapply(alpha_star_revised,
+                                   p = p, R = R, r = r, f = f,
+                                   q_mean = q_mean, phi = phi, nu = nu)
     )
 
 theory_tbl |>
-    dplyr::select(R, p, f, regime, alpha_star_theory) |>
+    dplyr::select(R, p, f, regime, R_crit, alpha_star_theory) |>
     knitr::kable(
-        digits    = c(0, 3, 2, 0, 3),
-        col.names = c("R", "p (3-yr)", "f", "Capacity regime", "alpha* (theory)"),
+        digits    = c(0, 3, 2, 0, 0, 3),
+        col.names = c("R", "p (3-yr)", "f", "Capacity regime",
+                      "R* crit (theory)", "alpha* (theory)"),
         caption   = sprintf(
-            "Theoretical optimal pre-emptive fraction under homogeneous risk | nu = %.1f, r = %.1f",
-            NU_VAL, R_REACT))
+            "Theoretical optimal alpha | 2-dose pre-emptive, 1-dose reactive | nu=%.1f, r=%.1f, phi=%.2f",
+            NU_VAL, R_REACT, phi_val))
 
-cat(sprintf("\nNote: f = %.2f, p = %.3f → %s capacity regime.\n",
-            F_VAX, p_3yr, ifelse(F_VAX > p_3yr, "Abundant", "Scarce")))
-cat(sprintf("Threshold condition: r vs p*nu = %.3f vs %.3f\n",
-            R_REACT, p_3yr * NU_VAL))
-cat(sprintf("Since r %s p*nu, the homogeneous theory predicts alpha* = %s.\n",
-            ifelse(R_REACT > p_3yr * NU_VAL, ">", "<"),
-            ifelse(R_REACT > p_3yr * NU_VAL, "0 (pure reactive)", "1 (pure pre-emptive)")))
+cat(sprintf("\nCapacity regime: %s (f = %.2f %s p = %.3f)\n",
+            ifelse(F_VAX > p_3yr, "Abundant", "Scarce"),
+            F_VAX, ifelse(F_VAX > p_3yr, ">", "<="), p_3yr))
+cat(sprintf("Critical R (theory): %.0f\n", theory_tbl$R_crit[1]))
+cat(sprintf("Implication: pre-emptive (alpha*=1) preferred only when R > %.0f.\n",
+            theory_tbl$R_crit[1]))
 ```
 
 ---
@@ -306,71 +350,91 @@ make_rank_score <- function(truth, target_rho, seed = 42) {
     pnorm(rho_p * z_truth + sqrt(1 - rho_p^2) * z_noise)
 }
 
-# Total cost c(alpha), per-capita (normalised by total population, in C_V units).
+# Total cost c(alpha), per-capita (normalised by total population N, in C_V units).
 #
-# alpha       : pre-emptive fraction in [0, 1]
-# f           : vaccination capacity (fraction of total population)
-# q           : per-person illness burden (observed cases / population per site)
-# cases_first : cases in the first outbreak year at each site (reactive trigger year)
-# pop         : population per site — vaccination cost scales with pop_i
-# score       : priority score for pre-emptive targeting (higher → vaccinate first)
-# R           : cost ratio C_I / C_V (illness cost per case / vaccine cost per person)
-# r           : reactive VE: fraction of first-year cases averted (= 0.40)
-# nu          : pre-emptive VE (default 1 → all cases averted)
-# C_cov       : within-location vaccination coverage (default 1 → full population)
-# q_star      : reactive trigger threshold (default 0 → any site with cases triggers)
+# alpha        : pre-emptive fraction in [0, 1]
+# f            : vaccination capacity (fraction of total population)
+# q            : per-person illness burden (observed cases_win / pop per site)
+# cases_first  : cases in the first outbreak year at each site
+# cases_subseq : cases in subsequent outbreak years (cases_win - cases_first)
+# date_first   : start date of first outbreak (chronological reactive ordering)
+# pop          : population per site
+# score        : priority score for pre-emptive targeting (higher → vaccinate first)
+# R            : cost ratio C_I / C_V (illness cost per case / vaccine cost per DOSE)
+# r            : reactive VE: fraction of first-year cases averted
+# nu           : pre-emptive VE (default 1)
+# q_star       : reactive trigger threshold (default 0 → any site with cases triggers)
 #
-# Reactive model: vaccination arrives during the first outbreak year at each site.
-# It averts r of that year's cases and confers immunity preventing any subsequent
-# outbreak years in the window. Vaccination cost = pop_i × C_V per reactive site.
-cost_incidence <- function(alpha, f, q, cases_first, date_first, pop, score, R, r,
-                            nu = 1, C_cov = 1, q_star = 0) {
+# Cost model:
+#   Pre-emptive : DOSE_PRE (=2) doses/person; maintains 3-yr immunity (nu=1 → 0 illness)
+#   Reactive    : DOSE_REACT (=1) dose/person; averts r × first-year cases only;
+#                 subsequent outbreak years are NOT prevented
+#   Unused      : reactive reserve not deployed costs DOSE_WASTE (=0.5) × C_V per person
+#
+# Returns per-capita total cost in C_V units (= total_cost / (N × C_V))
+cost_incidence <- function(alpha, f, q, cases_first, cases_subseq, date_first,
+                            pop, score, R, r, nu = 1, q_star = 0) {
     P       <- sum(pop)
     all_idx <- seq_along(q)
 
-    # Pre-emptive: rank by score, fill budget alpha * f * P
+    # Pre-emptive: rank by score, fill budget alpha * f * P people
     f_pre_cap  <- alpha * f * P
     ord_pre    <- order(score, decreasing = TRUE)
     n_pre      <- sum(cumsum(pop[ord_pre]) <= f_pre_cap)
     pre_idx    <- ord_pre[seq_len(max(n_pre, 0L))]
 
-    q_bar_pre  <- if (length(pre_idx) > 0) weighted.mean(q[pre_idx], pop[pre_idx]) else 0
-    f_pre_used <- sum(pop[pre_idx]) / P
-    c_pre      <- f_pre_used * (C_cov + q_bar_pre * (1 - nu) * R)
+    # Pre-emptive cost: DOSE_PRE doses/person + residual illness ((1-nu) × q × R)
+    c_pre <- DOSE_PRE * sum(pop[pre_idx]) / P +
+             R * (1 - nu) * sum(q[pre_idx] * pop[pre_idx]) / P
 
     # Reactive: remaining sites that have outbreaks (q > q_star)
     rem_idx       <- setdiff(all_idx, pre_idx)
     triggered_idx <- rem_idx[q[rem_idx] > q_star]
     no_action_idx <- rem_idx[q[rem_idx] <= q_star]
 
+    # No-action sites (no outbreak): zero vaccine cost, zero illness
     c_no_action <- R * sum(q[no_action_idx] * pop[no_action_idx]) / P
 
-    f_react_cap <- (1 - alpha) * f * P
+    f_react_pop <- (1 - alpha) * f * P   # reactive reserve in population units
+
     if (length(triggered_idx) > 0) {
-        # Deploy reactively in chronological order of first outbreak start date
+        # Deploy in chronological order of first outbreak start date
         ord_react  <- triggered_idx[order(date_first[triggered_idx])]
-        n_react    <- sum(cumsum(pop[ord_react]) <= f_react_cap)
+        n_react    <- sum(cumsum(pop[ord_react]) <= f_react_pop)
         react_idx  <- ord_react[seq_len(max(n_react, 0L))]
         missed_idx <- setdiff(ord_react, react_idx)
 
-        # Vaccination cost: pop_i × C_cov per vaccinated site
-        # Residual illness: (1-r) × first-year cases; subsequent years fully prevented
-        c_react  <- C_cov * sum(pop[react_idx]) / P +
-                    R * (1 - r) * sum(cases_first[react_idx]) / P
+        pop_react_used <- sum(pop[react_idx])
+
+        # Vaccination cost: DOSE_REACT (=1) dose per person vaccinated
+        c_react_vax <- DOSE_REACT * pop_react_used / P
+
+        # Illness: (1-r) × first-year cases + full subsequent cases (not prevented)
+        c_react_ill <- R * sum((1 - r) * cases_first[react_idx] +
+                                cases_subseq[react_idx]) / P
+
+        # Missed sites: full illness (no vaccine)
         c_missed <- R * sum(q[missed_idx] * pop[missed_idx]) / P
+
+        # Unused reactive reserve expires: 0.5 C_V per person-dose not deployed
+        pop_unused <- max(0, f_react_pop - pop_react_used)
+        c_unused   <- DOSE_WASTE * pop_unused / P
+
+        c_react <- c_react_vax + c_react_ill + c_missed + c_unused
     } else {
-        c_react  <- 0
-        c_missed <- 0
+        # No outbreaks in reactive zone → entire reserve expires (half cost)
+        c_react <- DOSE_WASTE * f_react_pop / P
     }
 
-    c_pre + c_react + c_missed + c_no_action
+    c_pre + c_react + c_no_action
 }
 
 # Cases averted breakdown for a given allocation.
-# Uses same reactive model as cost_incidence(): r reduces first-year cases;
-# subsequent outbreak years at each reactive site are fully prevented.
-cases_averted_breakdown <- function(alpha, f, q, cases_first, date_first, pop, score, R, r,
-                                     nu = 1, C_cov = 1, q_star = 0) {
+# Reactive model (revised): r reduces first-year cases only; subsequent outbreak
+# years at each reactive site are NOT prevented (no lasting immunity).
+cases_averted_breakdown <- function(alpha, f, q, cases_first, cases_subseq,
+                                     date_first, pop, score, R, r,
+                                     nu = 1, q_star = 0) {
     P       <- sum(pop)
     all_idx <- seq_along(q)
 
@@ -382,11 +446,10 @@ cases_averted_breakdown <- function(alpha, f, q, cases_first, date_first, pop, s
     rem_idx       <- setdiff(all_idx, pre_idx)
     triggered_idx <- rem_idx[q[rem_idx] > q_star]
 
-    f_react_cap <- (1 - alpha) * f * P
+    f_react_pop <- (1 - alpha) * f * P
     if (length(triggered_idx) > 0) {
-        # Deploy in chronological order of first outbreak start date
         ord_react  <- triggered_idx[order(date_first[triggered_idx])]
-        n_react    <- sum(cumsum(pop[ord_react]) <= f_react_cap)
+        n_react    <- sum(cumsum(pop[ord_react]) <= f_react_pop)
         react_idx  <- ord_react[seq_len(max(n_react, 0L))]
         missed_idx <- setdiff(ord_react, react_idx)
     } else {
@@ -396,10 +459,11 @@ cases_averted_breakdown <- function(alpha, f, q, cases_first, date_first, pop, s
 
     cases_win     <- q * pop
     total_cases   <- sum(cases_win)
-    cases_pre     <- sum(cases_win[pre_idx])
+    # Pre-emptive: averts all cases (nu=1) at targeted sites
+    cases_pre     <- nu * sum(cases_win[pre_idx])
+    # Reactive: averts r × first-year cases only; subsequent cases still occur
     cases_rx_1st  <- r * sum(cases_first[react_idx])
-    cases_rx_sub  <- sum(cases_win[react_idx]) - sum(cases_first[react_idx])
-    cases_rx      <- cases_rx_1st + cases_rx_sub
+    cases_rx      <- cases_rx_1st
     cases_averted <- cases_pre + cases_rx
     vax_pop       <- sum(pop[pre_idx]) + sum(pop[react_idx])
 
@@ -409,7 +473,6 @@ cases_averted_breakdown <- function(alpha, f, q, cases_first, date_first, pop, s
         cases_averted_pre    = cases_pre,
         cases_averted_rx     = cases_rx,
         cases_averted_rx_1st = cases_rx_1st,
-        cases_averted_rx_sub = cases_rx_sub,
         pct_averted          = 100 * cases_averted / max(total_cases, 1),
         pop_vaccinated       = vax_pop,
         pct_pop_vaccinated   = 100 * vax_pop / P
@@ -431,11 +494,18 @@ The **no-vaccination baseline** cost (no vaccines deployed) is simply
 $c_0 = R \cdot \bar{q}$, where $\bar{q}$ is the population-weighted mean
 illness burden per person (observed cases / population over the window).
 
-**Reactive vaccination model**: reactive vaccines arrive at the start of
-a site's first outbreak year. They avert $r = 40\%$ of that year's cases and,
-through vaccine-induced immunity, prevent any subsequent outbreak years within
-the window. Vaccination cost reflects the full regional population ($\text{pop}_i
-\times C_V$ per reactive site).
+**Cost model (revised):**
+
+| Component | Pre-emptive | Reactive |
+|-----------|-------------|---------|
+| Doses per person | 2 (3-yr immunity) | 1 (one outbreak) |
+| Vaccine cost | $2 \, C_V \times \text{pop}_i$ | $1 \, C_V \times \text{pop}_i$ |
+| Cases averted | $\nu \cdot \text{cases\_win}_i$ | $r \cdot \text{cases\_first}_i$ only |
+| Subsequent outbreaks | Prevented ($\nu = 1$) | Not prevented |
+| If unused | N/A (always deployed) | $0.5 \, C_V$ per unused person-dose |
+
+Costs are reported per capita (total cost divided by $N \times C_V$), so the
+unit is "vaccine-dose equivalents per person."
 
 ```{r cost-curves}
 c_no_vax_by_R <- setNames(
@@ -452,8 +522,9 @@ cost_df <- expand_grid(rho = RHO_VALS, R = R_VALS) |>
         rho_val <- rho; R_val <- R
         score    <- make_rank_score(sim_df$q_i, target_rho = rho_val)
         cost_vec <- vapply(ALPHA_GRID, function(a)
-            cost_incidence(a, F_VAX, sim_df$q_i, sim_df$cases_first, sim_df$date_first,
-                           sim_df$pop_sum, score, R_val, R_REACT, NU_VAL, C_COV, Q_THRESH),
+            cost_incidence(a, F_VAX, sim_df$q_i, sim_df$cases_first, sim_df$cases_subsequent,
+                           sim_df$date_first, sim_df$pop_sum, score, R_val, R_REACT, NU_VAL,
+                           Q_THRESH),
             FUN.VALUE = numeric(1))
         tibble(rho = rho_val, R = R_val, alpha = ALPHA_GRID, cost = cost_vec)
     })
@@ -481,12 +552,11 @@ opt_df |>
 ```
 
 ```{r fig-cost-curves, fig.width=11, fig.height=7}
-#| fig-cap: "Expected cost c(alpha) as a function of the pre-emptive fraction
-#|   alpha, for each combination of targeting accuracy rho (rows) and cost ratio
-#|   R (columns). The blue curve is the cost with vaccination; the red dashed
-#|   vertical line marks the empirical optimal alpha*; the orange dotted vertical
-#|   line marks the theoretical alpha* under the homogeneous equal-risk model;
-#|   the grey dashed horizontal line is the no-vaccination baseline c0."
+#| fig-cap: "Expected cost c(alpha) per capita in C_V units, as a function of
+#|   the pre-emptive fraction alpha. Blue curve: vaccination cost + illness cost
+#|   under revised model (2-dose pre-emptive, 1-dose reactive, unused penalty,
+#|   no subsequent prevention). Red dashed: empirical optimal alpha*. Orange
+#|   dotted: theoretical alpha* (homogeneous). Grey dashed: no-vaccination cost."
 
 no_vax_df <- tibble(R = R_VALS,
                     c_no_vax = unname(c_no_vax_by_R))
@@ -530,8 +600,9 @@ ggplot(opt_df, aes(x = rho, y = alpha_star,
                    colour = factor(R), group = factor(R))) +
     geom_line(linewidth = 1.1) +
     geom_point(size = 3.5) +
-    scale_colour_manual(values = c("100" = "steelblue", "500" = "firebrick"),
-                        name = "Cost ratio R") +
+    scale_colour_manual(
+        values = c("100" = "steelblue", "1000" = "firebrick", "5000" = "darkgreen"),
+        name = "Cost ratio R") +
     scale_x_continuous(breaks = RHO_VALS) +
     scale_y_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.2)) +
     labs(x = expression("Targeting accuracy " ~ rho),
@@ -555,19 +626,19 @@ ca_df <- expand_grid(rho = RHO_VALS, R = R_VALS) |>
 
         # At optimal alpha
         ca_opt <- cases_averted_breakdown(a_star, F_VAX, sim_df$q_i,
-                                          sim_df$cases_first, sim_df$date_first,
-                                          sim_df$pop_sum, score, R_val, R_REACT,
-                                          NU_VAL, C_COV, Q_THRESH)
+                                          sim_df$cases_first, sim_df$cases_subsequent,
+                                          sim_df$date_first, sim_df$pop_sum, score,
+                                          R_val, R_REACT, NU_VAL, Q_THRESH)
         # At pure reactive (alpha=0)
         ca_rx  <- cases_averted_breakdown(0, F_VAX, sim_df$q_i,
-                                          sim_df$cases_first, sim_df$date_first,
-                                          sim_df$pop_sum, score, R_val, R_REACT,
-                                          NU_VAL, C_COV, Q_THRESH)
+                                          sim_df$cases_first, sim_df$cases_subsequent,
+                                          sim_df$date_first, sim_df$pop_sum, score,
+                                          R_val, R_REACT, NU_VAL, Q_THRESH)
         # At pure pre-emptive (alpha=1)
         ca_pre <- cases_averted_breakdown(1, F_VAX, sim_df$q_i,
-                                          sim_df$cases_first, sim_df$date_first,
-                                          sim_df$pop_sum, score, R_val, R_REACT,
-                                          NU_VAL, C_COV, Q_THRESH)
+                                          sim_df$cases_first, sim_df$cases_subsequent,
+                                          sim_df$date_first, sim_df$pop_sum, score,
+                                          R_val, R_REACT, NU_VAL, Q_THRESH)
 
         tibble(
             rho       = rho_val,
@@ -617,9 +688,9 @@ averted_df <- expand_grid(rho = RHO_VALS, alpha = ALPHA_GRID) |>
     mutate(
         pct_averted = mapply(function(rho, a) {
             ca <- cases_averted_breakdown(
-                a, F_VAX, sim_df$q_i, sim_df$cases_first, sim_df$date_first,
-                sim_df$pop_sum, score_list[[as.character(rho)]], R_BASE, R_REACT,
-                NU_VAL, C_COV, Q_THRESH)
+                a, F_VAX, sim_df$q_i, sim_df$cases_first, sim_df$cases_subsequent,
+                sim_df$date_first, sim_df$pop_sum, score_list[[as.character(rho)]],
+                R_BASE, R_REACT, NU_VAL, Q_THRESH)
             ca$pct_averted
         }, rho, alpha)
     )
@@ -670,10 +741,11 @@ site_alloc <- lapply(RHO_VALS, function(rho) {
 
     rem_idx       <- setdiff(seq_len(nrow(sim_df)), pre_idx)
     triggered_idx <- rem_idx[sim_df$q_i[rem_idx] > Q_THRESH]
-    f_react_cap   <- (1 - a_star) * F_VAX * P
+    f_react_pop   <- (1 - a_star) * F_VAX * P
     if (length(triggered_idx) > 0) {
-        ord_r    <- triggered_idx[order(sim_df$q_i[triggered_idx], decreasing = TRUE)]
-        n_r      <- sum(cumsum(sim_df$pop_sum[ord_r]) <= f_react_cap)
+        # Chronological reactive deployment (earliest outbreak start first)
+        ord_r     <- triggered_idx[order(sim_df$date_first[triggered_idx])]
+        n_r       <- sum(cumsum(sim_df$pop_sum[ord_r]) <= f_react_pop)
         react_idx <- ord_r[seq_len(max(n_r, 0L))]
     } else { react_idx <- integer(0) }
 
@@ -720,17 +792,18 @@ site_df |>
 
 The purpose of this section is to map empirical α\* across the full parameter
 space and to overlay the **theoretical guidelines** derived from the homogeneous
-equal-risk model, exposing where the theory holds and where heterogeneity causes
-it to break down.
+equal-risk model under the **revised cost assumptions** (2-dose pre-emptive,
+1-dose reactive, unused vaccine penalty, no subsequent prevention by reactive).
 
 **Theoretical boundaries shown on each plot:**
 
 | Line | Condition | Meaning |
 |------|-----------|---------|
-| Orange dashed | $r = p \cdot \nu$ | Reactive VE equals expected pre-emptive benefit; theory predicts α\* jumps from 1 (below) to 0 or interior (above) |
-| Blue dashed | $f = p$ | Vaccination capacity equals outbreak probability; separates *scarce* ($f \leq p$, every dose is precious) from *abundant* ($f > p$) regime |
-| Red curve | $R = R_{\text{crit}} = \frac{1-p}{p(\nu - r)}$ | Cost ratio above which an interior solution $\alpha_c = \frac{f-p}{f(1-p)}$ is preferred over pure reactive (only relevant in the abundant regime when $r > p\nu$) |
-| White contours | Theoretical α\* = 0.1, 0.5, 0.9 | Boundaries between the three theoretical regions (pure reactive / interior / pure pre-emptive) |
+| Blue dashed | $f = p$ | Separates *scarce* ($f \leq p$) from *abundant* ($f > p$) capacity regime |
+| White contour | $\alpha^* = 0.5$ boundary | Threshold between pure reactive ($\alpha^*=0$) and pure pre-emptive ($\alpha^*=1$); interior solutions do not exist in the revised model |
+| Red curve (R×r plot) | $R = R^*_{\text{crit}} = \frac{1.5 - 0.5p}{\bar{q}(1 - r\phi)}$ | Above this curve pure pre-emptive is optimal; below, pure reactive |
+
+Because the revised cost function is **linear in $\alpha$**, only corner solutions ($\alpha^* \in \{0, 1\}$) arise in the homogeneous model — unlike the original model which allowed an interior solution $\alpha_c$.
 
 ```{r sens-compute, cache=TRUE, cache.extra=list(p_3yr, F_VAX, NU_VAL, sim_df$q_i)}
 ALPHA_SENS <- seq(0, 1, length.out = 101)
@@ -751,19 +824,21 @@ sens_fr <- expand_grid(f = F_GRID, r = R_GRID, R = R_VALS, rho = RHO_VALS) |>
             fv <- f; rv <- r; Rv <- R; rhov <- rho
             score    <- score_sens[[as.character(rhov)]]
             cost_vec <- vapply(ALPHA_SENS, function(a)
-                cost_incidence(a, fv, sim_df$q_i, sim_df$cases_first, sim_df$date_first,
-                               sim_df$pop_sum, score, Rv, rv, NU_VAL, C_COV, Q_THRESH),
+                cost_incidence(a, fv, sim_df$q_i, sim_df$cases_first, sim_df$cases_subsequent,
+                               sim_df$date_first, sim_df$pop_sum, score, Rv, rv, NU_VAL,
+                               Q_THRESH),
                 numeric(1))
             ALPHA_SENS[which.min(cost_vec)]
         }),
         alpha_star_theory = pmap_dbl(list(f, r, R), function(f, r, R)
-            alpha_star_equalrisk(p = p_3yr, R = R, r = r, f = f, nu = NU_VAL))
+            alpha_star_revised(p = p_3yr, R = R, r = r, f = f,
+                               q_mean = q_bar, phi = phi_val, nu = NU_VAL))
     ) |>
-    # Replace NA (exact boundary) with midpoint for contouring
     mutate(alpha_star_theory = replace_na(alpha_star_theory, 0.5))
 
 # ── Grid 2: R × r  (faceted by rho, fixed f = F_VAX) ──────────────────────
-R_FINE  <- seq(50, 1500, length.out = 30)
+# Extend R range to cover R_crit under the revised model
+R_FINE  <- seq(50, 10000, length.out = 40)
 R_GRID2 <- seq(0.10, 0.90, by = 0.05)
 
 sens_Rr <- expand_grid(R = R_FINE, r = R_GRID2, rho = RHO_VALS) |>
@@ -772,21 +847,27 @@ sens_Rr <- expand_grid(R = R_FINE, r = R_GRID2, rho = RHO_VALS) |>
             Rv <- R; rv <- r; rhov <- rho
             score    <- score_sens[[as.character(rhov)]]
             cost_vec <- vapply(ALPHA_SENS, function(a)
-                cost_incidence(a, F_VAX, sim_df$q_i, sim_df$cases_first, sim_df$date_first,
-                               sim_df$pop_sum, score, Rv, rv, NU_VAL, C_COV, Q_THRESH),
+                cost_incidence(a, F_VAX, sim_df$q_i, sim_df$cases_first, sim_df$cases_subsequent,
+                               sim_df$date_first, sim_df$pop_sum, score, Rv, rv, NU_VAL,
+                               Q_THRESH),
                 numeric(1))
             ALPHA_SENS[which.min(cost_vec)]
         }),
         alpha_star_theory = pmap_dbl(list(R, r), function(R, r)
-            alpha_star_equalrisk(p = p_3yr, R = R, r = r, f = F_VAX, nu = NU_VAL))
+            alpha_star_revised(p = p_3yr, R = R, r = r, f = F_VAX,
+                               q_mean = q_bar, phi = phi_val, nu = NU_VAL))
     ) |>
     mutate(alpha_star_theory = replace_na(alpha_star_theory, 0.5))
 
-# R_crit curve: R = (1-p) / (p*(nu-r)) for p*nu < r < nu; only meaningful
-# in the abundant regime (f > p). Stays within plot range.
-R_crit_df <- tibble(r = seq(p_3yr * NU_VAL + 0.005, NU_VAL - 0.005, by = 0.005)) |>
-    mutate(R_crit = (1 - p_3yr) / (p_3yr * (NU_VAL - r))) |>
-    filter(R_crit >= 50, R_crit <= 1500)
+# R_crit curve (revised model): R* = (1.5 - 0.5p) / (q_bar * (1 - r*phi))
+# This depends on r through phi (phi is fixed from data, r varies).
+# We show the curve across the r range on the x-axis.
+R_crit_df <- tibble(r = seq(0.05, 0.95, by = 0.005)) |>
+    mutate(
+        phi_adj = phi_val,   # phi is data-fixed
+        R_crit  = (1.5 - 0.5 * p_3yr) / (q_bar * (1 - r * phi_adj))
+    ) |>
+    filter(R_crit >= 50, R_crit <= 10000)
 
 cat(sprintf("Grids computed: sens_fr (%d rows), sens_Rr (%d rows)\n",
             nrow(sens_fr), nrow(sens_Rr)))
@@ -797,20 +878,17 @@ cat(sprintf("Grids computed: sens_fr (%d rows), sens_Rr (%d rows)\n",
 ```{r fig-sens-fr, fig.width=13, fig.height=10}
 #| fig-cap: "Empirical alpha* (fill) across vaccination capacity f and reactive
 #|   VE r, faceted by R (columns) and targeting accuracy rho (rows). White
-#|   contours show theoretical alpha* = 0.1, 0.5, 0.9. Orange dashed: r = p·nu
-#|   (VE threshold). Blue dashed: f = p (capacity regime boundary)."
+#|   contours show theoretical alpha* = 0.5 boundary (pure reactive vs pure
+#|   pre-emptive). Blue dashed: f = p (capacity regime boundary).
+#|   Cross: current analysis point."
 
-# Build label data frames (placed once per facet combo)
 label_df_fr <- expand_grid(R = R_VALS, rho = RHO_VALS)
 
 ggplot(sens_fr, aes(x = r, y = f)) +
     geom_tile(aes(fill = alpha_star_emp)) +
     geom_contour(aes(z = alpha_star_theory),
-                 breaks = c(0.1, 0.5, 0.9),
-                 colour = "white", linewidth = 0.55, linetype = "solid") +
-    # r = p*nu boundary (orange dashed vertical)
-    geom_vline(xintercept = p_3yr * NU_VAL,
-               linetype = "dashed", colour = "darkorange", linewidth = 0.8) +
+                 breaks = c(0.5),
+                 colour = "white", linewidth = 0.7, linetype = "solid") +
     # f = p boundary (blue dashed horizontal)
     geom_hline(yintercept = p_3yr,
                linetype = "dashed", colour = "dodgerblue", linewidth = 0.8) +
@@ -831,9 +909,8 @@ ggplot(sens_fr, aes(x = r, y = f)) +
         y        = expression("Vaccination capacity " ~ italic(f)),
         title    = "Empirical optimal pre-emptive fraction across f and r",
         subtitle = paste0(
-            "Orange dashed: r = p\u00b7\u03bd = ", round(p_3yr * NU_VAL, 3),
-            "  |  Blue dashed: f = p = ", round(p_3yr, 3),
-            "  |  White contours: theoretical \u03b1* = 0.1, 0.5, 0.9",
+            "Blue dashed: f = p = ", round(p_3yr, 3),
+            "  |  White contour: theoretical \u03b1* = 0 \u2194 1 boundary",
             "  |  \u2715 = current analysis point")) +
     theme_minimal(base_size = 11) +
     theme(strip.text         = element_text(face = "bold"),
@@ -846,22 +923,15 @@ ggplot(sens_fr, aes(x = r, y = f)) +
 
 ```{r fig-sens-Rr, fig.width=11, fig.height=5}
 #| fig-cap: "Empirical alpha* (fill) across cost ratio R and reactive VE r at
-#|   fixed f = F_VAX, faceted by targeting accuracy rho. White contours show
-#|   theoretical alpha* = 0.1, 0.5, 0.9. Orange dashed: r = p·nu. Red curve:
-#|   R = R_crit (above this line interior solution alpha_c is theoretically
-#|   optimal; below, pure reactive). Cross marks current analysis point."
+#|   fixed f = F_VAX, faceted by targeting accuracy rho. Red curve: R = R*_crit
+#|   (above this curve pure pre-emptive is theoretically optimal; below, pure
+#|   reactive). Cross marks current analysis point (r=0.4, R=1000)."
 
 label_df_Rr <- tibble(rho = RHO_VALS)
 
 ggplot(sens_Rr, aes(x = r, y = R)) +
     geom_tile(aes(fill = alpha_star_emp)) +
-    geom_contour(aes(z = alpha_star_theory),
-                 breaks = c(0.1, 0.5, 0.9),
-                 colour = "white", linewidth = 0.55) +
-    # r = p*nu boundary
-    geom_vline(xintercept = p_3yr * NU_VAL,
-               linetype = "dashed", colour = "darkorange", linewidth = 0.8) +
-    # R_crit curve (only exists for r > p*nu)
+    # R_crit curve from revised theory
     geom_line(data = R_crit_df, aes(x = r, y = R_crit),
               linetype = "dashed", colour = "firebrick", linewidth = 0.9,
               inherit.aes = FALSE) +
@@ -874,17 +944,16 @@ ggplot(sens_Rr, aes(x = r, y = R)) +
         name   = expression(alpha^"*"),
         limits = c(0, 1), option = "plasma") +
     scale_x_continuous(breaks = seq(0.1, 0.9, by = 0.2)) +
-    scale_y_continuous(labels = scales::comma) +
+    scale_y_log10(labels = scales::comma,
+                  breaks = c(100, 500, 1000, 2000, 5000, 10000)) +
     facet_wrap(~sprintf("rho = %.1f", rho), nrow = 1) +
     labs(
         x        = expression("Reactive VE " ~ italic(r)),
-        y        = expression("Cost ratio " ~ italic(R)),
+        y        = expression("Cost ratio " ~ italic(R) ~ " (log scale)"),
         title    = sprintf("Empirical optimal pre-emptive fraction across R and r  |  f = %.2f", F_VAX),
         subtitle = paste0(
-            "Orange dashed: r = p\u00b7\u03bd = ", round(p_3yr * NU_VAL, 3),
-            "  |  Red dashed curve: R = R_crit",
-            "  |  White contours: theoretical \u03b1* = 0.1, 0.5, 0.9",
-            "  |  \u2715 = current analysis point")) +
+            "Red dashed: R*_crit = (1.5 - 0.5p) / (q_bar \u00d7 (1 - r\u03d5))",
+            "  |  \u2715 = current analysis point (r=0.4, R=1000)")) +
     theme_minimal(base_size = 11) +
     theme(strip.text         = element_text(face = "bold"),
           legend.position    = "right",
@@ -935,48 +1004,50 @@ ca_r0    <- ca_df  |> filter(R == R_BASE, rho == 0.0)
 ca_r1    <- ca_df  |> filter(R == R_BASE, rho == 1.0)
 theory_R <- theory_tbl |> filter(R == R_BASE)
 
+R_crit_base <- theory_tbl$R_crit[1]
+
 cat(sprintf(
-"**Parameter setting** (R = %d, f = %.2f, nu = %.1f, r = %.1f, window %d–%d):
+"**Parameter setting** (R_base = %d, f = %.2f, nu = %.1f, r = %.1f,
+2-dose pre-emptive / 1-dose reactive / 0.5×C_V unused penalty, window %d–%d):
 
 - **Outbreak probability.** An empirical %.1f%% of ADM2 sites experienced at
-  least one cholera outbreak in %d–%d, giving a 3-year outbreak probability
-  p = %.3f. The implied annual probability is p_ann = %.3f.
+  least one cholera outbreak in %d–%d (p = %.3f; implied annual p_ann = %.3f).
+  The first-year burden fraction phi = %.2f.
 
-- **Homogeneous theory.** Under the equal-risk approximation, the capacity
-  regime is **%s** (f = %.2f %s p = %.3f). The threshold condition
-  r %s p·nu (%.2f %s %.3f) implies the homogeneous model recommends
-  **alpha* = %s**. This edge case highlights that the homogeneous model is
-  insufficient when sites differ substantially in risk.
+- **Homogeneous theory.** The capacity regime is **%s** (f = %.2f %s p = %.3f).
+  Under the revised 2-dose pre-emptive model the cost function is *linear* in
+  alpha, so only corner solutions arise. The critical cost ratio is
+  R*_crit = %.0f; pre-emptive is theoretically optimal only when R exceeds this
+  threshold. At R = %d (baseline), theory predicts alpha* = %s.
 
-- **Effect of targeting accuracy.** With random targeting (rho = 0),
-  the optimal alpha* = %.2f, achieving a %.1f%% cost reduction relative to no
-  vaccination. With realistic targeting (rho = 0.3), alpha* = %.2f (%.1f%%
-  cost reduction). With oracle targeting (rho = 1), alpha* = %.2f (%.1f%%
-  cost reduction), averting %.1f%% of cases.
+- **Effect of targeting accuracy (R = %d).** With random targeting (rho = 0),
+  empirical alpha* = %.2f (%.1f%% cost change vs no vaccination). With realistic
+  targeting (rho = 0.3), alpha* = %.2f (%.1f%%). With oracle targeting (rho = 1),
+  alpha* = %.2f (%.1f%%), averting %.1f%% of cases.
 
-- **Interpretation.** As targeting accuracy improves, more vaccines should
-  be deployed pre-emptively (alpha* increases), because better risk intelligence
-  reduces the probability of wasting pre-emptive doses on low-risk sites.
-  Conversely, with random targeting (rho = 0), holding vaccines for reactive
-  deployment is more efficient because reactive deployment is self-targeting —
-  it responds to observed outbreak events.
+- **Interpretation.** Pre-emptive vaccination requires 2 doses, so it is twice
+  as expensive per person as reactive (1 dose). Combined with the unused-reserve
+  penalty, purely reactive strategies are cost-optimal at low-to-moderate R.
+  Pre-emptive becomes competitive only at very high illness cost ratios (R > %.0f),
+  when the benefits of guaranteed protection outweigh the extra dose cost.
 
 - **Cases averted.** At optimal allocation with oracle targeting, %.0f cases
-  are averted (%.1f%% of the no-vaccination baseline of %.0f cases). With
-  random targeting, %.0f cases are averted (%.1f%%).
+  are averted (%.1f%% of the %.0f-case no-vaccination baseline). With random
+  targeting, %.0f cases are averted (%.1f%%).
 ",
 R_BASE, F_VAX, NU_VAL, R_REACT, min(WIN_YEARS), max(WIN_YEARS),
-100 * p_3yr, min(WIN_YEARS), max(WIN_YEARS), p_3yr, p_ann,
+100 * p_3yr, min(WIN_YEARS), max(WIN_YEARS), p_3yr, p_ann, phi_val,
 ifelse(F_VAX > p_3yr, "abundant", "scarce"),
 F_VAX, ifelse(F_VAX > p_3yr, ">", "<="), p_3yr,
-ifelse(R_REACT > p_3yr * NU_VAL, ">", "<"),
-R_REACT, ifelse(R_REACT > p_3yr * NU_VAL, ">", "<"), p_3yr * NU_VAL,
-ifelse(R_REACT > p_3yr * NU_VAL, "0 (pure reactive)", "1 (pure pre-emptive)"),
+R_crit_base, R_BASE,
+ifelse(R_BASE >= R_crit_base, "1 (pure pre-emptive)", "0 (pure reactive)"),
+R_BASE,
 opt_r0$alpha_star,  opt_r0$cost_reduction_pct,
 opt_r03$alpha_star, opt_r03$cost_reduction_pct,
 opt_r1$alpha_star,  opt_r1$cost_reduction_pct,
 ca_r1$pct_averted_opt,
 ca_r1$cases_averted_opt, ca_r1$pct_averted_opt, ca_r1$cases_no_vax,
-ca_r0$cases_averted_opt, ca_r0$pct_averted_opt
+ca_r0$cases_averted_opt, ca_r0$pct_averted_opt,
+R_crit_base
 ))
 ```
