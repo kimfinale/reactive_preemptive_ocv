@@ -31,8 +31,8 @@ response when outbreaks are detected?
 | Parameter | Symbol | Value |
 |-----------|--------|-------|
 | Vaccination capacity (fraction of population) | $f$ | 0.60 |
-| Pre-emptive doses per person | — | 2 (full 3-yr immunity) |
-| Reactive doses per person | — | 1 (ongoing outbreak only) |
+| Pre-emptive doses per person | — | 2 (`MIN_PREEMPTIVE_GAP` ≈ 3-yr protection) |
+| Reactive doses per person | — | 1 (`MIN_REACT_GAP` = 180-day protection) |
 | Pre-emptive vaccine effectiveness | $\nu$ | 1.00 |
 | Reactive vaccine effectiveness (first year) | $r$ | 0.40 |
 | Cost ratio (illness cost / vaccine cost per dose) | $R$ | 100, 1000, 5000 |
@@ -77,7 +77,8 @@ R_BASE <- 1000 # baseline R for primary figures
 RHO_VALS <- c(0, 0.3, 1.0) # targeting accuracy levels
 ALPHA_GRID <- seq(0, 1, length.out = 201)
 
-MIN_REACT_GAP <- 180L # minimum days between reactive events at the same location
+MIN_REACT_GAP     <- 180L          # days of reactive protection per campaign
+MIN_PREEMPTIVE_GAP <- T_WIN * 365L # days of pre-emptive protection (≈ T_WIN yrs)
 
 cat(sprintf("Window: %d–%d (%d years)\n", min(WIN_YEARS), max(WIN_YEARS), T_WIN))
 cat(sprintf("Vaccination capacity f = %.2f\n", F_VAX))
@@ -215,6 +216,22 @@ sim_df <- sim_df |>
     ) |>
     replace_na(list(n_events = 0L))
 
+# Pre-emptive protected cases: outbreaks whose start date (TL) falls within
+# MIN_PREEMPTIVE_GAP days of the window start (PRE_START).
+# At the default (T_WIN × 365 ≈ full window) this equals cases_win for
+# virtually all sites; becomes a strict subset for shorter protection durations.
+PRE_START <- as.Date(paste0(min(WIN_YEARS), "-01-01"))
+cases_pre_win <- ts2 |>
+    filter(year(TL) %in% WIN_YEARS,
+           as.integer(TL - PRE_START) < MIN_PREEMPTIVE_GAP) |>
+    group_by(location) |>
+    summarise(cases_pre = sum(sCh, na.rm = TRUE), .groups = "drop")
+
+sim_df <- sim_df |>
+    left_join(cases_pre_win, by = "location") |>
+    replace_na(list(cases_pre = 0)) |>
+    mutate(q_pre_i = cases_pre / pop_sum)
+
 P_TOTAL  <- sum(sim_df$pop_sum)
 N_SITES  <- nrow(sim_df)
 N_EVENTS <- nrow(event_df)
@@ -321,9 +338,9 @@ In the **homogeneous** model every location is assumed to have the same outbreak
 probability $p$. Under this simplification the optimal pre-emptive fraction has a closed-form solution.
 
 **Revised cost model.** Pre-emptive vaccination costs **2 doses** per person and
-maintains full immunity for the 3-year window. Reactive vaccination costs **1 dose**
-per person, is triggered by outbreak detection, and provides protection for
-`MIN_REACT_GAP` days. All outbreaks occurring within that protection window are
+provides immunity for `MIN_PREEMPTIVE_GAP` days (default ≈ 3-year window).
+Reactive vaccination costs **1 dose** per person, is triggered by outbreak
+detection, and provides protection for `MIN_REACT_GAP` days. All outbreaks occurring within that protection window are
 absorbed into a single **reactive event** (cases merged); fraction $r$ of the
 combined event cases is averted. A site may accumulate multiple non-overlapping
 reactive events within the 3-year window. Unused reactive doses expire at window
@@ -477,7 +494,11 @@ make_rank_score <- function(truth, target_rho, seed = 42) {
 #                  each served event costs DOSE_REACT (=1) dose × pop_i and
 #                  averts r × cases_event; a site may be served in multiple events
 #   Unused doses : reactive reserve not consumed costs DOSE_WASTE × C_V per person
-cost_incidence <- function(alpha, f, q, pop, score, evt, R, r, nu = 1, q_star = 0) {
+cost_incidence <- function(alpha, f, q, pop, score, evt, R, r, nu = 1, q_star = 0,
+                           q_pre = NULL) {
+    # q_pre: per-person burden averted by pre-emptive (cases within
+    #        MIN_PREEMPTIVE_GAP / pop). Defaults to q (full-window coverage).
+    if (is.null(q_pre)) q_pre <- q
     P <- sum(pop)
     f_pre_cap <- alpha * f * P
 
@@ -486,8 +507,12 @@ cost_incidence <- function(alpha, f, q, pop, score, evt, R, r, nu = 1, q_star = 
     n_pre <- sum(cumsum(pop[ord_pre]) <= f_pre_cap)
     pre_idx <- ord_pre[seq_len(max(n_pre, 0L))]
 
+    # Vaccine cost + illness cost at pre-emptive sites.
+    # Only cases within MIN_PREEMPTIVE_GAP (q_pre) are averted at rate nu;
+    # late outbreaks (q - q_pre) still occur.
     c_pre <- DOSE_PRE * sum(pop[pre_idx]) / P +
-        R * (1 - nu) * sum(q[pre_idx] * pop[pre_idx]) / P
+        R * (sum(q[pre_idx] * pop[pre_idx]) -
+             nu * sum(q_pre[pre_idx] * pop[pre_idx])) / P
 
     # Reactive events: exclude pre-emptive sites, keep only sites with cases
     evts <- evt[!(evt$site_idx %in% pre_idx) & q[evt$site_idx] > q_star, ]
@@ -519,7 +544,8 @@ cost_incidence <- function(alpha, f, q, pop, score, evt, R, r, nu = 1, q_star = 
 # Cases averted breakdown for a given allocation.
 # Uses the same event-level reactive model as cost_incidence().
 cases_averted_breakdown <- function(alpha, f, q, pop, score, evt, R, r,
-                                    nu = 1, q_star = 0) {
+                                    nu = 1, q_star = 0, q_pre = NULL) {
+    if (is.null(q_pre)) q_pre <- q
     P <- sum(pop)
     f_pre_cap <- alpha * f * P
 
@@ -538,7 +564,7 @@ cases_averted_breakdown <- function(alpha, f, q, pop, score, evt, R, r,
     }
 
     total_cases <- sum(q * pop)
-    cases_pre <- nu * sum(q[pre_idx] * pop[pre_idx])
+    cases_pre <- nu * sum(q_pre[pre_idx] * pop[pre_idx])
     cases_rx <- r * sum(served$cases)
     cases_averted <- cases_pre + cases_rx
     vax_pop <- sum(pop[pre_idx]) + sum(served$pop_sum)
@@ -603,7 +629,8 @@ cost_df <- expand_grid(rho = RHO_VALS, R = R_VALS) |>
         cost_vec <- vapply(ALPHA_GRID, function(a) {
             cost_incidence(
                 a, F_VAX, sim_df$q_i, sim_df$pop_sum, score,
-                event_df, R_val, R_REACT, NU_VAL, Q_THRESH
+                event_df, R_val, R_REACT, NU_VAL, Q_THRESH,
+                q_pre = sim_df$q_pre_i
             )
         },
         FUN.VALUE = numeric(1)
@@ -735,17 +762,20 @@ ca_df <- expand_grid(rho = RHO_VALS, R = R_VALS) |>
         # At optimal alpha
         ca_opt <- cases_averted_breakdown(
             a_star, F_VAX, sim_df$q_i, sim_df$pop_sum,
-            score, event_df, R_val, R_REACT, NU_VAL, Q_THRESH
+            score, event_df, R_val, R_REACT, NU_VAL, Q_THRESH,
+            q_pre = sim_df$q_pre_i
         )
         # At pure reactive (alpha=0)
         ca_rx <- cases_averted_breakdown(
             0, F_VAX, sim_df$q_i, sim_df$pop_sum,
-            score, event_df, R_val, R_REACT, NU_VAL, Q_THRESH
+            score, event_df, R_val, R_REACT, NU_VAL, Q_THRESH,
+            q_pre = sim_df$q_pre_i
         )
         # At pure pre-emptive (alpha=1)
         ca_pre <- cases_averted_breakdown(
             1, F_VAX, sim_df$q_i, sim_df$pop_sum,
-            score, event_df, R_val, R_REACT, NU_VAL, Q_THRESH
+            score, event_df, R_val, R_REACT, NU_VAL, Q_THRESH,
+            q_pre = sim_df$q_pre_i
         )
 
         tibble(
@@ -806,7 +836,8 @@ averted_df <- expand_grid(rho = RHO_VALS, alpha = ALPHA_GRID) |>
             ca <- cases_averted_breakdown(
                 a, F_VAX, sim_df$q_i, sim_df$pop_sum,
                 score_list[[as.character(rho)]], event_df,
-                R_BASE, R_REACT, NU_VAL, Q_THRESH
+                R_BASE, R_REACT, NU_VAL, Q_THRESH,
+                q_pre = sim_df$q_pre_i
             )
             ca$pct_averted
         }, rho, alpha)
@@ -966,7 +997,8 @@ sens_fr <- expand_grid(f = F_GRID, r = R_GRID, R = R_VALS, rho = RHO_VALS) |>
                 ALPHA_SENS, function(a) {
                     cost_incidence(
                         a, fv, sim_df$q_i, sim_df$pop_sum, score,
-                        event_df, Rv, rv, NU_VAL, Q_THRESH
+                        event_df, Rv, rv, NU_VAL, Q_THRESH,
+                        q_pre = sim_df$q_pre_i
                     )
                 },
                 numeric(1)
@@ -998,7 +1030,8 @@ sens_Rr <- expand_grid(R = R_FINE, r = R_GRID2, rho = RHO_VALS) |>
                 ALPHA_SENS, function(a) {
                     cost_incidence(
                         a, F_VAX, sim_df$q_i, sim_df$pop_sum, score,
-                        event_df, Rv, rv, NU_VAL, Q_THRESH
+                        event_df, Rv, rv, NU_VAL, Q_THRESH,
+                        q_pre = sim_df$q_pre_i
                     )
                 },
                 numeric(1)
@@ -1194,7 +1227,8 @@ gap_sens <- lapply(GAP_VALS, function(gap) {
         sc <- make_rank_score(sim_df$q_i, target_rho = rho_v)
         cv <- vapply(ALPHA_COARSE, function(a)
             cost_incidence(a, F_VAX, sim_df$q_i, sim_df$pop_sum,
-                           sc, edf, R_BASE, R_REACT, NU_VAL, Q_THRESH),
+                           sc, edf, R_BASE, R_REACT, NU_VAL, Q_THRESH,
+                           q_pre = sim_df$q_pre_i),
             numeric(1))
         ALPHA_COARSE[which.min(cv)]
     }
