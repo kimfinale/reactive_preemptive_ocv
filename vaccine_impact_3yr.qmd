@@ -248,89 +248,99 @@ probability $p$. Under this simplification the optimal pre-emptive fraction has 
 
 **Revised cost model.** Pre-emptive vaccination costs **2 doses** per person and
 maintains full immunity for the 3-year window. Reactive vaccination costs **1 dose**
-per person and averts fraction $r$ of first-year cases only; subsequent outbreak
-years are not prevented. Unused reactive doses expire at window end, incurring
-$0.5 \times C_V$ per dose.
+per person and averts fraction $r$ of cases in every reactively served outbreak-year
+event. Unused reactive doses expire at window end, incurring $0.5 \times C_V$ per
+dose. The reactive allocation unit is a **(location, year) outbreak event**; a site
+may be served in multiple years.
 
-Under homogeneous equal-risk, let $\bar{q}$ be the population-weighted mean
-per-person burden and $\phi = \text{cases\_first} / \text{cases\_win}$ be the
-fraction of burden concentrated in the first outbreak year.
+Under homogeneous equal-risk, let $p_\text{eff} = \mathbb{E}[\text{outbreak years per site}]$,
+$\bar{q}$ be the population-weighted mean 3-year burden per person, and $\alpha_c = (f - p_\text{eff}) / [f(1 - p_\text{eff})]$ be the kink where reactive capacity transitions from abundant to scarce.
 
-**Abundant regime** ($f > p$): the expected cost per capita is *linear* in $\alpha$
-with slope $f \cdot (1.5 - 0.5p - R\bar{q}(1 - r\phi))$. Therefore:
+The expected cost per capita is **piecewise linear** in $\alpha$ with a sign change at $\alpha_c$, yielding **three regimes**:
 
-$$\alpha^* = \begin{cases}1 & R > R^*_{\text{crit}} = \dfrac{1.5 - 0.5p}{\bar{q}(1 - r\phi)} \\[6pt] 0 & R < R^*_{\text{crit}} \end{cases}$$
+**Abundant regime** ($f > p_\text{eff}$, $\alpha \leq \alpha_c$): slope $= f\,(1.5 - 0.5p_\text{eff} - R\bar{q}(1-r))$, which is negative for $R > R_\text{lower}$.
 
-**Scarce regime** ($f \leq p$): compare pure pre-emptive vs pure reactive:
+**Scarce regime** ($\alpha > \alpha_c$): slope $= f\,(1 - R\bar{q}(p_\text{eff}-r)/p_\text{eff})$, which is negative for $R > R_\text{upper}$.
 
-$$\alpha^* = \begin{cases}1 & R > R^{\dagger}_{\text{crit}} = \dfrac{p}{\bar{q}(1 - r\phi)} \\[6pt] 0 & R < R^{\dagger}_{\text{crit}} \end{cases}$$
+$$\alpha^* = \begin{cases}0 & R < R_\text{lower} = \dfrac{1.5 - 0.5\,p_\text{eff}}{\bar{q}(1-r)} \\[6pt] \alpha_c & R_\text{lower} \leq R \leq R_\text{upper} \\[6pt] 1 & R > R_\text{upper} = \dfrac{p_\text{eff}}{\bar{q}(p_\text{eff}-r)}\end{cases}$$
 
-Note $R^{\dagger}_{\text{crit}} < R^*_{\text{crit}}$ for $p < 1$, so pre-emptive
-becomes cost-effective at a lower $R$ in the scarce regime.
+Note $R_\text{lower} < R_\text{upper}$ when $p_\text{eff} > r$, so an interior mixed solution always exists between these two thresholds.
 
 ```{r alpha-star-theory}
-# Compute phi = fraction of 3-yr burden in first outbreak year
-# phi = fraction of total 3-yr burden concentrated in the first outbreak year
-# per site. Computed from event_df: the first event at each site vs. total.
-first_event_cases <- event_df |>
-    group_by(location) |>
-    slice_min(date_event, n = 1, with_ties = FALSE) |>
-    ungroup() |>
-    summarise(cases_first_total = sum(cases)) |>
-    pull(cases_first_total)
-phi_val <- first_event_cases / max(sum(sim_df$cases_win), 1)
-q_bar   <- weighted.mean(sim_df$q_i, sim_df$pop_sum)
+# p_eff: expected number of outbreak-year events per site (replaces p_3yr in theory)
+# Under the event-level reactive model, each outbreak year is a separately
+# serviceable event, so p_eff (not p_3yr) governs the reactive budget constraint.
+p_eff <- mean(sim_df$n_outbreak_yrs)
+q_bar <- weighted.mean(sim_df$q_i, sim_df$pop_sum)
 
-cat(sprintf("phi (first-year burden fraction): %.3f\n", phi_val))
-cat(sprintf("q_bar (pop-weighted mean burden): %.6f  (%.1f per 100k)\n",
+cat(sprintf("p_eff (mean outbreak-years per site): %.3f\n", p_eff))
+cat(sprintf("q_bar (pop-weighted mean burden):     %.6f  (%.1f per 100k)\n",
             q_bar, q_bar * 1e5))
 
-# alpha_star_revised: optimal alpha under the revised cost model
-# (2-dose pre-emptive, 1-dose reactive, unused penalty, no subsequent prevention)
-alpha_star_revised <- function(p, R, r, f, q_mean, phi, nu = 1) {
-    Q_rx <- q_mean * (1 - r * phi)   # effective reactive illness burden/person
+# alpha_star_revised: optimal alpha under the revised cost model.
+# Three-regime formula derived from the event-level cost function:
+#   c(alpha) is piecewise linear with a kink at alpha_c = (f-p)/(f*(1-p)).
+#
+# Regime boundaries:
+#   alpha_c  = (f - p) / (f * (1 - p))          [kink; valid when f > p]
+#   R_lower  = (1.5 - 0.5*p) / (q*(1-r))        [slope in abundant region = 0]
+#   R_upper  = p / (q*(p - r))   [p > r]         [slope in scarce region = 0]
+#
+# Optimal strategy:
+#   R < R_lower              => alpha* = 0        (pure reactive)
+#   R_lower <= R <= R_upper  => alpha* = alpha_c  (interior / mixed)
+#   R > R_upper              => alpha* = 1        (pure pre-emptive)
+alpha_star_revised <- function(p, R, r, f, q_mean, nu = 1) {
+    R_lower <- (1.5 - 0.5 * p) / (q_mean * (1 - r))
+    R_upper <- if (p > r) p / (q_mean * (p - r)) else Inf
+    alpha_c  <- (f - p) / (f * (1 - p))
+
     if (f > p) {
-        R_crit <- (1.5 - 0.5 * p) / Q_rx
+        # Abundant capacity: kink creates three regimes
+        if (R < R_lower) return(0)
+        if (R > R_upper) return(1)
+        return(alpha_c)
     } else {
-        R_crit <- p / Q_rx
+        # Scarce capacity: always in scarce-reactive region; only corners
+        if (p > r && R > R_upper) return(1) else return(0)
     }
-    ifelse(R > R_crit, 1, 0)
 }
 
 theory_tbl <- expand_grid(R = R_VALS) |>
     mutate(
-        p        = p_3yr,
+        p        = p_eff,
         f        = F_VAX,
         r        = R_REACT,
         nu       = NU_VAL,
-        phi      = phi_val,
         q_mean   = q_bar,
-        Q_rx     = q_bar * (1 - R_REACT * phi_val),
-        R_crit   = if_else(F_VAX > p_3yr,
-                           (1.5 - 0.5 * p_3yr) / (q_bar * (1 - R_REACT * phi_val)),
-                           p_3yr / (q_bar * (1 - R_REACT * phi_val))),
-        regime   = ifelse(f > p, "Abundant (f > p)", "Scarce (f ≤ p)"),
+        alpha_c  = (F_VAX - p_eff) / (F_VAX * (1 - p_eff)),
+        R_lower  = (1.5 - 0.5 * p_eff) / (q_bar * (1 - R_REACT)),
+        R_upper  = if_else(p_eff > R_REACT,
+                           p_eff / (q_bar * (p_eff - R_REACT)),
+                           Inf),
+        regime   = ifelse(f > p, "Abundant (f > p_eff)", "Scarce (f \u2264 p_eff)"),
         alpha_star_theory = mapply(alpha_star_revised,
                                    p = p, R = R, r = r, f = f,
-                                   q_mean = q_mean, phi = phi, nu = nu)
+                                   q_mean = q_mean, nu = nu)
     )
 
 theory_tbl |>
-    dplyr::select(R, p, f, regime, R_crit, alpha_star_theory) |>
+    dplyr::select(R, p, f, regime, R_lower, R_upper, alpha_c, alpha_star_theory) |>
     knitr::kable(
-        digits    = c(0, 3, 2, 0, 0, 3),
-        col.names = c("R", "p (3-yr)", "f", "Capacity regime",
-                      "R* crit (theory)", "alpha* (theory)"),
+        digits    = c(0, 3, 2, 0, 0, 0, 3, 3),
+        col.names = c("R", "p_eff", "f", "Capacity regime",
+                      "R_lower", "R_upper", "alpha_c", "alpha* (theory)"),
         caption   = sprintf(
-            "Theoretical optimal alpha | 2-dose pre-emptive, 1-dose reactive | nu=%.1f, r=%.1f, phi=%.2f",
-            NU_VAL, R_REACT, phi_val))
+            "Theoretical optimal alpha | 2-dose pre-emptive, 1-dose reactive | nu=%.1f, r=%.1f",
+            NU_VAL, R_REACT))
 
-cat(sprintf("\nCapacity regime: %s (f = %.2f %s p = %.3f)\n",
-            ifelse(F_VAX > p_3yr, "Abundant", "Scarce"),
-            F_VAX, ifelse(F_VAX > p_3yr, ">", "<="), p_3yr))
-cat(sprintf("Critical R (theory): %.0f\n", theory_tbl$R_crit[1]))
-cat(sprintf("Implication: pre-emptive (alpha*=1) preferred only when R > %.0f.\n",
-            theory_tbl$R_crit[1]))
+cat(sprintf("\nCapacity regime: %s (f = %.2f %s p_eff = %.3f)\n",
+            ifelse(F_VAX > p_eff, "Abundant", "Scarce"),
+            F_VAX, ifelse(F_VAX > p_eff, ">", "<="), p_eff))
+cat(sprintf("alpha_c (interior solution): %.3f\n",
+            (F_VAX - p_eff) / (F_VAX * (1 - p_eff))))
+cat(sprintf("R_lower = %.0f  |  R_upper = %.0f\n",
+            theory_tbl$R_lower[1], theory_tbl$R_upper[1]))
 ```
 
 ---
@@ -762,11 +772,11 @@ equal-risk model under the **revised cost assumptions** (2-dose pre-emptive,
 
 | Line | Condition | Meaning |
 |------|-----------|---------|
-| Blue dashed | $f = p$ | Separates *scarce* ($f \leq p$) from *abundant* ($f > p$) capacity regime |
-| White contour | $\alpha^* = 0.5$ boundary | Threshold between pure reactive ($\alpha^*=0$) and pure pre-emptive ($\alpha^*=1$); interior solutions do not exist in the revised model |
-| Red curve (R×r plot) | $R = R^*_{\text{crit}} = \frac{1.5 - 0.5p}{\bar{q}(1 - r\phi)}$ | Above this curve pure pre-emptive is optimal; below, pure reactive |
+| Blue dashed | $f = p_\text{eff}$ | Separates *scarce* ($f \leq p_\text{eff}$) from *abundant* ($f > p_\text{eff}$) capacity regime |
+| White contour | $\alpha^* = \alpha_c$ boundary | Approximate boundary of the interior (mixed) solution; $\alpha_c = (f - p_\text{eff}) / [f(1 - p_\text{eff})]$ |
+| Red curve (R×r plot) | $R = R_\text{lower} = \frac{1.5 - 0.5\,p_\text{eff}}{\bar{q}(1 - r)}$ | Below this curve pure reactive ($\alpha^*=0$); above, interior or pure pre-emptive |
 
-Because the revised cost function is **linear in $\alpha$**, only corner solutions ($\alpha^* \in \{0, 1\}$) arise in the homogeneous model — unlike the original model which allowed an interior solution $\alpha_c$.
+The revised cost function is **piecewise linear in $\alpha$** with a kink at $\alpha_c$. This creates **three regimes**: pure reactive ($R < R_\text{lower}$), interior mixed ($R_\text{lower} \leq R \leq R_\text{upper}$, $\alpha^* = \alpha_c$), and pure pre-emptive ($R > R_\text{upper}$), where $R_\text{upper} = p_\text{eff} / [\bar{q}(p_\text{eff} - r)]$.
 
 ```{r sens-compute, cache=TRUE, cache.extra=list(p_3yr, F_VAX, NU_VAL, sim_df$q_i)}
 ALPHA_SENS <- seq(0, 1, length.out = 101)
@@ -793,8 +803,8 @@ sens_fr <- expand_grid(f = F_GRID, r = R_GRID, R = R_VALS, rho = RHO_VALS) |>
             ALPHA_SENS[which.min(cost_vec)]
         }),
         alpha_star_theory = pmap_dbl(list(f, r, R), function(f, r, R)
-            alpha_star_revised(p = p_3yr, R = R, r = r, f = f,
-                               q_mean = q_bar, phi = phi_val, nu = NU_VAL))
+            alpha_star_revised(p = p_eff, R = R, r = r, f = f,
+                               q_mean = q_bar, nu = NU_VAL))
     ) |>
     mutate(alpha_star_theory = replace_na(alpha_star_theory, 0.5))
 
@@ -815,18 +825,16 @@ sens_Rr <- expand_grid(R = R_FINE, r = R_GRID2, rho = RHO_VALS) |>
             ALPHA_SENS[which.min(cost_vec)]
         }),
         alpha_star_theory = pmap_dbl(list(R, r), function(R, r)
-            alpha_star_revised(p = p_3yr, R = R, r = r, f = F_VAX,
-                               q_mean = q_bar, phi = phi_val, nu = NU_VAL))
+            alpha_star_revised(p = p_eff, R = R, r = r, f = F_VAX,
+                               q_mean = q_bar, nu = NU_VAL))
     ) |>
     mutate(alpha_star_theory = replace_na(alpha_star_theory, 0.5))
 
-# R_crit curve (revised model): R* = (1.5 - 0.5p) / (q_bar * (1 - r*phi))
-# This depends on r through phi (phi is fixed from data, r varies).
-# We show the curve across the r range on the x-axis.
+# R_lower curve (revised model): R_lower = (1.5 - 0.5*p_eff) / (q_bar*(1-r))
+# Below this curve alpha*=0; above, alpha*=alpha_c or 1.
 R_crit_df <- tibble(r = seq(0.05, 0.95, by = 0.005)) |>
     mutate(
-        phi_adj = phi_val,   # phi is data-fixed
-        R_crit  = (1.5 - 0.5 * p_3yr) / (q_bar * (1 - r * phi_adj))
+        R_crit  = (1.5 - 0.5 * p_eff) / (q_bar * (1 - r))
     ) |>
     filter(R_crit >= 50, R_crit <= 10000)
 
@@ -850,8 +858,8 @@ ggplot(sens_fr, aes(x = r, y = f)) +
     geom_contour(aes(z = alpha_star_theory),
                  breaks = c(0.5),
                  colour = "white", linewidth = 0.7, linetype = "solid") +
-    # f = p boundary (blue dashed horizontal)
-    geom_hline(yintercept = p_3yr,
+    # f = p_eff boundary (blue dashed horizontal)
+    geom_hline(yintercept = p_eff,
                linetype = "dashed", colour = "dodgerblue", linewidth = 0.8) +
     # Mark current analysis point
     geom_point(data = label_df_fr,
@@ -870,8 +878,8 @@ ggplot(sens_fr, aes(x = r, y = f)) +
         y        = expression("Vaccination capacity " ~ italic(f)),
         title    = "Empirical optimal pre-emptive fraction across f and r",
         subtitle = paste0(
-            "Blue dashed: f = p = ", round(p_3yr, 3),
-            "  |  White contour: theoretical \u03b1* = 0 \u2194 1 boundary",
+            "Blue dashed: f = p_eff = ", round(p_eff, 3),
+            "  |  White contour: theoretical \u03b1* = \u03b1_c boundary",
             "  |  \u2715 = current analysis point")) +
     theme_minimal(base_size = 11) +
     theme(strip.text         = element_text(face = "bold"),
@@ -913,7 +921,7 @@ ggplot(sens_Rr, aes(x = r, y = R)) +
         y        = expression("Cost ratio " ~ italic(R) ~ " (log scale)"),
         title    = sprintf("Empirical optimal pre-emptive fraction across R and r  |  f = %.2f", F_VAX),
         subtitle = paste0(
-            "Red dashed: R*_crit = (1.5 - 0.5p) / (q_bar \u00d7 (1 - r\u03d5))",
+            "Red dashed: R_lower = (1.5 - 0.5\u00d7p_eff) / (q_bar \u00d7 (1 - r))",
             "  |  \u2715 = current analysis point (r=0.4, R=1000)")) +
     theme_minimal(base_size = 11) +
     theme(strip.text         = element_text(face = "bold"),
@@ -965,21 +973,23 @@ ca_r0    <- ca_df  |> filter(R == R_BASE, rho == 0.0)
 ca_r1    <- ca_df  |> filter(R == R_BASE, rho == 1.0)
 theory_R <- theory_tbl |> filter(R == R_BASE)
 
-R_crit_base <- theory_tbl$R_crit[1]
+R_lower_base <- theory_tbl$R_lower[1]
+R_upper_base <- theory_tbl$R_upper[1]
+alpha_c_base <- theory_tbl$alpha_c[1]
 
 cat(sprintf(
 "**Parameter setting** (R_base = %d, f = %.2f, nu = %.1f, r = %.1f,
 2-dose pre-emptive / 1-dose reactive / 0.5×C_V unused penalty, window %d–%d):
 
 - **Outbreak probability.** An empirical %.1f%% of ADM2 sites experienced at
-  least one cholera outbreak in %d–%d (p = %.3f; implied annual p_ann = %.3f).
-  The first-year burden fraction phi = %.2f.
+  least one cholera outbreak in %d–%d (p_3yr = %.3f; implied annual p_ann = %.3f).
+  Mean outbreak-years per site p_eff = %.3f.
 
-- **Homogeneous theory.** The capacity regime is **%s** (f = %.2f %s p = %.3f).
-  Under the revised 2-dose pre-emptive model the cost function is *linear* in
-  alpha, so only corner solutions arise. The critical cost ratio is
-  R*_crit = %.0f; pre-emptive is theoretically optimal only when R exceeds this
-  threshold. At R = %d (baseline), theory predicts alpha* = %s.
+- **Homogeneous theory.** The capacity regime is **%s** (f = %.2f %s p_eff = %.3f).
+  The revised cost function is *piecewise linear* in alpha with a kink at
+  alpha_c = %.3f, giving three regimes: pure reactive (R < R_lower = %.0f),
+  interior mixed (alpha* = alpha_c), and pure pre-emptive (R > R_upper = %.0f).
+  At R = %d (baseline), theory predicts alpha* = %s.
 
 - **Effect of targeting accuracy (R = %d).** With random targeting (rho = 0),
   empirical alpha* = %.2f (%.1f%% cost change vs no vaccination). With realistic
@@ -997,11 +1007,15 @@ cat(sprintf(
   targeting, %.0f cases are averted (%.1f%%).
 ",
 R_BASE, F_VAX, NU_VAL, R_REACT, min(WIN_YEARS), max(WIN_YEARS),
-100 * p_3yr, min(WIN_YEARS), max(WIN_YEARS), p_3yr, p_ann, phi_val,
-ifelse(F_VAX > p_3yr, "abundant", "scarce"),
-F_VAX, ifelse(F_VAX > p_3yr, ">", "<="), p_3yr,
-R_crit_base, R_BASE,
-ifelse(R_BASE >= R_crit_base, "1 (pure pre-emptive)", "0 (pure reactive)"),
+100 * p_3yr, min(WIN_YEARS), max(WIN_YEARS), p_3yr, p_ann, p_eff,
+ifelse(F_VAX > p_eff, "abundant", "scarce"),
+F_VAX, ifelse(F_VAX > p_eff, ">", "<="), p_eff,
+alpha_c_base, R_lower_base, R_upper_base,
+R_BASE,
+ifelse(R_BASE > R_upper_base, "1 (pure pre-emptive)",
+       ifelse(R_BASE >= R_lower_base,
+              sprintf("%.2f (interior, alpha_c)", alpha_c_base),
+              "0 (pure reactive)")),
 R_BASE,
 opt_r0$alpha_star,  opt_r0$cost_reduction_pct,
 opt_r03$alpha_star, opt_r03$cost_reduction_pct,
@@ -1009,6 +1023,6 @@ opt_r1$alpha_star,  opt_r1$cost_reduction_pct,
 ca_r1$pct_averted_opt,
 ca_r1$cases_averted_opt, ca_r1$pct_averted_opt, ca_r1$cases_no_vax,
 ca_r0$cases_averted_opt, ca_r0$pct_averted_opt,
-R_crit_base
+R_upper_base
 ))
 ```
