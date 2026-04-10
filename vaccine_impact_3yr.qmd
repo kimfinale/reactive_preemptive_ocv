@@ -322,12 +322,14 @@ probability $p$. Under this simplification the optimal pre-emptive fraction has 
 
 **Revised cost model.** Pre-emptive vaccination costs **2 doses** per person and
 maintains full immunity for the 3-year window. Reactive vaccination costs **1 dose**
-per person and averts fraction $r$ of cases in every reactively served outbreak-year
-event. Unused reactive doses expire at window end, incurring $0.5 \times C_V$ per
-dose. The reactive allocation unit is a **(location, year) outbreak event**; a site
-may be served in multiple years.
+per person, is triggered by outbreak detection, and provides protection for
+`MIN_REACT_GAP` days. All outbreaks occurring within that protection window are
+absorbed into a single **reactive event** (cases merged); fraction $r$ of the
+combined event cases is averted. A site may accumulate multiple non-overlapping
+reactive events within the 3-year window. Unused reactive doses expire at window
+end, incurring $0.5 \times C_V$ per dose.
 
-Under homogeneous equal-risk, let $p_\text{eff} = \mathbb{E}[\text{outbreak years per site}]$,
+Under homogeneous equal-risk, let $p_\text{eff} = \mathbb{E}[\text{reactive events per site}]$,
 $\bar{q}$ be the population-weighted mean 3-year burden per person, and $\alpha_c = (f - p_\text{eff}) / [f(1 - p_\text{eff})]$ be the kink where reactive capacity transitions from abundant to scarce.
 
 The expected cost per capita is **piecewise linear** in $\alpha$ with a sign change at $\alpha_c$, yielding **three regimes**:
@@ -347,7 +349,7 @@ Note $R_\text{lower} < R_\text{upper}$ when $p_\text{eff} > r$, so an interior m
 p_eff <- sum(sim_df$n_events) / N_SHP
 q_bar <- weighted.mean(sim_df$q_i, sim_df$pop_sum)
 
-cat(sprintf("p_eff (mean outbreak-years per site): %.3f\n", p_eff))
+cat(sprintf("p_eff (mean reactive events per site): %.3f\n", p_eff))
 cat(sprintf(
     "q_bar (pop-weighted mean burden):     %.6f  (%.1f per 100k)\n",
     q_bar, q_bar * 1e5
@@ -473,7 +475,7 @@ make_rank_score <- function(truth, target_rho, seed = 42) {
 #   Pre-emptive  : DOSE_PRE (=2) doses/person; averts nu × all cases at site
 #   Reactive     : events processed in chronological order across all countries;
 #                  each served event costs DOSE_REACT (=1) dose × pop_i and
-#                  averts r × cases_event; a site may be served in multiple years
+#                  averts r × cases_event; a site may be served in multiple events
 #   Unused doses : reactive reserve not consumed costs DOSE_WASTE × C_V per person
 cost_incidence <- function(alpha, f, q, pop, score, evt, R, r, nu = 1, q_star = 0) {
     P <- sum(pop)
