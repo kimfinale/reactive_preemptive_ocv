@@ -1136,6 +1136,186 @@ ggplot(sens_Rr, aes(x = r, y = R)) +
     )
 ```
 
+## Sensitivity to minimum reactive gap (`MIN_REACT_GAP`)
+
+As the minimum gap between successive reactive vaccinations at the same site
+varies from 0 (no constraint) to 1,095 days (3 years = the full window), the
+number of reactive events, `p_eff`, and the theoretical thresholds all change.
+
+```{r sens-gap, cache=TRUE, cache.extra=list(N_SHP, q_bar, F_VAX, R_REACT, R_BASE)}
+GAP_VALS <- c(0L, 30L, 60L, 90L, 180L, 365L, 548L, 730L, 1095L)
+
+# Raw per-outbreak aggregates (no gap filter) — reused across all gap values
+event_raw <- ts2 |>
+    filter(year(TL) %in% WIN_YEARS) |>
+    group_by(location, location_period_id, outbreak_number) |>
+    summarise(
+        date_event = min(TL),
+        cases      = sum(sCh, na.rm = TRUE),
+        .groups    = "drop"
+    ) |>
+    filter(cases > 0) |>
+    left_join(sim_df |> dplyr::select(location, pop_sum), by = "location") |>
+    filter(!is.na(pop_sum), pop_sum > 0) |>
+    mutate(site_idx = match(location, sim_df$location)) |>
+    filter(!is.na(site_idx)) |>
+    arrange(date_event)
+
+ALPHA_COARSE <- seq(0, 1, length.out = 101)
+
+gap_sens <- lapply(GAP_VALS, function(gap) {
+    # Apply gap merging
+    edf <- event_raw |>
+        group_by(location) |>
+        group_modify(function(df, .key) {
+            res      <- merge_gap_events(df$date_event, df$cases, gap)
+            df$cases <- res$merged_cases
+            df[res$keep, ]
+        }) |>
+        ungroup() |>
+        arrange(date_event)
+
+    n_ev_df <- sim_df |>
+        left_join(edf |> count(location, name = "n_events"), by = "location") |>
+        replace_na(list(n_events = 0L))
+
+    p_eff_g   <- sum(n_ev_df$n_events) / N_SHP
+    alpha_c_g <- if (F_VAX > p_eff_g) (F_VAX - p_eff_g) / (F_VAX * (1 - p_eff_g)) else NA_real_
+    R_lower_g <- (1.5 - 0.5 * p_eff_g) / (q_bar * (1 - R_REACT))
+    R_upper_g <- if (p_eff_g > R_REACT) p_eff_g / (q_bar * (p_eff_g - R_REACT)) else Inf
+    alpha_th  <- alpha_star_revised(
+        p = p_eff_g, R = R_BASE, r = R_REACT,
+        f = F_VAX, q_mean = q_bar, nu = NU_VAL
+    )
+
+    get_astar_emp <- function(rho_v) {
+        sc <- make_rank_score(sim_df$q_i, target_rho = rho_v)
+        cv <- vapply(ALPHA_COARSE, function(a)
+            cost_incidence(a, F_VAX, sim_df$q_i, sim_df$pop_sum,
+                           sc, edf, R_BASE, R_REACT, NU_VAL, Q_THRESH),
+            numeric(1))
+        ALPHA_COARSE[which.min(cv)]
+    }
+
+    tibble(
+        gap_days          = gap,
+        gap_months        = round(gap / 30.44, 1),
+        n_events          = nrow(edf),
+        p_eff             = p_eff_g,
+        alpha_c           = alpha_c_g,
+        R_lower           = R_lower_g,
+        R_upper           = R_upper_g,
+        alpha_star_theory = alpha_th,
+        alpha_star_rho0   = get_astar_emp(0),
+        alpha_star_rho1   = get_astar_emp(1)
+    )
+})
+
+gap_tbl <- bind_rows(gap_sens)
+
+gap_tbl |>
+    mutate(
+        R_upper = ifelse(is.infinite(R_upper), Inf, round(R_upper, 0)),
+        current = ifelse(gap_days == MIN_REACT_GAP, "\u2190 current", "")
+    ) |>
+    knitr::kable(
+        digits = c(0, 1, 0, 4, 3, 0, 0, 3, 3, 3, 0),
+        col.names = c(
+            "Gap (days)", "Gap (months)", "N events", "p_eff",
+            "alpha_c", "R_lower", "R_upper",
+            "alpha* theory", "alpha* emp (rho=0)", "alpha* emp (rho=1)", ""
+        ),
+        caption = sprintf(
+            "Effect of MIN_REACT_GAP on reactive events and optimal alpha | R = %d, f = %.2f, r = %.1f",
+            R_BASE, F_VAX, R_REACT
+        )
+    )
+```
+
+```{r fig-sens-gap, fig.width=11, fig.height=8}
+#| fig-cap: "Sensitivity of key outputs to the minimum reactive gap. Top row:
+#|   number of reactive events (left) and p_eff (right) as a function of the gap.
+#|   Bottom row: theoretical thresholds R_lower and R_upper (left, log scale) and
+#|   optimal pre-emptive fraction alpha* (right) for theory and two targeting
+#|   accuracies. Vertical dashed line: current MIN_REACT_GAP = 180 days."
+
+gap_long <- gap_tbl |>
+    pivot_longer(
+        cols = c(alpha_star_theory, alpha_star_rho0, alpha_star_rho1),
+        names_to = "type", values_to = "alpha_star"
+    ) |>
+    mutate(type = recode(type,
+        alpha_star_theory = "Theory",
+        alpha_star_rho0   = "Empirical (rho=0)",
+        alpha_star_rho1   = "Empirical (rho=1)"
+    ))
+
+p1 <- ggplot(gap_tbl, aes(x = gap_days, y = n_events)) +
+    geom_line(colour = "steelblue", linewidth = 1) +
+    geom_point(colour = "steelblue", size = 2.5) +
+    geom_vline(xintercept = MIN_REACT_GAP, linetype = "dashed",
+               colour = "grey40", linewidth = 0.7) +
+    labs(x = "Min reactive gap (days)", y = "Reactive events (N)",
+         title = "Reactive events after gap filter") +
+    theme_minimal(base_size = 11)
+
+p2 <- ggplot(gap_tbl, aes(x = gap_days, y = p_eff)) +
+    geom_line(colour = "steelblue", linewidth = 1) +
+    geom_point(colour = "steelblue", size = 2.5) +
+    geom_vline(xintercept = MIN_REACT_GAP, linetype = "dashed",
+               colour = "grey40", linewidth = 0.7) +
+    labs(x = "Min reactive gap (days)", y = "p_eff",
+         title = "Expected reactive events per site (shapefile universe)") +
+    theme_minimal(base_size = 11)
+
+gap_thresh <- gap_tbl |>
+    filter(is.finite(R_upper)) |>
+    pivot_longer(c(R_lower, R_upper), names_to = "threshold", values_to = "value")
+
+p3 <- ggplot(gap_thresh, aes(x = gap_days, y = value,
+                               colour = threshold, group = threshold)) +
+    geom_line(linewidth = 1) +
+    geom_point(size = 2.5) +
+    geom_vline(xintercept = MIN_REACT_GAP, linetype = "dashed",
+               colour = "grey40", linewidth = 0.7) +
+    scale_y_log10(labels = scales::comma) +
+    scale_colour_manual(values = c(R_lower = "firebrick", R_upper = "darkgreen"),
+                        labels = c(R_lower = "R_lower", R_upper = "R_upper"),
+                        name = "Threshold") +
+    labs(x = "Min reactive gap (days)", y = "Cost ratio R (log scale)",
+         title = "Theory thresholds vs gap") +
+    theme_minimal(base_size = 11) +
+    theme(legend.position = "bottom")
+
+p4 <- ggplot(gap_long, aes(x = gap_days, y = alpha_star,
+                             colour = type, group = type)) +
+    geom_line(linewidth = 1) +
+    geom_point(size = 2.5) +
+    geom_vline(xintercept = MIN_REACT_GAP, linetype = "dashed",
+               colour = "grey40", linewidth = 0.7) +
+    scale_colour_manual(
+        values = c(Theory = "darkorange",
+                   "Empirical (rho=0)" = "steelblue",
+                   "Empirical (rho=1)" = "firebrick"),
+        name = NULL
+    ) +
+    scale_y_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.25)) +
+    labs(x = "Min reactive gap (days)",
+         y = expression(alpha^"*"),
+         title = sprintf("Optimal pre-emptive fraction | R = %d", R_BASE)) +
+    theme_minimal(base_size = 11) +
+    theme(legend.position = "bottom")
+
+(p1 + p2) / (p3 + p4) +
+    plot_annotation(
+        title = sprintf(
+            "Sensitivity to minimum reactive gap | f = %.2f, r = %.1f, R = %d",
+            F_VAX, R_REACT, R_BASE
+        ),
+        subtitle = "Vertical dashed: current MIN_REACT_GAP = 180 days"
+    )
+```
+
 ---
 
 # Summary and Interpretation
