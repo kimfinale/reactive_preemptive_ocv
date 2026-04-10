@@ -58,24 +58,26 @@ source("R/analytic_utils.R")
 # Parameters
 
 ```{r params}
-WIN_YEARS <- 2010:2012   # evaluation window
-T_WIN     <- length(WIN_YEARS)   # 3 years
+WIN_YEARS <- 2010:2012 # evaluation window
+T_WIN <- length(WIN_YEARS) # 3 years
 
-F_VAX    <- 0.60   # vaccination capacity (fraction of total population)
-NU_VAL   <- 1.00   # pre-emptive VE (2 doses, 3-yr immunity)
-R_REACT  <- 0.40   # reactive VE: fraction of first-year cases averted
-Q_THRESH <- 0      # reactive threshold: vaccinate any site with cases (q* = 0)
+F_VAX <- 0.60 # vaccination capacity (fraction of total population)
+NU_VAL <- 1.00 # pre-emptive VE (2 doses, 3-yr immunity)
+R_REACT <- 0.40 # reactive VE: fraction of first-year cases averted
+Q_THRESH <- 0 # reactive threshold: vaccinate any site with cases (q* = 0)
 
 # Pre-emptive uses 2 doses per person; reactive uses 1 dose.
 # Unused reactive reserves cost 0.5 × C_V per person-dose at end of window.
-DOSE_PRE   <- 2L   # doses per pre-emptive person
-DOSE_REACT <- 1L   # doses per reactive person
-DOSE_WASTE <- 0.5  # cost fraction for unexpired unused reactive doses
+DOSE_PRE <- 2L # doses per pre-emptive person
+DOSE_REACT <- 1L # doses per reactive person
+DOSE_WASTE <- 0.5 # cost fraction for unexpired unused reactive doses
 
-R_VALS   <- c(100, 1000, 5000)  # cost ratios to analyse
-R_BASE   <- 1000                 # baseline R for primary figures
-RHO_VALS <- c(0, 0.3, 1.0)    # targeting accuracy levels
+R_VALS <- c(100, 1000, 5000) # cost ratios to analyse
+R_BASE <- 1000 # baseline R for primary figures
+RHO_VALS <- c(0, 0.3, 1.0) # targeting accuracy levels
 ALPHA_GRID <- seq(0, 1, length.out = 201)
+
+MIN_REACT_GAP <- 180L # minimum days between reactive events at the same location
 
 cat(sprintf("Window: %d–%d (%d years)\n", min(WIN_YEARS), max(WIN_YEARS), T_WIN))
 cat(sprintf("Vaccination capacity f = %.2f\n", F_VAX))
@@ -91,83 +93,113 @@ cat(sprintf("R (baseline) = %d\n", R_BASE))
 
 ```{r load-data}
 ts_outbreak <- readr::read_rds(
-    "data/outbreak_files_Oct2024/time_series_outbreak_extraction.rds")
+    "data/outbreak_files_Oct2024/time_series_outbreak_extraction.rds"
+)
+
 ts2 <- ts_outbreak |>
     mutate(adm = str_count(location, "::") - 1L) |>
     filter(adm == 2L)
 
-STUDY_YEARS <- 2010:2019
-outbreak_events <- ts2 |>
+# Diagnostic: how many outbreaks that START in WIN_YEARS span multiple calendar years?
+# We group by (location, location_period_id, outbreak_number) to identify distinct
+# outbreaks, then check whether the last record (TR) falls in a later year.
+# Filtering on year(TL) ensures we only consider outbreaks that began in the window
+# (not pre-2010 outbreaks whose tails overlap into 2010).
+multi_yr <- ts2 |>
+    filter(year(TL) %in% WIN_YEARS) |>
     group_by(location, location_period_id, outbreak_number) |>
-    summarise(year_start  = year(min(TL)),
-              total_cases = sum(sCh, na.rm = TRUE), .groups = "drop")
-cases_annual <- outbreak_events |>
-    filter(year_start %in% STUDY_YEARS) |>
-    group_by(location, year = year_start) |>
-    summarise(cases = sum(total_cases, na.rm = TRUE), .groups = "drop")
+    summarise(yr_start = min(year(TL)), yr_end = max(year(TR)), .groups = "drop") |>
+    mutate(multi_year = yr_end > yr_start)
+cat(sprintf(
+    "Outbreaks starting in WIN_YEARS: %d  |  spanning >1 year: %d (%.1f%%)\n",
+    nrow(multi_yr), sum(multi_yr$multi_year), 100 * mean(multi_yr$multi_year)
+))
 
-all_locs <- unique(ts2$location)
-cases_panel <- cases_annual |>
-    right_join(expand_grid(location = all_locs, year = STUDY_YEARS),
-               by = c("location", "year")) |>
-    replace_na(list(cases = 0))
 ```
 
 ## Join with incidence rates and population
 
-Population and the 10-year incidence rate are loaded from the pre-computed cache
-produced by `incidence_rate.qmd`.
+Population and incidence are derived entirely from the 2010–2012 outbreak data.
+Reactive events are outbreak occurrences (grouped by `location_period_id` ×
+`outbreak_number`) with a `MIN_REACT_GAP`-day minimum gap enforced within each
+location.
 
 ```{r join-pop}
-cases_fit <- readr::read_rds("data/cases_fit_cache.rds")
+# Population per ADM2: median across all WIN_YEARS records
+pop_df <- ts2 |>
+    filter(year(TL) %in% WIN_YEARS) |>
+    group_by(location) |>
+    summarise(pop_sum = median(pop, na.rm = TRUE), .groups = "drop") |>
+    filter(!is.na(pop_sum), pop_sum > 0)
 
-# 3-year case totals for 2010-2012
-cases_3yr <- cases_panel |>
-    filter(year %in% WIN_YEARS) |>
+# 3-year burden per location (direct from ts2)
+cases_3yr <- ts2 |>
+    filter(year(TL) %in% WIN_YEARS) |>
     group_by(location) |>
     summarise(
-        cases_win      = sum(cases),
-        n_outbreak_yrs = sum(cases > 0),
-        any_outbreak   = as.integer(sum(cases) > 0),
-        .groups = "drop"
-    )
+        cases_win    = sum(sCh, na.rm = TRUE),
+        any_outbreak = 1L,
+        .groups      = "drop"
+    ) |>
+    filter(cases_win > 0)
 
-# Merge: keep only sites with known population
-sim_df <- cases_fit |>
-    dplyr::select(location, pop_sum, rate_obs) |>
+# sim_df: one row per ADM2 with population and 3-yr burden
+# n_events (reactive event count after gap filter) is appended below
+sim_df <- pop_df |>
     left_join(cases_3yr, by = "location") |>
-    replace_na(list(cases_win = 0L, n_outbreak_yrs = 0L, any_outbreak = 0L)) |>
+    replace_na(list(cases_win = 0, any_outbreak = 0L)) |>
     filter(pop_sum > 0) |>
-    # Burden per person over the 3-year window (used for pre-emptive targeting)
     mutate(q_i = cases_win / pop_sum)
 
-# Event-level data: one row per (location, year) with ≥1 case in WIN_YEARS.
+# ── Reactive event list ───────────────────────────────────────────────────────
+# Each (location, location_period_id, outbreak_number) with TL >= WIN_YEARS[1]
+# that has ≥1 case is a candidate reactive event. Within each location a greedy
+# MIN_REACT_GAP-day filter is applied: after an event at date d, the next event
+# at the same location must start ≥ MIN_REACT_GAP days later.
 #
-# The continental reactive strategy treats each outbreak-year at each site as
-# an independent intervention opportunity.  Events across all countries compete
-# for the same reactive budget in strict chronological order.  A single region
-# may be served multiple times (once per outbreak year it experiences) while
-# another region receives nothing because the budget was exhausted by earlier
-# events elsewhere.
-#
-# date_event : start date of the outbreak in that (location, year)
-# cases      : observed cases in that year at that site
-# pop_sum    : population of the site (same for all events at a given site)
-# site_idx   : row index into sim_df (for linking back to score / q_i)
-event_date_by_yr <- ts2 |>
-    filter(year(TL) %in% WIN_YEARS) |>
-    mutate(year = year(TL)) |>
-    group_by(location, year) |>
-    summarise(date_event = min(TL), .groups = "drop")
+# date_event : outbreak start (min TL within the occurrence)
+# cases      : total sCh in that occurrence
+# pop_sum    : site population
+# site_idx   : row index into sim_df
 
-event_df <- cases_panel |>
-    filter(year %in% WIN_YEARS, cases > 0) |>
-    left_join(event_date_by_yr, by = c("location", "year")) |>
+apply_min_gap <- function(dates, gap_days) {
+    keep      <- logical(length(dates))
+    last_date <- as.Date(NA)
+    for (i in seq_along(dates)) {
+        if (is.na(last_date) || as.integer(dates[i] - last_date) >= gap_days) {
+            keep[i]   <- TRUE
+            last_date <- dates[i]
+        }
+    }
+    keep
+}
+
+event_df <- ts2 |>
+    filter(year(TL) %in% WIN_YEARS) |>
+    group_by(location, location_period_id, outbreak_number) |>
+    summarise(
+        date_event = min(TL),
+        cases      = sum(sCh, na.rm = TRUE),
+        .groups    = "drop"
+    ) |>
+    filter(cases > 0) |>
     left_join(sim_df |> dplyr::select(location, pop_sum), by = "location") |>
-    filter(!is.na(date_event), !is.na(pop_sum), pop_sum > 0) |>
+    filter(!is.na(pop_sum), pop_sum > 0) |>
     mutate(site_idx = match(location, sim_df$location)) |>
     filter(!is.na(site_idx)) |>
+    arrange(date_event) |>
+    group_by(location) |>
+    filter(apply_min_gap(date_event, MIN_REACT_GAP)) |>
+    ungroup() |>
     arrange(date_event)
+
+# Append per-site event count to sim_df (used as p_eff in theory)
+sim_df <- sim_df |>
+    left_join(
+        event_df |> count(location, name = "n_events"),
+        by = "location"
+    ) |>
+    replace_na(list(n_events = 0L))
 
 P_TOTAL  <- sum(sim_df$pop_sum)
 N_SITES  <- nrow(sim_df)
@@ -175,11 +207,11 @@ N_EVENTS <- nrow(event_df)
 
 cat(sprintf("Sites: %d  |  Total population: %s\n",
             N_SITES, format(round(P_TOTAL), big.mark = ",")))
-cat(sprintf("Sites with ≥1 outbreak year in %d–%d: %d (%.1f%%)\n",
+cat(sprintf("Sites with ≥1 outbreak in %d–%d: %d (%.1f%%)\n",
             min(WIN_YEARS), max(WIN_YEARS),
             sum(sim_df$any_outbreak), 100 * mean(sim_df$any_outbreak)))
-cat(sprintf("Reactive events (location × year): %d  |  Total cases: %s\n",
-            N_EVENTS, format(sum(event_df$cases), big.mark = ",")))
+cat(sprintf("Reactive events (after %d-day gap): %d  |  Total cases: %s\n",
+            MIN_REACT_GAP, N_EVENTS, format(sum(event_df$cases), big.mark = ",")))
 ```
 
 ---
@@ -190,23 +222,31 @@ The **annual outbreak probability** per site is estimated from the fraction of
 years in the 3-year window with at least one reported case.
 
 ```{r outbreak-prob}
-p_3yr  <- mean(sim_df$any_outbreak)     # empirical P(any outbreak in 3-yr window)
-p_ann  <- 1 - (1 - p_3yr)^(1/T_WIN)    # implied annual probability
+p_3yr <- mean(sim_df$any_outbreak) # empirical P(any outbreak in 3-yr window)
+p_ann <- 1 - (1 - p_3yr)^(1 / T_WIN) # implied annual probability
 
-cat(sprintf("Empirical P(≥1 outbreak year in %d–%d): %.3f\n",
-            min(WIN_YEARS), max(WIN_YEARS), p_3yr))
+cat(sprintf(
+    "Empirical P(≥1 outbreak year in %d–%d): %.3f\n",
+    min(WIN_YEARS), max(WIN_YEARS), p_3yr
+))
 cat(sprintf("Implied annual outbreak probability:    %.3f\n", p_ann))
-cat(sprintf("Mean q_i (cases per person, 3-yr):     %.5f  (%.1f per 100k)\n",
-            mean(sim_df$q_i), mean(sim_df$q_i) * 1e5))
+cat(sprintf(
+    "Mean q_i (cases per person, 3-yr):     %.5f  (%.1f per 100k)\n",
+    mean(sim_df$q_i), mean(sim_df$q_i) * 1e5
+))
 
 # Distribution table
 sim_df |>
-    count(n_outbreak_yrs, name = "n_sites") |>
+    count(n_events, name = "n_sites") |>
     mutate(pct = round(100 * n_sites / N_SITES, 1)) |>
     knitr::kable(
-        col.names = c("Outbreak years (out of 3)", "N sites", "% sites"),
-        caption   = sprintf("Distribution of outbreak frequency per ADM2 site, %d–%d",
-                            min(WIN_YEARS), max(WIN_YEARS)))
+        col.names = c(sprintf("Reactive events (≥%d-day gap)", MIN_REACT_GAP),
+                      "N sites", "% sites"),
+        caption = sprintf(
+            "Distribution of reactive event frequency per ADM2 site, %d–%d",
+            min(WIN_YEARS), max(WIN_YEARS)
+        )
+    )
 ```
 
 ```{r fig-q-dist, fig.width=9, fig.height=4}
@@ -218,11 +258,14 @@ df_pos <- sim_df |> filter(q_i > 0)
 
 p_hist <- ggplot(df_pos, aes(x = q_i * 1e5)) +
     geom_histogram(aes(y = after_stat(density)),
-                   bins = 30, fill = "steelblue", colour = "white",
-                   linewidth = 0.2) +
+        bins = 30, fill = "steelblue", colour = "white",
+        linewidth = 0.2
+    ) +
     scale_x_log10(labels = scales::comma) +
-    labs(x = "Cases per 100,000 persons (3-yr, log scale)", y = "Density",
-         title = sprintf("Illness burden q_i (n = %d positive sites)", nrow(df_pos))) +
+    labs(
+        x = "Cases per 100,000 persons (3-yr, log scale)", y = "Density",
+        title = sprintf("Illness burden q_i (n = %d positive sites)", nrow(df_pos))
+    ) +
     theme_minimal(base_size = 11)
 
 p_cdf <- df_pos |>
@@ -231,9 +274,11 @@ p_cdf <- df_pos |>
     ggplot(aes(x = q_i * 1e5, y = ecdf)) +
     geom_line(colour = "steelblue", linewidth = 0.9) +
     scale_x_log10(labels = scales::comma) +
-    labs(x = "Cases per 100,000 persons (3-yr, log scale)",
-         y = "Cumulative proportion of sites",
-         title = "ECDF (positive sites only)") +
+    labs(
+        x = "Cases per 100,000 persons (3-yr, log scale)",
+        y = "Cumulative proportion of sites",
+        title = "ECDF (positive sites only)"
+    ) +
     theme_minimal(base_size = 11)
 
 p_hist + p_cdf
@@ -270,12 +315,14 @@ Note $R_\text{lower} < R_\text{upper}$ when $p_\text{eff} > r$, so an interior m
 # p_eff: expected number of outbreak-year events per site (replaces p_3yr in theory)
 # Under the event-level reactive model, each outbreak year is a separately
 # serviceable event, so p_eff (not p_3yr) governs the reactive budget constraint.
-p_eff <- mean(sim_df$n_outbreak_yrs)
+p_eff <- mean(sim_df$n_events)
 q_bar <- weighted.mean(sim_df$q_i, sim_df$pop_sum)
 
 cat(sprintf("p_eff (mean outbreak-years per site): %.3f\n", p_eff))
-cat(sprintf("q_bar (pop-weighted mean burden):     %.6f  (%.1f per 100k)\n",
-            q_bar, q_bar * 1e5))
+cat(sprintf(
+    "q_bar (pop-weighted mean burden):     %.6f  (%.1f per 100k)\n",
+    q_bar, q_bar * 1e5
+))
 
 # alpha_star_revised: optimal alpha under the revised cost model.
 # Three-regime formula derived from the event-level cost function:
@@ -293,54 +340,74 @@ cat(sprintf("q_bar (pop-weighted mean burden):     %.6f  (%.1f per 100k)\n",
 alpha_star_revised <- function(p, R, r, f, q_mean, nu = 1) {
     R_lower <- (1.5 - 0.5 * p) / (q_mean * (1 - r))
     R_upper <- if (p > r) p / (q_mean * (p - r)) else Inf
-    alpha_c  <- (f - p) / (f * (1 - p))
+    alpha_c <- (f - p) / (f * (1 - p))
 
     if (f > p) {
         # Abundant capacity: kink creates three regimes
-        if (R < R_lower) return(0)
-        if (R > R_upper) return(1)
+        if (R < R_lower) {
+            return(0)
+        }
+        if (R > R_upper) {
+            return(1)
+        }
         return(alpha_c)
     } else {
         # Scarce capacity: always in scarce-reactive region; only corners
-        if (p > r && R > R_upper) return(1) else return(0)
+        if (p > r && R > R_upper) {
+            return(1)
+        } else {
+            return(0)
+        }
     }
 }
 
 theory_tbl <- expand_grid(R = R_VALS) |>
     mutate(
-        p        = p_eff,
-        f        = F_VAX,
-        r        = R_REACT,
-        nu       = NU_VAL,
-        q_mean   = q_bar,
-        alpha_c  = (F_VAX - p_eff) / (F_VAX * (1 - p_eff)),
-        R_lower  = (1.5 - 0.5 * p_eff) / (q_bar * (1 - R_REACT)),
-        R_upper  = if_else(p_eff > R_REACT,
-                           p_eff / (q_bar * (p_eff - R_REACT)),
-                           Inf),
-        regime   = ifelse(f > p, "Abundant (f > p_eff)", "Scarce (f \u2264 p_eff)"),
+        p = p_eff,
+        f = F_VAX,
+        r = R_REACT,
+        nu = NU_VAL,
+        q_mean = q_bar,
+        alpha_c = (F_VAX - p_eff) / (F_VAX * (1 - p_eff)),
+        R_lower = (1.5 - 0.5 * p_eff) / (q_bar * (1 - R_REACT)),
+        R_upper = if_else(p_eff > R_REACT,
+            p_eff / (q_bar * (p_eff - R_REACT)),
+            Inf
+        ),
+        regime = ifelse(f > p, "Abundant (f > p_eff)", "Scarce (f \u2264 p_eff)"),
         alpha_star_theory = mapply(alpha_star_revised,
-                                   p = p, R = R, r = r, f = f,
-                                   q_mean = q_mean, nu = nu)
+            p = p, R = R, r = r, f = f,
+            q_mean = q_mean, nu = nu
+        )
     )
 
 theory_tbl |>
     dplyr::select(R, p, f, regime, R_lower, R_upper, alpha_c, alpha_star_theory) |>
     knitr::kable(
-        digits    = c(0, 3, 2, 0, 0, 0, 3, 3),
-        col.names = c("R", "p_eff", "f", "Capacity regime",
-                      "R_lower", "R_upper", "alpha_c", "alpha* (theory)"),
-        caption   = sprintf(
+        digits = c(0, 3, 2, 0, 0, 0, 3, 3),
+        col.names = c(
+            "R", "p_eff", "f", "Capacity regime",
+            "R_lower", "R_upper", "alpha_c", "alpha* (theory)"
+        ),
+        caption = sprintf(
             "Theoretical optimal alpha | 2-dose pre-emptive, 1-dose reactive | nu=%.1f, r=%.1f",
-            NU_VAL, R_REACT))
+            NU_VAL, R_REACT
+        )
+    )
 
-cat(sprintf("\nCapacity regime: %s (f = %.2f %s p_eff = %.3f)\n",
-            ifelse(F_VAX > p_eff, "Abundant", "Scarce"),
-            F_VAX, ifelse(F_VAX > p_eff, ">", "<="), p_eff))
-cat(sprintf("alpha_c (interior solution): %.3f\n",
-            (F_VAX - p_eff) / (F_VAX * (1 - p_eff))))
-cat(sprintf("R_lower = %.0f  |  R_upper = %.0f\n",
-            theory_tbl$R_lower[1], theory_tbl$R_upper[1]))
+cat(sprintf(
+    "\nCapacity regime: %s (f = %.2f %s p_eff = %.3f)\n",
+    ifelse(F_VAX > p_eff, "Abundant", "Scarce"),
+    F_VAX, ifelse(F_VAX > p_eff, ">", "<="), p_eff
+))
+cat(sprintf(
+    "alpha_c (interior solution): %.3f\n",
+    (F_VAX - p_eff) / (F_VAX * (1 - p_eff))
+))
+cat(sprintf(
+    "R_lower = %.0f  |  R_upper = %.0f\n",
+    theory_tbl$R_lower[1], theory_tbl$R_upper[1]
+))
 ```
 
 ---
@@ -352,10 +419,10 @@ cat(sprintf("R_lower = %.0f  |  R_upper = %.0f\n",
 # the true burden. rho = 0 → random; rho = 1 → oracle (perfect ranking).
 make_rank_score <- function(truth, target_rho, seed = 42) {
     set.seed(seed)
-    n       <- length(truth)
+    n <- length(truth)
     z_truth <- qnorm(rank(truth, ties.method = "random") / (n + 1))
     z_noise <- rnorm(n)
-    rho_p   <- 2 * sin(pi * target_rho / 6)
+    rho_p <- 2 * sin(pi * target_rho / 6)
     pnorm(rho_p * z_truth + sqrt(1 - rho_p^2) * z_noise)
 }
 
@@ -380,16 +447,16 @@ make_rank_score <- function(truth, target_rho, seed = 42) {
 #                  averts r × cases_event; a site may be served in multiple years
 #   Unused doses : reactive reserve not consumed costs DOSE_WASTE × C_V per person
 cost_incidence <- function(alpha, f, q, pop, score, evt, R, r, nu = 1, q_star = 0) {
-    P         <- sum(pop)
+    P <- sum(pop)
     f_pre_cap <- alpha * f * P
 
     # Pre-emptive allocation (site-level, highest-score first)
     ord_pre <- order(score, decreasing = TRUE)
-    n_pre   <- sum(cumsum(pop[ord_pre]) <= f_pre_cap)
+    n_pre <- sum(cumsum(pop[ord_pre]) <= f_pre_cap)
     pre_idx <- ord_pre[seq_len(max(n_pre, 0L))]
 
     c_pre <- DOSE_PRE * sum(pop[pre_idx]) / P +
-             R * (1 - nu) * sum(q[pre_idx] * pop[pre_idx]) / P
+        R * (1 - nu) * sum(q[pre_idx] * pop[pre_idx]) / P
 
     # Reactive events: exclude pre-emptive sites, keep only sites with cases
     evts <- evt[!(evt$site_idx %in% pre_idx) & q[evt$site_idx] > q_star, ]
@@ -397,20 +464,20 @@ cost_incidence <- function(alpha, f, q, pop, score, evt, R, r, nu = 1, q_star = 
     f_react_pop <- (1 - alpha) * f * P
 
     if (nrow(evts) > 0) {
-        n_serve  <- sum(cumsum(evts$pop_sum) <= f_react_pop)
+        n_serve <- sum(cumsum(evts$pop_sum) <= f_react_pop)
         if (n_serve > 0L) {
-            served   <- evts[seq_len(n_serve), ]
+            served <- evts[seq_len(n_serve), ]
             unserved <- if (n_serve < nrow(evts)) evts[(n_serve + 1L):nrow(evts), ] else evts[0L, ]
         } else {
-            served   <- evts[0L, ]
+            served <- evts[0L, ]
             unserved <- evts
         }
 
-        pop_used   <- sum(served$pop_sum)
-        c_vax      <- DOSE_REACT * pop_used / P
-        c_ill      <- R * (sum((1 - r) * served$cases) + sum(unserved$cases)) / P
-        c_unused   <- DOSE_WASTE * max(0, f_react_pop - pop_used) / P
-        c_react    <- c_vax + c_ill + c_unused
+        pop_used <- sum(served$pop_sum)
+        c_vax <- DOSE_REACT * pop_used / P
+        c_ill <- R * (sum((1 - r) * served$cases) + sum(unserved$cases)) / P
+        c_unused <- DOSE_WASTE * max(0, f_react_pop - pop_used) / P
+        c_react <- c_vax + c_ill + c_unused
     } else {
         c_react <- DOSE_WASTE * f_react_pop / P
     }
@@ -421,12 +488,12 @@ cost_incidence <- function(alpha, f, q, pop, score, evt, R, r, nu = 1, q_star = 
 # Cases averted breakdown for a given allocation.
 # Uses the same event-level reactive model as cost_incidence().
 cases_averted_breakdown <- function(alpha, f, q, pop, score, evt, R, r,
-                                     nu = 1, q_star = 0) {
-    P         <- sum(pop)
+                                    nu = 1, q_star = 0) {
+    P <- sum(pop)
     f_pre_cap <- alpha * f * P
 
     ord_pre <- order(score, decreasing = TRUE)
-    n_pre   <- sum(cumsum(pop[ord_pre]) <= f_pre_cap)
+    n_pre <- sum(cumsum(pop[ord_pre]) <= f_pre_cap)
     pre_idx <- ord_pre[seq_len(max(n_pre, 0L))]
 
     evts <- evt[!(evt$site_idx %in% pre_idx) & q[evt$site_idx] > q_star, ]
@@ -434,16 +501,16 @@ cases_averted_breakdown <- function(alpha, f, q, pop, score, evt, R, r,
     f_react_pop <- (1 - alpha) * f * P
     if (nrow(evts) > 0) {
         n_serve <- sum(cumsum(evts$pop_sum) <= f_react_pop)
-        served  <- if (n_serve > 0L) evts[seq_len(n_serve), ] else evts[0L, ]
+        served <- if (n_serve > 0L) evts[seq_len(n_serve), ] else evts[0L, ]
     } else {
         served <- evts[0L, ]
     }
 
-    total_cases   <- sum(q * pop)
-    cases_pre     <- nu * sum(q[pre_idx] * pop[pre_idx])
-    cases_rx      <- r  * sum(served$cases)
+    total_cases <- sum(q * pop)
+    cases_pre <- nu * sum(q[pre_idx] * pop[pre_idx])
+    cases_rx <- r * sum(served$cases)
     cases_averted <- cases_pre + cases_rx
-    vax_pop       <- sum(pop[pre_idx]) + sum(served$pop_sum)
+    vax_pop <- sum(pop[pre_idx]) + sum(served$pop_sum)
 
     list(
         total_cases_no_vax = total_cases,
@@ -488,21 +555,28 @@ unit is "vaccine-dose equivalents per person."
 ```{r cost-curves}
 c_no_vax_by_R <- setNames(
     sapply(R_VALS, function(Rv) Rv * weighted.mean(sim_df$q_i, sim_df$pop_sum)),
-    R_VALS)
+    R_VALS
+)
 cat("No-vaccination cost (per capita, in C_V units):\n")
-for (Rv in R_VALS)
+for (Rv in R_VALS) {
     cat(sprintf("  R = %4d:  c0 = %.4f\n", Rv, c_no_vax_by_R[as.character(Rv)]))
+}
 
 # Sweep alpha for all (rho, R) combinations.
 # Explicit rho_val/R_val copies prevent closure capture from the for-loop above.
 cost_df <- expand_grid(rho = RHO_VALS, R = R_VALS) |>
     pmap_dfr(function(rho, R) {
-        rho_val <- rho; R_val <- R
-        score    <- make_rank_score(sim_df$q_i, target_rho = rho_val)
-        cost_vec <- vapply(ALPHA_GRID, function(a)
-            cost_incidence(a, F_VAX, sim_df$q_i, sim_df$pop_sum, score,
-                           event_df, R_val, R_REACT, NU_VAL, Q_THRESH),
-            FUN.VALUE = numeric(1))
+        rho_val <- rho
+        R_val <- R
+        score <- make_rank_score(sim_df$q_i, target_rho = rho_val)
+        cost_vec <- vapply(ALPHA_GRID, function(a) {
+            cost_incidence(
+                a, F_VAX, sim_df$q_i, sim_df$pop_sum, score,
+                event_df, R_val, R_REACT, NU_VAL, Q_THRESH
+            )
+        },
+        FUN.VALUE = numeric(1)
+        )
         tibble(rho = rho_val, R = R_val, alpha = ALPHA_GRID, cost = cost_vec)
     })
 
@@ -514,18 +588,22 @@ opt_df <- cost_df |>
 
 # Attach no-vax baseline
 opt_df <- opt_df |>
-    mutate(c_no_vax = c_no_vax_by_R[as.character(R)],
-           cost_reduction_pct = 100 * (c_no_vax - cost_min) / c_no_vax)
+    mutate(
+        c_no_vax = c_no_vax_by_R[as.character(R)],
+        cost_reduction_pct = 100 * (c_no_vax - cost_min) / c_no_vax
+    )
 
 opt_df |>
     dplyr::select(R, rho, alpha_star, cost_min, c_no_vax, cost_reduction_pct) |>
     arrange(R, rho) |>
     knitr::kable(
-        digits    = c(0, 2, 3, 4, 4, 1),
+        digits = c(0, 2, 3, 4, 4, 1),
         col.names = c("R", "rho", "alpha*", "Min cost", "No-vax cost", "Cost reduction (%)"),
-        caption   = sprintf(
+        caption = sprintf(
             "Optimal pre-emptive fraction and cost reduction | f = %.2f, nu = %.1f, r = %.1f",
-            F_VAX, NU_VAL, R_REACT))
+            F_VAX, NU_VAL, R_REACT
+        )
+    )
 ```
 
 ```{r fig-cost-curves, fig.width=11, fig.height=7}
@@ -535,32 +613,46 @@ opt_df |>
 #|   no subsequent prevention). Red dashed: empirical optimal alpha*. Orange
 #|   dotted: theoretical alpha* (homogeneous). Grey dashed: no-vaccination cost."
 
-no_vax_df <- tibble(R = R_VALS,
-                    c_no_vax = unname(c_no_vax_by_R))
+no_vax_df <- tibble(
+    R = R_VALS,
+    c_no_vax = unname(c_no_vax_by_R)
+)
 
 # Theoretical alpha* (homogeneous model) — same for all rho, expand for faceting
 theory_vline_df <- expand_grid(rho = RHO_VALS, R = R_VALS) |>
     left_join(theory_tbl |> dplyr::select(R, alpha_star_theory), by = "R")
 
 ggplot(cost_df, aes(x = alpha, y = cost)) +
-    geom_hline(data = no_vax_df, aes(yintercept = c_no_vax),
-               linetype = "dashed", colour = "grey50", linewidth = 0.7) +
+    geom_hline(
+        data = no_vax_df, aes(yintercept = c_no_vax),
+        linetype = "dashed", colour = "grey50", linewidth = 0.7
+    ) +
     geom_line(colour = "steelblue", linewidth = 0.9) +
-    geom_vline(data = opt_df, aes(xintercept = alpha_star),
-               linetype = "dashed", colour = "firebrick", linewidth = 0.8) +
-    geom_vline(data = theory_vline_df, aes(xintercept = alpha_star_theory),
-               linetype = "dotted", colour = "darkorange", linewidth = 0.9) +
-    geom_point(data = opt_df, aes(x = alpha_star, y = cost_min),
-               colour = "firebrick", size = 2.5) +
+    geom_vline(
+        data = opt_df, aes(xintercept = alpha_star),
+        linetype = "dashed", colour = "firebrick", linewidth = 0.8
+    ) +
+    geom_vline(
+        data = theory_vline_df, aes(xintercept = alpha_star_theory),
+        linetype = "dotted", colour = "darkorange", linewidth = 0.9
+    ) +
+    geom_point(
+        data = opt_df, aes(x = alpha_star, y = cost_min),
+        colour = "firebrick", size = 2.5
+    ) +
     facet_grid(
         rows = vars(sprintf("rho = %.1f", rho)),
         cols = vars(sprintf("R = %d", R))
     ) +
-    labs(x = expression("Pre-emptive fraction " ~ alpha),
-         y = expression("Normalised cost " ~ italic(c)(alpha)),
-         title = sprintf("Cost curves  |  f = %.2f, nu = %.1f, r = %.1f",
-                         F_VAX, NU_VAL, R_REACT),
-         subtitle = "Grey dashed: no-vax cost  |  Red dashed: empirical alpha*  |  Orange dotted: theoretical alpha* (homogeneous)") +
+    labs(
+        x = expression("Pre-emptive fraction " ~ alpha),
+        y = expression("Normalised cost " ~ italic(c)(alpha)),
+        title = sprintf(
+            "Cost curves  |  f = %.2f, nu = %.1f, r = %.1f",
+            F_VAX, NU_VAL, R_REACT
+        ),
+        subtitle = "Grey dashed: no-vax cost  |  Red dashed: empirical alpha*  |  Orange dotted: theoretical alpha* (homogeneous)"
+    ) +
     theme_minimal(base_size = 11) +
     theme(strip.text = element_text(face = "bold"))
 ```
@@ -573,19 +665,26 @@ ggplot(cost_df, aes(x = alpha, y = cost)) +
 #|   resources towards pre-emptive deployment by reducing wastage from
 #|   vaccinating low-risk sites."
 
-ggplot(opt_df, aes(x = rho, y = alpha_star,
-                   colour = factor(R), group = factor(R))) +
+ggplot(opt_df, aes(
+    x = rho, y = alpha_star,
+    colour = factor(R), group = factor(R)
+)) +
     geom_line(linewidth = 1.1) +
     geom_point(size = 3.5) +
     scale_colour_manual(
         values = c("100" = "steelblue", "1000" = "firebrick", "5000" = "darkgreen"),
-        name = "Cost ratio R") +
+        name = "Cost ratio R"
+    ) +
     scale_x_continuous(breaks = RHO_VALS) +
     scale_y_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.2)) +
-    labs(x = expression("Targeting accuracy " ~ rho),
-         y = expression("Optimal pre-emptive fraction " ~ alpha^"*"),
-         title = sprintf("alpha* vs rho  |  f = %.2f, nu = %.1f, r = %.1f",
-                         F_VAX, NU_VAL, R_REACT)) +
+    labs(
+        x = expression("Targeting accuracy " ~ rho),
+        y = expression("Optimal pre-emptive fraction " ~ alpha^"*"),
+        title = sprintf(
+            "alpha* vs rho  |  f = %.2f, nu = %.1f, r = %.1f",
+            F_VAX, NU_VAL, R_REACT
+        )
+    ) +
     theme_minimal(base_size = 11) +
     theme(legend.position = "bottom")
 ```
@@ -597,51 +696,64 @@ ggplot(opt_df, aes(x = rho, y = alpha_star,
 ```{r cases-averted}
 ca_df <- expand_grid(rho = RHO_VALS, R = R_VALS) |>
     pmap_dfr(function(rho, R) {
-        rho_val <- rho; R_val <- R
-        score  <- make_rank_score(sim_df$q_i, target_rho = rho_val)
+        rho_val <- rho
+        R_val <- R
+        score <- make_rank_score(sim_df$q_i, target_rho = rho_val)
         a_star <- opt_df$alpha_star[opt_df$rho == rho_val & opt_df$R == R_val]
 
         # At optimal alpha
-        ca_opt <- cases_averted_breakdown(a_star, F_VAX, sim_df$q_i, sim_df$pop_sum,
-                                          score, event_df, R_val, R_REACT, NU_VAL, Q_THRESH)
+        ca_opt <- cases_averted_breakdown(
+            a_star, F_VAX, sim_df$q_i, sim_df$pop_sum,
+            score, event_df, R_val, R_REACT, NU_VAL, Q_THRESH
+        )
         # At pure reactive (alpha=0)
-        ca_rx  <- cases_averted_breakdown(0, F_VAX, sim_df$q_i, sim_df$pop_sum,
-                                          score, event_df, R_val, R_REACT, NU_VAL, Q_THRESH)
+        ca_rx <- cases_averted_breakdown(
+            0, F_VAX, sim_df$q_i, sim_df$pop_sum,
+            score, event_df, R_val, R_REACT, NU_VAL, Q_THRESH
+        )
         # At pure pre-emptive (alpha=1)
-        ca_pre <- cases_averted_breakdown(1, F_VAX, sim_df$q_i, sim_df$pop_sum,
-                                          score, event_df, R_val, R_REACT, NU_VAL, Q_THRESH)
+        ca_pre <- cases_averted_breakdown(
+            1, F_VAX, sim_df$q_i, sim_df$pop_sum,
+            score, event_df, R_val, R_REACT, NU_VAL, Q_THRESH
+        )
 
         tibble(
-            rho       = rho_val,
-            R         = R_val,
+            rho = rho_val,
+            R = R_val,
             alpha_star = a_star,
-            cases_no_vax      = round(ca_opt$total_cases_no_vax),
+            cases_no_vax = round(ca_opt$total_cases_no_vax),
             cases_averted_opt = round(ca_opt$cases_averted),
-            pct_averted_opt   = round(ca_opt$pct_averted, 1),
-            cases_averted_rx  = round(ca_rx$cases_averted),
-            pct_averted_rx    = round(ca_rx$pct_averted, 1),
+            pct_averted_opt = round(ca_opt$pct_averted, 1),
+            cases_averted_rx = round(ca_rx$cases_averted),
+            pct_averted_rx = round(ca_rx$pct_averted, 1),
             cases_averted_pre = round(ca_pre$cases_averted),
-            pct_averted_pre   = round(ca_pre$pct_averted, 1)
+            pct_averted_pre = round(ca_pre$pct_averted, 1)
         )
     })
 
 ca_df |>
-    dplyr::select(R, rho, alpha_star,
-                  cases_no_vax,
-                  cases_averted_opt, pct_averted_opt,
-                  cases_averted_rx,  pct_averted_rx,
-                  cases_averted_pre, pct_averted_pre) |>
+    dplyr::select(
+        R, rho, alpha_star,
+        cases_no_vax,
+        cases_averted_opt, pct_averted_opt,
+        cases_averted_rx, pct_averted_rx,
+        cases_averted_pre, pct_averted_pre
+    ) |>
     arrange(R, rho) |>
     knitr::kable(
         format.args = list(big.mark = ","),
-        col.names   = c("R", "rho", "alpha*",
-                        "Cases (no vax)",
-                        "Averted (opt alpha)", "% averted",
-                        "Averted (alpha=0)", "% averted",
-                        "Averted (alpha=1)", "% averted"),
+        col.names = c(
+            "R", "rho", "alpha*",
+            "Cases (no vax)",
+            "Averted (opt alpha)", "% averted",
+            "Averted (alpha=0)", "% averted",
+            "Averted (alpha=1)", "% averted"
+        ),
         caption = sprintf(
             "Cases averted under optimal, pure-reactive, and pure-pre-emptive allocation | f = %.2f, nu = %.1f, r = %.1f",
-            F_VAX, NU_VAL, R_REACT))
+            F_VAX, NU_VAL, R_REACT
+        )
+    )
 ```
 
 ```{r fig-cases-averted, fig.width=9, fig.height=5}
@@ -651,9 +763,11 @@ ca_df |>
 #|   necessarily cases averted."
 
 score_list <- setNames(
-    lapply(RHO_VALS, function(rho)
-        make_rank_score(sim_df$q_i, target_rho = rho)),
-    RHO_VALS)
+    lapply(RHO_VALS, function(rho) {
+        make_rank_score(sim_df$q_i, target_rho = rho)
+    }),
+    RHO_VALS
+)
 
 averted_df <- expand_grid(rho = RHO_VALS, alpha = ALPHA_GRID) |>
     mutate(
@@ -661,7 +775,8 @@ averted_df <- expand_grid(rho = RHO_VALS, alpha = ALPHA_GRID) |>
             ca <- cases_averted_breakdown(
                 a, F_VAX, sim_df$q_i, sim_df$pop_sum,
                 score_list[[as.character(rho)]], event_df,
-                R_BASE, R_REACT, NU_VAL, Q_THRESH)
+                R_BASE, R_REACT, NU_VAL, Q_THRESH
+            )
             ca$pct_averted
         }, rho, alpha)
     )
@@ -672,24 +787,34 @@ opt_averted <- opt_df |>
         averted_df |>
             group_by(rho) |>
             slice(which.min(abs(alpha - opt_df$alpha_star[opt_df$R == R_BASE &
-                                                          opt_df$rho == first(rho)]))),
+                opt_df$rho == first(rho)]))),
         by = "rho"
     )
 
-ggplot(averted_df, aes(x = alpha, y = pct_averted,
-                        colour = factor(rho), group = factor(rho))) +
+ggplot(averted_df, aes(
+    x = alpha, y = pct_averted,
+    colour = factor(rho), group = factor(rho)
+)) +
     geom_line(linewidth = 0.9) +
-    geom_vline(data = opt_df |> filter(R == R_BASE),
-               aes(xintercept = alpha_star, colour = factor(rho)),
-               linetype = "dashed", linewidth = 0.7) +
-    scale_colour_viridis_d(option = "plasma", end = 0.85,
-                           name = expression("Targeting accuracy " ~ rho)) +
+    geom_vline(
+        data = opt_df |> filter(R == R_BASE),
+        aes(xintercept = alpha_star, colour = factor(rho)),
+        linetype = "dashed", linewidth = 0.7
+    ) +
+    scale_colour_viridis_d(
+        option = "plasma", end = 0.85,
+        name = expression("Targeting accuracy " ~ rho)
+    ) +
     scale_y_continuous(limits = c(0, NA)) +
-    labs(x = expression("Pre-emptive fraction " ~ alpha),
-         y = "Cases averted (%)",
-         title = sprintf("Cases averted vs alpha  |  f = %.2f, R = %d, r = %.1f",
-                         F_VAX, R_BASE, R_REACT),
-         subtitle = "Dashed lines: optimal alpha* for each rho") +
+    labs(
+        x = expression("Pre-emptive fraction " ~ alpha),
+        y = "Cases averted (%)",
+        title = sprintf(
+            "Cases averted vs alpha  |  f = %.2f, R = %d, r = %.1f",
+            F_VAX, R_BASE, R_REACT
+        ),
+        subtitle = "Dashed lines: optimal alpha* for each rho"
+    ) +
     theme_minimal(base_size = 11) +
     theme(legend.position = "bottom")
 ```
@@ -702,18 +827,18 @@ ggplot(averted_df, aes(x = alpha, y = pct_averted,
 # Compute site-level allocation for each rho at optimal alpha, R = R_BASE.
 # A site is marked "Reactive" if at least one of its events was served.
 site_alloc <- lapply(RHO_VALS, function(rho) {
-    score  <- make_rank_score(sim_df$q_i, target_rho = rho)
+    score <- make_rank_score(sim_df$q_i, target_rho = rho)
     a_star <- opt_df$alpha_star[opt_df$rho == rho & opt_df$R == R_BASE]
-    P      <- sum(sim_df$pop_sum)
+    P <- sum(sim_df$pop_sum)
 
     f_pre_cap <- a_star * F_VAX * P
-    ord_pre   <- order(score, decreasing = TRUE)
-    n_pre     <- sum(cumsum(sim_df$pop_sum[ord_pre]) <= f_pre_cap)
-    pre_idx   <- ord_pre[seq_len(max(n_pre, 0L))]
+    ord_pre <- order(score, decreasing = TRUE)
+    n_pre <- sum(cumsum(sim_df$pop_sum[ord_pre]) <= f_pre_cap)
+    pre_idx <- ord_pre[seq_len(max(n_pre, 0L))]
 
     # Event-level reactive deployment
     evts <- event_df[!(event_df$site_idx %in% pre_idx) &
-                      sim_df$q_i[event_df$site_idx] > Q_THRESH, ]
+        sim_df$q_i[event_df$site_idx] > Q_THRESH, ]
     f_react_pop <- (1 - a_star) * F_VAX * P
 
     served_sites <- integer(0)
@@ -723,7 +848,7 @@ site_alloc <- lapply(RHO_VALS, function(rho) {
     }
 
     status <- rep("No vaccination", nrow(sim_df))
-    status[pre_idx]     <- "Pre-emptive"
+    status[pre_idx] <- "Pre-emptive"
     status[served_sites] <- "Reactive"
 
     sim_df |>
@@ -748,13 +873,18 @@ site_df |>
     geom_point(size = 0.8, alpha = 0.7) +
     scale_y_log10(labels = scales::comma) +
     scale_colour_manual(
-        values = c("Pre-emptive" = "firebrick", "Reactive" = "steelblue",
-                   "No vaccination" = "grey70"),
-        name = "Vaccination status") +
+        values = c(
+            "Pre-emptive" = "firebrick", "Reactive" = "steelblue",
+            "No vaccination" = "grey70"
+        ),
+        name = "Vaccination status"
+    ) +
     facet_wrap(~rho_label, nrow = 1) +
-    labs(x = "Site rank (by burden)",
-         y = "Cases per 100,000 (log scale)",
-         title = sprintf("Site-level vaccination assignment at optimal alpha* | R = %d", R_BASE)) +
+    labs(
+        x = "Site rank (by burden)",
+        y = "Cases per 100,000 (log scale)",
+        title = sprintf("Site-level vaccination assignment at optimal alpha* | R = %d", R_BASE)
+    ) +
     theme_minimal(base_size = 11) +
     theme(legend.position = "bottom", strip.text = element_text(face = "bold"))
 ```
@@ -783,9 +913,11 @@ ALPHA_SENS <- seq(0, 1, length.out = 101)
 
 # Pre-compute scores (only depend on rho, not on f or r)
 score_sens <- setNames(
-    lapply(RHO_VALS, function(rho)
-        make_rank_score(sim_df$q_i, target_rho = rho)),
-    as.character(RHO_VALS))
+    lapply(RHO_VALS, function(rho) {
+        make_rank_score(sim_df$q_i, target_rho = rho)
+    }),
+    as.character(RHO_VALS)
+)
 
 # ── Grid 1: f × r  (faceted by R and rho) ──────────────────────────────────
 F_GRID <- seq(0.05, 0.80, by = 0.05)
@@ -794,39 +926,60 @@ R_GRID <- seq(0.10, 0.90, by = 0.05)
 sens_fr <- expand_grid(f = F_GRID, r = R_GRID, R = R_VALS, rho = RHO_VALS) |>
     mutate(
         alpha_star_emp = pmap_dbl(list(f, r, R, rho), function(f, r, R, rho) {
-            fv <- f; rv <- r; Rv <- R; rhov <- rho
-            score    <- score_sens[[as.character(rhov)]]
-            cost_vec <- vapply(ALPHA_SENS, function(a)
-                cost_incidence(a, fv, sim_df$q_i, sim_df$pop_sum, score,
-                               event_df, Rv, rv, NU_VAL, Q_THRESH),
-                numeric(1))
+            fv <- f
+            rv <- r
+            Rv <- R
+            rhov <- rho
+            score <- score_sens[[as.character(rhov)]]
+            cost_vec <- vapply(
+                ALPHA_SENS, function(a) {
+                    cost_incidence(
+                        a, fv, sim_df$q_i, sim_df$pop_sum, score,
+                        event_df, Rv, rv, NU_VAL, Q_THRESH
+                    )
+                },
+                numeric(1)
+            )
             ALPHA_SENS[which.min(cost_vec)]
         }),
-        alpha_star_theory = pmap_dbl(list(f, r, R), function(f, r, R)
-            alpha_star_revised(p = p_eff, R = R, r = r, f = f,
-                               q_mean = q_bar, nu = NU_VAL))
+        alpha_star_theory = pmap_dbl(list(f, r, R), function(f, r, R) {
+            alpha_star_revised(
+                p = p_eff, R = R, r = r, f = f,
+                q_mean = q_bar, nu = NU_VAL
+            )
+        })
     ) |>
     mutate(alpha_star_theory = replace_na(alpha_star_theory, 0.5))
 
 # ── Grid 2: R × r  (faceted by rho, fixed f = F_VAX) ──────────────────────
 # Extend R range to cover R_crit under the revised model
-R_FINE  <- seq(50, 10000, length.out = 40)
+R_FINE <- seq(50, 10000, length.out = 40)
 R_GRID2 <- seq(0.10, 0.90, by = 0.05)
 
 sens_Rr <- expand_grid(R = R_FINE, r = R_GRID2, rho = RHO_VALS) |>
     mutate(
         alpha_star_emp = pmap_dbl(list(R, r, rho), function(R, r, rho) {
-            Rv <- R; rv <- r; rhov <- rho
-            score    <- score_sens[[as.character(rhov)]]
-            cost_vec <- vapply(ALPHA_SENS, function(a)
-                cost_incidence(a, F_VAX, sim_df$q_i, sim_df$pop_sum, score,
-                               event_df, Rv, rv, NU_VAL, Q_THRESH),
-                numeric(1))
+            Rv <- R
+            rv <- r
+            rhov <- rho
+            score <- score_sens[[as.character(rhov)]]
+            cost_vec <- vapply(
+                ALPHA_SENS, function(a) {
+                    cost_incidence(
+                        a, F_VAX, sim_df$q_i, sim_df$pop_sum, score,
+                        event_df, Rv, rv, NU_VAL, Q_THRESH
+                    )
+                },
+                numeric(1)
+            )
             ALPHA_SENS[which.min(cost_vec)]
         }),
-        alpha_star_theory = pmap_dbl(list(R, r), function(R, r)
-            alpha_star_revised(p = p_eff, R = R, r = r, f = F_VAX,
-                               q_mean = q_bar, nu = NU_VAL))
+        alpha_star_theory = pmap_dbl(list(R, r), function(R, r) {
+            alpha_star_revised(
+                p = p_eff, R = R, r = r, f = F_VAX,
+                q_mean = q_bar, nu = NU_VAL
+            )
+        })
     ) |>
     mutate(alpha_star_theory = replace_na(alpha_star_theory, 0.5))
 
@@ -834,12 +987,14 @@ sens_Rr <- expand_grid(R = R_FINE, r = R_GRID2, rho = RHO_VALS) |>
 # Below this curve alpha*=0; above, alpha*=alpha_c or 1.
 R_crit_df <- tibble(r = seq(0.05, 0.95, by = 0.005)) |>
     mutate(
-        R_crit  = (1.5 - 0.5 * p_eff) / (q_bar * (1 - r))
+        R_crit = (1.5 - 0.5 * p_eff) / (q_bar * (1 - r))
     ) |>
     filter(R_crit >= 50, R_crit <= 10000)
 
-cat(sprintf("Grids computed: sens_fr (%d rows), sens_Rr (%d rows)\n",
-            nrow(sens_fr), nrow(sens_Rr)))
+cat(sprintf(
+    "Grids computed: sens_fr (%d rows), sens_Rr (%d rows)\n",
+    nrow(sens_fr), nrow(sens_Rr)
+))
 ```
 
 ## Heat map: $f$ vs $r$
@@ -856,36 +1011,47 @@ label_df_fr <- expand_grid(R = R_VALS, rho = RHO_VALS)
 ggplot(sens_fr, aes(x = r, y = f)) +
     geom_tile(aes(fill = alpha_star_emp)) +
     geom_contour(aes(z = alpha_star_theory),
-                 breaks = c(0.5),
-                 colour = "white", linewidth = 0.7, linetype = "solid") +
+        breaks = c(0.5),
+        colour = "white", linewidth = 0.7, linetype = "solid"
+    ) +
     # f = p_eff boundary (blue dashed horizontal)
-    geom_hline(yintercept = p_eff,
-               linetype = "dashed", colour = "dodgerblue", linewidth = 0.8) +
+    geom_hline(
+        yintercept = p_eff,
+        linetype = "dashed", colour = "dodgerblue", linewidth = 0.8
+    ) +
     # Mark current analysis point
-    geom_point(data = label_df_fr,
-               aes(x = R_REACT, y = F_VAX),
-               shape = 4, size = 3, colour = "white", stroke = 1.2) +
+    geom_point(
+        data = label_df_fr,
+        aes(x = R_REACT, y = F_VAX),
+        shape = 4, size = 3, colour = "white", stroke = 1.2
+    ) +
     scale_fill_viridis_c(
-        name   = expression(alpha^"*"),
-        limits = c(0, 1), option = "plasma") +
+        name = expression(alpha^"*"),
+        limits = c(0, 1), option = "plasma"
+    ) +
     scale_x_continuous(breaks = seq(0.1, 0.9, by = 0.2)) +
     scale_y_continuous(breaks = seq(0.1, 0.8, by = 0.2)) +
     facet_grid(
         rows = vars(sprintf("rho = %.1f", rho)),
-        cols = vars(sprintf("R = %d",    R))) +
+        cols = vars(sprintf("R = %d", R))
+    ) +
     labs(
-        x        = expression("Reactive VE " ~ italic(r)),
-        y        = expression("Vaccination capacity " ~ italic(f)),
-        title    = "Empirical optimal pre-emptive fraction across f and r",
+        x = expression("Reactive VE " ~ italic(r)),
+        y = expression("Vaccination capacity " ~ italic(f)),
+        title = "Empirical optimal pre-emptive fraction across f and r",
         subtitle = paste0(
             "Blue dashed: f = p_eff = ", round(p_eff, 3),
             "  |  White contour: theoretical \u03b1* = \u03b1_c boundary",
-            "  |  \u2715 = current analysis point")) +
+            "  |  \u2715 = current analysis point"
+        )
+    ) +
     theme_minimal(base_size = 11) +
-    theme(strip.text         = element_text(face = "bold"),
-          legend.position    = "right",
-          panel.grid.major   = element_blank(),
-          panel.grid.minor   = element_blank())
+    theme(
+        strip.text = element_text(face = "bold"),
+        legend.position = "right",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank()
+    )
 ```
 
 ## Heat map: $R$ vs $r$
@@ -901,33 +1067,44 @@ label_df_Rr <- tibble(rho = RHO_VALS)
 ggplot(sens_Rr, aes(x = r, y = R)) +
     geom_tile(aes(fill = alpha_star_emp)) +
     # R_crit curve from revised theory
-    geom_line(data = R_crit_df, aes(x = r, y = R_crit),
-              linetype = "dashed", colour = "firebrick", linewidth = 0.9,
-              inherit.aes = FALSE) +
+    geom_line(
+        data = R_crit_df, aes(x = r, y = R_crit),
+        linetype = "dashed", colour = "firebrick", linewidth = 0.9,
+        inherit.aes = FALSE
+    ) +
     # Current analysis point
-    geom_point(data = label_df_Rr,
-               aes(x = R_REACT, y = R_BASE),
-               shape = 4, size = 3.5, colour = "white", stroke = 1.2,
-               inherit.aes = FALSE) +
+    geom_point(
+        data = label_df_Rr,
+        aes(x = R_REACT, y = R_BASE),
+        shape = 4, size = 3.5, colour = "white", stroke = 1.2,
+        inherit.aes = FALSE
+    ) +
     scale_fill_viridis_c(
-        name   = expression(alpha^"*"),
-        limits = c(0, 1), option = "plasma") +
+        name = expression(alpha^"*"),
+        limits = c(0, 1), option = "plasma"
+    ) +
     scale_x_continuous(breaks = seq(0.1, 0.9, by = 0.2)) +
-    scale_y_log10(labels = scales::comma,
-                  breaks = c(100, 500, 1000, 2000, 5000, 10000)) +
-    facet_wrap(~sprintf("rho = %.1f", rho), nrow = 1) +
+    scale_y_log10(
+        labels = scales::comma,
+        breaks = c(100, 500, 1000, 2000, 5000, 10000)
+    ) +
+    facet_wrap(~ sprintf("rho = %.1f", rho), nrow = 1) +
     labs(
-        x        = expression("Reactive VE " ~ italic(r)),
-        y        = expression("Cost ratio " ~ italic(R) ~ " (log scale)"),
-        title    = sprintf("Empirical optimal pre-emptive fraction across R and r  |  f = %.2f", F_VAX),
+        x = expression("Reactive VE " ~ italic(r)),
+        y = expression("Cost ratio " ~ italic(R) ~ " (log scale)"),
+        title = sprintf("Empirical optimal pre-emptive fraction across R and r  |  f = %.2f", F_VAX),
         subtitle = paste0(
             "Red dashed: R_lower = (1.5 - 0.5\u00d7p_eff) / (q_bar \u00d7 (1 - r))",
-            "  |  \u2715 = current analysis point (r=0.4, R=1000)")) +
+            "  |  \u2715 = current analysis point (r=0.4, R=1000)"
+        )
+    ) +
     theme_minimal(base_size = 11) +
-    theme(strip.text         = element_text(face = "bold"),
-          legend.position    = "right",
-          panel.grid.major   = element_blank(),
-          panel.grid.minor   = element_blank())
+    theme(
+        strip.text = element_text(face = "bold"),
+        legend.position = "right",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank()
+    )
 ```
 
 ---
@@ -937,40 +1114,49 @@ ggplot(sens_Rr, aes(x = r, y = R)) +
 ```{r summary-table}
 summary_tbl <- opt_df |>
     filter(R == R_BASE) |>
-    left_join(ca_df |> filter(R == R_BASE) |>
-              dplyr::select(rho, cases_no_vax, cases_averted_opt, pct_averted_opt),
-              by = "rho") |>
+    left_join(
+        ca_df |> filter(R == R_BASE) |>
+            dplyr::select(rho, cases_no_vax, cases_averted_opt, pct_averted_opt),
+        by = "rho"
+    ) |>
     mutate(
         rho_label = case_when(
-            rho == 0   ~ "Random (rho=0)",
+            rho == 0 ~ "Random (rho=0)",
             rho == 0.3 ~ "Moderate (rho=0.3)",
-            rho == 1.0 ~ "Oracle (rho=1)"),
+            rho == 1.0 ~ "Oracle (rho=1)"
+        ),
         alpha_theory = theory_tbl$alpha_star_theory[match(R_BASE, theory_tbl$R)]
     )
 
 summary_tbl |>
-    dplyr::select(rho_label, alpha_star, alpha_theory,
-                  cost_min, c_no_vax, cost_reduction_pct,
-                  cases_averted_opt, pct_averted_opt) |>
+    dplyr::select(
+        rho_label, alpha_star, alpha_theory,
+        cost_min, c_no_vax, cost_reduction_pct,
+        cases_averted_opt, pct_averted_opt
+    ) |>
     knitr::kable(
-        digits    = c(0, 3, 3, 4, 4, 1, 0, 1),
-        col.names = c("Targeting", "alpha* (empirical)", "alpha* (theory)",
-                      "Min cost", "No-vax cost", "Cost reduction (%)",
-                      "Cases averted", "% averted"),
-        caption   = sprintf(
+        digits = c(0, 3, 3, 4, 4, 1, 0, 1),
+        col.names = c(
+            "Targeting", "alpha* (empirical)", "alpha* (theory)",
+            "Min cost", "No-vax cost", "Cost reduction (%)",
+            "Cases averted", "% averted"
+        ),
+        caption = sprintf(
             "Summary of optimal allocation | R = %d, f = %.2f, nu = %.1f, r = %.1f, window %d–%d",
-            R_BASE, F_VAX, NU_VAL, R_REACT, min(WIN_YEARS), max(WIN_YEARS)))
+            R_BASE, F_VAX, NU_VAL, R_REACT, min(WIN_YEARS), max(WIN_YEARS)
+        )
+    )
 ```
 
 ## Key findings
 
 ```{r key-findings, echo=FALSE, results="asis"}
 # Extract numbers for inline reporting
-opt_r0   <- opt_df |> filter(R == R_BASE, rho == 0.0)
-opt_r03  <- opt_df |> filter(R == R_BASE, rho == 0.3)
-opt_r1   <- opt_df |> filter(R == R_BASE, rho == 1.0)
-ca_r0    <- ca_df  |> filter(R == R_BASE, rho == 0.0)
-ca_r1    <- ca_df  |> filter(R == R_BASE, rho == 1.0)
+opt_r0 <- opt_df |> filter(R == R_BASE, rho == 0.0)
+opt_r03 <- opt_df |> filter(R == R_BASE, rho == 0.3)
+opt_r1 <- opt_df |> filter(R == R_BASE, rho == 1.0)
+ca_r0 <- ca_df |> filter(R == R_BASE, rho == 0.0)
+ca_r1 <- ca_df |> filter(R == R_BASE, rho == 1.0)
 theory_R <- theory_tbl |> filter(R == R_BASE)
 
 R_lower_base <- theory_tbl$R_lower[1]
@@ -978,7 +1164,7 @@ R_upper_base <- theory_tbl$R_upper[1]
 alpha_c_base <- theory_tbl$alpha_c[1]
 
 cat(sprintf(
-"**Parameter setting** (R_base = %d, f = %.2f, nu = %.1f, r = %.1f,
+    "**Parameter setting** (R_base = %d, f = %.2f, nu = %.1f, r = %.1f,
 2-dose pre-emptive / 1-dose reactive / 0.5×C_V unused penalty, window %d–%d):
 
 - **Outbreak probability.** An empirical %.1f%% of ADM2 sites experienced at
@@ -1006,23 +1192,25 @@ cat(sprintf(
   are averted (%.1f%% of the %.0f-case no-vaccination baseline). With random
   targeting, %.0f cases are averted (%.1f%%).
 ",
-R_BASE, F_VAX, NU_VAL, R_REACT, min(WIN_YEARS), max(WIN_YEARS),
-100 * p_3yr, min(WIN_YEARS), max(WIN_YEARS), p_3yr, p_ann, p_eff,
-ifelse(F_VAX > p_eff, "abundant", "scarce"),
-F_VAX, ifelse(F_VAX > p_eff, ">", "<="), p_eff,
-alpha_c_base, R_lower_base, R_upper_base,
-R_BASE,
-ifelse(R_BASE > R_upper_base, "1 (pure pre-emptive)",
-       ifelse(R_BASE >= R_lower_base,
-              sprintf("%.2f (interior, alpha_c)", alpha_c_base),
-              "0 (pure reactive)")),
-R_BASE,
-opt_r0$alpha_star,  opt_r0$cost_reduction_pct,
-opt_r03$alpha_star, opt_r03$cost_reduction_pct,
-opt_r1$alpha_star,  opt_r1$cost_reduction_pct,
-ca_r1$pct_averted_opt,
-ca_r1$cases_averted_opt, ca_r1$pct_averted_opt, ca_r1$cases_no_vax,
-ca_r0$cases_averted_opt, ca_r0$pct_averted_opt,
-R_upper_base
+    R_BASE, F_VAX, NU_VAL, R_REACT, min(WIN_YEARS), max(WIN_YEARS),
+    100 * p_3yr, min(WIN_YEARS), max(WIN_YEARS), p_3yr, p_ann, p_eff,
+    ifelse(F_VAX > p_eff, "abundant", "scarce"),
+    F_VAX, ifelse(F_VAX > p_eff, ">", "<="), p_eff,
+    alpha_c_base, R_lower_base, R_upper_base,
+    R_BASE,
+    ifelse(R_BASE > R_upper_base, "1 (pure pre-emptive)",
+        ifelse(R_BASE >= R_lower_base,
+            sprintf("%.2f (interior, alpha_c)", alpha_c_base),
+            "0 (pure reactive)"
+        )
+    ),
+    R_BASE,
+    opt_r0$alpha_star, opt_r0$cost_reduction_pct,
+    opt_r03$alpha_star, opt_r03$cost_reduction_pct,
+    opt_r1$alpha_star, opt_r1$cost_reduction_pct,
+    ca_r1$pct_averted_opt,
+    ca_r1$cases_averted_opt, ca_r1$pct_averted_opt, ca_r1$cases_no_vax,
+    ca_r0$cases_averted_opt, ca_r0$pct_averted_opt,
+    R_upper_base
 ))
 ```
