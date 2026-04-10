@@ -232,18 +232,18 @@ cat(sprintf("Reactive events (after %d-day gap): %d  |  Total cases: %s\n",
 
 # Outbreak Probability
 
-The **annual outbreak probability** per site is estimated from the fraction of
-years in the 3-year window with at least one reported case.
+The **3-year outbreak probability** `p_3yr` is the fraction of all ADM2 sites
+(from `ts2`) that experienced at least one outbreak in the `WIN_YEARS` window.
+Sites present in `ts2` but with outbreaks only outside `WIN_YEARS` contribute
+zero to the numerator, keeping `p_3yr` below 1.
 
 ```{r outbreak-prob}
-p_3yr <- mean(sim_df$any_outbreak) # empirical P(any outbreak in 3-yr window)
-p_ann <- 1 - (1 - p_3yr)^(1 / T_WIN) # implied annual probability
+p_3yr <- mean(sim_df$any_outbreak) # P(≥1 outbreak in WIN_YEARS window)
 
 cat(sprintf(
-    "Empirical P(≥1 outbreak year in %d–%d): %.3f\n",
+    "3-yr outbreak probability P(≥1 outbreak in %d–%d): %.3f\n",
     min(WIN_YEARS), max(WIN_YEARS), p_3yr
 ))
-cat(sprintf("Implied annual outbreak probability:    %.3f\n", p_ann))
 cat(sprintf(
     "Mean q_i (cases per person, 3-yr):     %.5f  (%.1f per 100k)\n",
     mean(sim_df$q_i), mean(sim_df$q_i) * 1e5
@@ -1182,8 +1182,8 @@ cat(sprintf(
 2-dose pre-emptive / 1-dose reactive / 0.5×C_V unused penalty, window %d–%d):
 
 - **Outbreak probability.** An empirical %.1f%% of ADM2 sites experienced at
-  least one cholera outbreak in %d–%d (p_3yr = %.3f; implied annual p_ann = %.3f).
-  Mean outbreak-years per site p_eff = %.3f.
+  least one cholera outbreak in %d–%d (p_3yr = %.3f).
+  Mean reactive events per site p_eff = %.3f.
 
 - **Homogeneous theory.** The capacity regime is **%s** (f = %.2f %s p_eff = %.3f).
   The revised cost function is *piecewise linear* in alpha with a kink at
@@ -1207,7 +1207,7 @@ cat(sprintf(
   targeting, %.0f cases are averted (%.1f%%).
 ",
     R_BASE, F_VAX, NU_VAL, R_REACT, min(WIN_YEARS), max(WIN_YEARS),
-    100 * p_3yr, min(WIN_YEARS), max(WIN_YEARS), p_3yr, p_ann, p_eff,
+    100 * p_3yr, min(WIN_YEARS), max(WIN_YEARS), p_3yr, p_eff,
     ifelse(F_VAX > p_eff, "abundant", "scarce"),
     F_VAX, ifelse(F_VAX > p_eff, ">", "<="), p_eff,
     alpha_c_base, R_lower_base, R_upper_base,
