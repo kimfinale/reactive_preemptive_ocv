@@ -541,6 +541,55 @@ cost_incidence <- function(alpha, f, q, pop, score, evt, R, r, nu = 1, q_star = 
     c_pre + c_react
 }
 
+# Decompose total cost into vaccination cost and illness cost per capita.
+# Returns a list with three named components (all in C_V units per capita):
+#   cost_vax : vaccination cost (doses deployed + unused-dose penalty)
+#   cost_ill : illness cost (R × residual burden)
+#   cost_total: sum (== cost_incidence())
+cost_breakdown <- function(alpha, f, q, pop, score, evt, R, r, nu = 1, q_star = 0,
+                           q_pre = NULL) {
+    if (is.null(q_pre)) q_pre <- q
+    P <- sum(pop)
+    f_pre_cap <- alpha * f * P
+
+    ord_pre <- order(score, decreasing = TRUE)
+    n_pre <- sum(cumsum(pop[ord_pre]) <= f_pre_cap)
+    pre_idx <- ord_pre[seq_len(max(n_pre, 0L))]
+
+    evts <- evt[!(evt$site_idx %in% pre_idx) & q[evt$site_idx] > q_star, ]
+    f_react_pop <- (1 - alpha) * f * P
+
+    # Pre-emptive: vaccination cost only (illness handled below)
+    vax_pre <- DOSE_PRE * sum(pop[pre_idx]) / P
+    ill_pre  <- R * (sum(q[pre_idx] * pop[pre_idx]) -
+                     nu * sum(q_pre[pre_idx] * pop[pre_idx])) / P
+
+    if (nrow(evts) > 0) {
+        n_serve <- sum(cumsum(evts$pop_sum) <= f_react_pop)
+        if (n_serve > 0L) {
+            served   <- evts[seq_len(n_serve), ]
+            unserved <- if (n_serve < nrow(evts)) evts[(n_serve + 1L):nrow(evts), ] else evts[0L, ]
+        } else {
+            served   <- evts[0L, ]
+            unserved <- evts
+        }
+        pop_used  <- sum(served$pop_sum)
+        vax_react <- DOSE_REACT * pop_used / P
+        ill_react <- R * (sum((1 - r) * served$cases) + sum(unserved$cases)) / P
+        unused    <- DOSE_WASTE * max(0, f_react_pop - pop_used) / P
+    } else {
+        vax_react <- 0
+        ill_react <- R * sum(q[evts$site_idx] * evts$pop_sum) / P  # 0 if evts empty
+        unused    <- DOSE_WASTE * f_react_pop / P
+    }
+
+    # Illness cost for non-outbreak non-pre-emptive sites = 0 (no burden).
+    # Include unvaccinated non-pre-emptive sites that had no outbreak.
+    cost_vax   <- vax_pre + vax_react + unused
+    cost_ill   <- ill_pre + ill_react
+    list(cost_vax = cost_vax, cost_ill = cost_ill, cost_total = cost_vax + cost_ill)
+}
+
 # Cases averted breakdown for a given allocation.
 # Uses the same event-level reactive model as cost_incidence().
 cases_averted_breakdown <- function(alpha, f, q, pop, score, evt, R, r,
@@ -745,6 +794,120 @@ ggplot(opt_df, aes(
     ) +
     theme_minimal(base_size = 11) +
     theme(legend.position = "bottom")
+```
+
+## Cost breakdown: vaccination vs illness
+
+Total per-capita cost splits into two components:
+
+- **Vaccination cost** ($C_V$ units/person) = dose cost for pre-emptive sites +
+  dose cost for served reactive events + unused-dose penalty for unspent reactive
+  reserve ($0.5 \times C_V$).
+- **Illness cost** ($C_V$ units/person) = $R \times$ residual burden for
+  pre-emptive sites (late outbreaks beyond `MIN_PREEMPTIVE_GAP`) +
+  $R \times (1-r) \times$ cases at served reactive events +
+  $R \times$ cases at unserved outbreak sites.
+
+At $\alpha = 0$ the vaccination cost is zero except for the unused-dose penalty;
+as $\alpha \to 1$ vaccination cost rises but illness cost falls.
+
+```{r cost-breakdown}
+# Compute vaccination and illness cost components across alpha for each (rho, R).
+breakdown_df <- expand_grid(rho = RHO_VALS, R = R_VALS) |>
+    pmap_dfr(function(rho, R) {
+        rho_val <- rho
+        R_val   <- R
+        score   <- make_rank_score(sim_df$q_i, target_rho = rho_val)
+        map_dfr(ALPHA_GRID, function(a) {
+            bd <- cost_breakdown(
+                a, F_VAX, sim_df$q_i, sim_df$pop_sum, score,
+                event_df, R_val, R_REACT, NU_VAL, Q_THRESH,
+                q_pre = sim_df$q_pre_i
+            )
+            tibble(rho = rho_val, R = R_val, alpha = a,
+                   cost_vax = bd$cost_vax, cost_ill = bd$cost_ill)
+        })
+    })
+
+# At optimal alpha (from opt_df), report per-(R, rho) breakdown
+breakdown_opt <- pmap_dfr(opt_df, function(R, rho, alpha_star, cost_min, ...) {
+    sc <- make_rank_score(sim_df$q_i, target_rho = rho)
+    bd <- cost_breakdown(
+        alpha_star, F_VAX, sim_df$q_i, sim_df$pop_sum, sc,
+        event_df, R, R_REACT, NU_VAL, Q_THRESH,
+        q_pre = sim_df$q_pre_i
+    )
+    tibble(
+        R         = R,
+        rho       = rho,
+        alpha_star = alpha_star,
+        cost_min  = cost_min,
+        cost_vax  = bd$cost_vax,
+        cost_ill  = bd$cost_ill,
+        pct_vax   = 100 * bd$cost_vax / cost_min,
+        pct_ill   = 100 * bd$cost_ill / cost_min
+    )
+})
+
+breakdown_opt |>
+    arrange(R, rho) |>
+    knitr::kable(
+        digits = c(0, 2, 3, 4, 4, 4, 1, 1),
+        col.names = c("R", "rho", "alpha*", "Total cost",
+                      "Vaccination cost", "Illness cost",
+                      "% vaccination", "% illness"),
+        caption = sprintf(
+            "Cost decomposition at optimal alpha* | f = %.2f, nu = %.1f, r = %.1f",
+            F_VAX, NU_VAL, R_REACT
+        )
+    )
+```
+
+```{r fig-cost-breakdown, fig.width=11, fig.height=7}
+#| fig-cap: "Per-capita cost decomposition into vaccination cost (blue) and
+#|   illness cost (red) as a function of the pre-emptive fraction alpha,
+#|   for each targeting accuracy rho (rows) and cost ratio R (columns).
+#|   Vaccination cost rises with alpha; illness cost falls. The vertical
+#|   dashed line marks the empirical optimal alpha*."
+
+breakdown_long <- breakdown_df |>
+    pivot_longer(c(cost_vax, cost_ill),
+                 names_to = "component", values_to = "cost") |>
+    mutate(component = recode(component,
+        cost_vax = "Vaccination cost",
+        cost_ill = "Illness cost"
+    ))
+
+ggplot(breakdown_long, aes(x = alpha, y = cost, colour = component)) +
+    geom_line(linewidth = 0.9) +
+    geom_vline(
+        data = opt_df,
+        aes(xintercept = alpha_star),
+        linetype = "dashed", colour = "grey40", linewidth = 0.7,
+        inherit.aes = FALSE
+    ) +
+    scale_colour_manual(
+        values = c("Vaccination cost" = "steelblue", "Illness cost" = "firebrick"),
+        name = NULL
+    ) +
+    facet_grid(
+        rows = vars(sprintf("rho = %.1f", rho)),
+        cols = vars(sprintf("R = %d", R))
+    ) +
+    labs(
+        x = expression("Pre-emptive fraction " ~ alpha),
+        y = expression("Cost per capita (" ~ C[V] ~ " units)"),
+        title = sprintf(
+            "Cost breakdown: vaccination vs illness  |  f = %.2f, nu = %.1f, r = %.1f",
+            F_VAX, NU_VAL, R_REACT
+        ),
+        subtitle = "Grey dashed: empirical optimal alpha*"
+    ) +
+    theme_minimal(base_size = 11) +
+    theme(
+        strip.text = element_text(face = "bold"),
+        legend.position = "bottom"
+    )
 ```
 
 ---
