@@ -125,9 +125,9 @@ Reactive events are outbreak occurrences (grouped by `location_period_id` ×
 location.
 
 ```{r join-pop}
-# Population per ADM2: median across all WIN_YEARS records
+# Population per ADM2: median across ALL records in ts2 (not filtered to WIN_YEARS)
+# so that sites with no outbreaks in 2010-2012 are still included in the denominator.
 pop_df <- ts2 |>
-    filter(year(TL) %in% WIN_YEARS) |>
     group_by(location) |>
     summarise(pop_sum = median(pop, na.rm = TRUE), .groups = "drop") |>
     filter(!is.na(pop_sum), pop_sum > 0)
@@ -152,26 +152,36 @@ sim_df <- pop_df |>
     mutate(q_i = cases_win / pop_sum)
 
 # ── Reactive event list ───────────────────────────────────────────────────────
-# Each (location, location_period_id, outbreak_number) with TL >= WIN_YEARS[1]
-# that has ≥1 case is a candidate reactive event. Within each location a greedy
-# MIN_REACT_GAP-day filter is applied: after an event at date d, the next event
-# at the same location must start ≥ MIN_REACT_GAP days later.
+# Each (location, location_period_id, outbreak_number) with TL in WIN_YEARS
+# that has ≥1 case is a candidate reactive event.
 #
-# date_event : outbreak start (min TL within the occurrence)
-# cases      : total sCh in that occurrence
+# One reactive vaccination provides MIN_REACT_GAP days of protection: outbreaks
+# starting within MIN_REACT_GAP days of the vaccination date are already covered
+# (their cases are absorbed into the triggering event at no extra vaccine cost).
+# A new vaccination is only triggered by an outbreak starting ≥ MIN_REACT_GAP
+# days after the previous vaccination.
+#
+# date_event : start of the triggering outbreak (min TL in the occurrence)
+# cases      : sCh from the trigger + all absorbed outbreaks within the gap window
 # pop_sum    : site population
 # site_idx   : row index into sim_df
 
-apply_min_gap <- function(dates, gap_days) {
-    keep      <- logical(length(dates))
-    last_date <- as.Date(NA)
+merge_gap_events <- function(dates, cases, gap_days) {
+    keep         <- logical(length(dates))
+    merged_cases <- numeric(length(dates))
+    last_vacc    <- as.Date(NA)
+    last_i       <- NA_integer_
     for (i in seq_along(dates)) {
-        if (is.na(last_date) || as.integer(dates[i] - last_date) >= gap_days) {
-            keep[i]   <- TRUE
-            last_date <- dates[i]
+        if (is.na(last_vacc) || as.integer(dates[i] - last_vacc) >= gap_days) {
+            keep[i]         <- TRUE
+            merged_cases[i] <- cases[i]
+            last_vacc       <- dates[i]
+            last_i          <- i
+        } else {
+            merged_cases[last_i] <- merged_cases[last_i] + cases[i]
         }
     }
-    keep
+    list(keep = keep, merged_cases = merged_cases)
 }
 
 event_df <- ts2 |>
@@ -189,7 +199,11 @@ event_df <- ts2 |>
     filter(!is.na(site_idx)) |>
     arrange(date_event) |>
     group_by(location) |>
-    filter(apply_min_gap(date_event, MIN_REACT_GAP)) |>
+    group_modify(function(df, .key) {
+        res      <- merge_gap_events(df$date_event, df$cases, MIN_REACT_GAP)
+        df$cases <- res$merged_cases
+        df[res$keep, ]
+    }) |>
     ungroup() |>
     arrange(date_event)
 
