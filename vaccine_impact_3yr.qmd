@@ -219,11 +219,23 @@ P_TOTAL  <- sum(sim_df$pop_sum)
 N_SITES  <- nrow(sim_df)
 N_EVENTS <- nrow(event_df)
 
-cat(sprintf("Sites: %d  |  Total population: %s\n",
-            N_SITES, format(round(P_TOTAL), big.mark = ",")))
-cat(sprintf("Sites with ≥1 outbreak in %d–%d: %d (%.1f%%)\n",
+# ── Shapefile denominator ──────────────────────────────────────────────────────
+# Load outbreak shapefile to get the full geographic universe.
+# N_SHP is used as the denominator for outbreak probability (p_3yr and p_eff),
+# replacing the ts2-only denominator that gives p_3yr ≈ 1.
+shp_tmp <- readRDS("data/outbreak_files_Oct2024/outbreak_shapefiles.rds")
+sf::st_geometry(shp_tmp) <- NULL
+N_SHP <- nrow(shp_tmp)   # total geographic units in study region
+rm(shp_tmp)
+
+cat(sprintf("Sites in ts2 (surveillance): %d  |  Sites in shapefile (universe): %d\n",
+            N_SITES, N_SHP))
+cat(sprintf("Total population: %s\n", format(round(P_TOTAL), big.mark = ",")))
+cat(sprintf("Sites with ≥1 outbreak in %d–%d: %d (%.1f%% of ts2, %.1f%% of shapefile)\n",
             min(WIN_YEARS), max(WIN_YEARS),
-            sum(sim_df$any_outbreak), 100 * mean(sim_df$any_outbreak)))
+            sum(sim_df$any_outbreak),
+            100 * mean(sim_df$any_outbreak),
+            100 * sum(sim_df$any_outbreak) / N_SHP))
 cat(sprintf("Reactive events (after %d-day gap): %d  |  Total cases: %s\n",
             MIN_REACT_GAP, N_EVENTS, format(sum(event_df$cases), big.mark = ",")))
 ```
@@ -232,17 +244,20 @@ cat(sprintf("Reactive events (after %d-day gap): %d  |  Total cases: %s\n",
 
 # Outbreak Probability
 
-The **3-year outbreak probability** `p_3yr` is the fraction of all ADM2 sites
-(from `ts2`) that experienced at least one outbreak in the `WIN_YEARS` window.
-Sites present in `ts2` but with outbreaks only outside `WIN_YEARS` contribute
-zero to the numerator, keeping `p_3yr` below 1.
+The **3-year outbreak probability** `p_3yr` is the fraction of **all ADM2 sites
+in the shapefile** (the complete geographic universe) that experienced at least
+one outbreak in the `WIN_YEARS` window. Numerator: ADM2 locations in `ts2` with
+≥1 reported case in `WIN_YEARS`. Denominator: all `r N_SHP` entries in the
+outbreak shapefile.
 
 ```{r outbreak-prob}
-p_3yr <- mean(sim_df$any_outbreak) # P(≥1 outbreak in WIN_YEARS window)
+# p_3yr: (sites with ≥1 outbreak in WIN_YEARS) / (all shapefile locations)
+p_3yr <- sum(sim_df$any_outbreak) / N_SHP
 
 cat(sprintf(
-    "3-yr outbreak probability P(≥1 outbreak in %d–%d): %.3f\n",
-    min(WIN_YEARS), max(WIN_YEARS), p_3yr
+    "3-yr outbreak probability P(≥1 outbreak in %d–%d): %.4f  [%d / %d]\n",
+    min(WIN_YEARS), max(WIN_YEARS), p_3yr,
+    sum(sim_df$any_outbreak), N_SHP
 ))
 cat(sprintf(
     "Mean q_i (cases per person, 3-yr):     %.5f  (%.1f per 100k)\n",
@@ -326,10 +341,10 @@ $$\alpha^* = \begin{cases}0 & R < R_\text{lower} = \dfrac{1.5 - 0.5\,p_\text{eff
 Note $R_\text{lower} < R_\text{upper}$ when $p_\text{eff} > r$, so an interior mixed solution always exists between these two thresholds.
 
 ```{r alpha-star-theory}
-# p_eff: expected number of outbreak-year events per site (replaces p_3yr in theory)
-# Under the event-level reactive model, each outbreak year is a separately
-# serviceable event, so p_eff (not p_3yr) governs the reactive budget constraint.
-p_eff <- mean(sim_df$n_events)
+# p_eff: expected reactive events per site over the full geographic universe.
+# Denominator = N_SHP (all shapefile locations), not just ts2 sites.
+# Sites not in ts2 had 0 observed events.
+p_eff <- sum(sim_df$n_events) / N_SHP
 q_bar <- weighted.mean(sim_df$q_i, sim_df$pop_sum)
 
 cat(sprintf("p_eff (mean outbreak-years per site): %.3f\n", p_eff))
